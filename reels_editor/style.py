@@ -1,0 +1,59 @@
+"""스타일 프리셋 로딩. 렌더가 참조하는 모든 시각 파라미터의 단일 출처."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+
+@dataclass(frozen=True)
+class StylePreset:
+    canvas: tuple[int, int]
+    top_bar: int
+    bottom_bar: int
+    title_font: Path
+    title_size: int
+    title_color: str
+    title_highlight: str
+    title_max_lines: int
+    sub_font: Path
+    sub_size: int
+    sub_color: str
+    sub_highlight: str
+    sub_box_alpha: int
+    watermark_text: str
+    watermark_font: Path
+    watermark_size: int
+    speed: float
+
+    def video_area(self) -> tuple[int, int]:
+        return self.canvas[0], self.canvas[1] - self.top_bar - self.bottom_bar
+
+
+def _font(font_dir: Path, name: str) -> Path:
+    p = (font_dir / name).expanduser()
+    if not p.is_file():
+        raise FileNotFoundError(
+            f"폰트 없음: {p}\nPretendard를 설치하거나 style yaml의 font_dir를 수정하세요.")
+    return p
+
+
+def load_style(path: Path) -> StylePreset:
+    with open(path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    font_dir = Path(raw["font_dir"]).expanduser()
+    t, s, w = raw["title"], raw["subtitle"], raw["watermark"]
+    return StylePreset(
+        canvas=tuple(raw["canvas"]),
+        top_bar=raw["top_bar"], bottom_bar=raw["bottom_bar"],
+        title_font=_font(font_dir, t["font"]), title_size=t["size"],
+        title_color=t["color"], title_highlight=t["highlight"],
+        title_max_lines=t["max_lines"],
+        sub_font=_font(font_dir, s["font"]), sub_size=s["size"],
+        sub_color=s["color"], sub_highlight=s["highlight"],
+        sub_box_alpha=s["box_alpha"],
+        watermark_text=w["text"], watermark_font=_font(font_dir, w["font"]),
+        watermark_size=w["size"],
+        speed=float(raw["speed"]),
+    )

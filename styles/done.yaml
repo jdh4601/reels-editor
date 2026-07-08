@@ -1,0 +1,22 @@
+# D.one 릴스 스타일 (examples/완성된릴스화면*.png에서 추출)
+canvas: [1080, 1920]
+top_bar: 220        # 상단 블랙바(타이틀 영역) 높이 px
+bottom_bar: 180     # 하단 블랙바(워터마크 영역) 높이 px
+font_dir: ~/Library/Fonts
+title:
+  font: Pretendard-ExtraBold.otf
+  size: 72
+  color: "#FFFFFF"
+  highlight: "#FF7A00"   # 타이틀 키워드 오렌지
+  max_lines: 2
+subtitle:
+  font: Pretendard-SemiBold.otf
+  size: 44
+  color: "#FFFFFF"
+  highlight: "#FF3B30"   # 자막 키워드 레드
+  box_alpha: 200         # 검정 박스 불투명도 0-255
+watermark:
+  text: "D.one"
+  font: Pretendard-Medium.otf
+  size: 48
+speed: 1.2

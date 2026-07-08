@@ -1,0 +1,58 @@
+"""수정용 재료 산출: srt, 비트별 컷 클립, edl/segments 저장."""
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+from reels_editor.capcut import US
+
+
+def srt_timestamp(seconds: float) -> str:
+    ms = round(seconds * 1000)
+    h, rem = divmod(ms, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms = divmod(rem, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def write_srt(groups: list[list], path: Path) -> Path:
+    blocks = [f"{i + 1}\n{srt_timestamp(a)} --> {srt_timestamp(b)}\n{t}\n"
+              for i, (a, b, t) in enumerate(groups)]
+    path.write_text("\n".join(blocks), encoding="utf-8")
+    return path
+
+
+def export_cuts(video_path: Path, edl_doc: dict, segments: dict,
+                out_dir: Path, speed: float) -> list[Path]:
+    """비트별 클립(배속 적용) — CapCut에서 부분 교체용."""
+    idx = {s["id"]: s for s in segments["segments"]}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for i, cut in enumerate(edl_doc["cuts"], start=1):
+        first, last = idx[cut["seg_ids"][0]], idx[cut["seg_ids"][-1]]
+        a = first["source_start_us"] / US
+        b = last["source_end_us"] / US
+        safe_beat = (cut.get("beat") or f"cut{i}").replace("/", "-")
+        p = out_dir / f"{i:03d}-{safe_beat}.mp4"
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video_path),
+             "-ss", f"{a:.3f}", "-to", f"{b:.3f}",
+             "-filter_complex",
+             f"[0:v]setpts=PTS/{speed}[v];[0:a]atempo={speed}[a]",
+             "-map", "[v]", "-map", "[a]",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+             "-c:a", "aac", str(p)],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"컷 추출 실패 ({p.name}):\n{r.stderr}")
+        paths.append(p)
+    return paths
+
+
+def write_outputs(work: Path, edl_doc: dict, segments: dict) -> None:
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "edl.json").write_text(
+        json.dumps(edl_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    (work / "segments.json").write_text(
+        json.dumps(segments, ensure_ascii=False, indent=2), encoding="utf-8")

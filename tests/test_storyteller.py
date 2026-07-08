@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -40,3 +41,26 @@ def test_generate_script_retries_then_fails(segments: dict) -> None:
         storyteller.generate_script(segments, runner=bad_runner)
     assert len(calls) == 3  # 최초 1회 + 재시도 2회, 그 이상 금지
     assert "없는id" in calls[1]  # 검증 에러가 피드백으로 전달됨
+
+
+def test_generate_script_retries_on_parse_failure(segments: dict, edl_doc: dict) -> None:
+    calls: list[str] = []
+
+    def flaky_runner(prompt: str) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "JSON 없음"
+        return json.dumps(edl_doc, ensure_ascii=False)
+
+    out = storyteller.generate_script(segments, runner=flaky_runner)
+    assert out["cuts"]  # 두 번째 시도에서 성공
+    assert len(calls) == 2
+    assert "JSON 파싱에 실패" in calls[1]
+
+
+def test_generate_script_dumps_raw_on_final_failure(segments: dict, tmp_path: Path) -> None:
+    dump = tmp_path / "llm_raw.txt"
+    with pytest.raises(RuntimeError, match="llm_raw"):
+        storyteller.generate_script(
+            segments, runner=lambda _p: "JSON 없음", raw_dump=dump)
+    assert dump.read_text(encoding="utf-8") == "JSON 없음"

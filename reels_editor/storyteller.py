@@ -42,8 +42,11 @@ def extract_json(text: str) -> dict:
 
 
 def _run_claude(prompt: str) -> str:
-    r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True,
-                       timeout=600)
+    try:
+        r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True,
+                           timeout=600)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"claude -p 타임아웃(600초): {e}") from e
     if r.returncode != 0:
         raise RuntimeError(f"claude -p 실패:\n{r.stderr}")
     return r.stdout
@@ -51,7 +54,8 @@ def _run_claude(prompt: str) -> str:
 
 def generate_script(segments: dict, duration_s: int = 30,
                     feedback: str | None = None, *,
-                    runner: Callable[[str], str] | None = None) -> dict:
+                    runner: Callable[[str], str] | None = None,
+                    raw_dump: Path | None = None) -> dict:
     run = runner or _run_claude
     last_raw = ""
     for _attempt in range(1 + MAX_RETRIES):
@@ -67,5 +71,9 @@ def generate_script(segments: dict, duration_s: int = 30,
             return doc
         feedback = ("이전 EDL이 검증에 실패했다. 다음 오류를 고쳐라 "
                     "(seg_ids는 SEGMENTS의 id만, verbatim 유지):\n" + "\n".join(errs))
-    raise RuntimeError(
-        "대본 생성 3회 실패 — 마지막 응답을 확인하세요:\n" + last_raw[:2000])
+    hint = ""
+    if raw_dump is not None:
+        raw_dump.parent.mkdir(parents=True, exist_ok=True)
+        raw_dump.write_text(last_raw, encoding="utf-8")
+        hint = f" (원문 응답 저장됨: {raw_dump})"
+    raise RuntimeError(f"대본 생성 3회 실패{hint} — 마지막 응답:\n" + last_raw[:2000])

@@ -5,6 +5,12 @@ ffmpeg/Pillow 오케스트레이션(Task 5)을 분리한다.
 """
 from __future__ import annotations
 
+import subprocess
+import tempfile
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
 from reels_editor.capcut import US
 from reels_editor.style import StylePreset
 
@@ -113,3 +119,148 @@ def build_overlay_filter(n_static: int, groups: list[list]) -> tuple[str, str]:
         prev = out
         idx += 1
     return ";".join(parts), prev
+
+
+def _hex_rgba(hex_color: str, alpha: int = 255) -> tuple[int, int, int, int]:
+    h = hex_color.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), alpha
+
+
+def _draw_highlighted_line(d: ImageDraw.ImageDraw, xy: tuple[int, int], text: str,
+                           keywords: list[str], font: ImageFont.FreeTypeFont,
+                           base: tuple, highlight: tuple) -> None:
+    """키워드 조각만 강조색으로, 좌→우 이어 그린다."""
+    x, y = xy
+    for part, hl in split_by_keywords(text, keywords):
+        d.text((x, y), part, font=font, fill=highlight if hl else base)
+        x += int(d.textlength(part, font=font))
+
+
+def _wrap_lines(text: str, font: ImageFont.FreeTypeFont, max_w: int,
+                d: ImageDraw.ImageDraw) -> list[str]:
+    """공백 단위 그리디 줄바꿈."""
+    lines: list[str] = []
+    cur = ""
+    for word in text.split():
+        cand = f"{cur} {word}".strip()
+        if cur and d.textlength(cand, font=font) > max_w:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def render_title_png(title: str, keyword: str, style: StylePreset, out: Path) -> Path:
+    W, H = style.canvas
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    font = ImageFont.truetype(str(style.title_font), style.title_size)
+    lines = _wrap_lines(title, font, max_w=W - 120, d=d)[:style.title_max_lines]
+    line_h = int(style.title_size * 1.25)
+    y0 = (style.top_bar - line_h * len(lines)) // 2
+    for i, line in enumerate(lines):
+        lw = int(d.textlength(line, font=font))
+        _draw_highlighted_line(d, ((W - lw) // 2, y0 + i * line_h), line,
+                               [keyword] if keyword else [], font,
+                               _hex_rgba(style.title_color),
+                               _hex_rgba(style.title_highlight))
+    img.save(out)
+    return out
+
+
+def render_watermark_png(style: StylePreset, out: Path) -> Path:
+    W, H = style.canvas
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    font = ImageFont.truetype(str(style.watermark_font), style.watermark_size)
+    tw = int(d.textlength(style.watermark_text, font=font))
+    y = H - style.bottom_bar + (style.bottom_bar - style.watermark_size) // 2
+    d.text(((W - tw) // 2, y), style.watermark_text, font=font,
+           fill=(255, 255, 255, 230))
+    img.save(out)
+    return out
+
+
+def render_subtitle_pngs(groups: list[list], keywords: list[str],
+                         style: StylePreset, out_dir: Path) -> list[Path]:
+    W, H = style.canvas
+    font = ImageFont.truetype(str(style.sub_font), style.sub_size)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pad_x, pad_y = 24, 12
+    paths: list[Path] = []
+    for i, (_a, _b, t) in enumerate(groups):
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        tw = int(d.textlength(t, font=font))
+        th = style.sub_size
+        x = (W - tw) // 2
+        # 영상 하단(하단 바 위 8%) — 예시 릴스의 자막 위치
+        y = H - style.bottom_bar - int(H * 0.08) - th
+        d.rectangle((x - pad_x, y - pad_y, x + tw + pad_x, y + th + pad_y),
+                    fill=(0, 0, 0, style.sub_box_alpha))
+        _draw_highlighted_line(d, (x, y), t, keywords, font,
+                               _hex_rgba(style.sub_color),
+                               _hex_rgba(style.sub_highlight))
+        p = out_dir / f"s{i:03d}.png"
+        img.save(p)
+        paths.append(p)
+    return paths
+
+
+def _probe_size(video_path: Path) -> tuple[int, int]:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
+         str(video_path)],
+        capture_output=True, text=True, check=True).stdout.strip()
+    w, h = out.split("x")[:2]
+    return int(w), int(h)
+
+
+def _ffmpeg(args: list[str]) -> None:
+    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *args],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg 실패:\n{r.stderr}")
+
+
+def render_reel(video_path: Path, segments: dict, edl_doc: dict, style: StylePreset,
+                out_path: Path, speed: float | None = None,
+                work_dir: Path | None = None) -> Path:
+    from reels_editor import edl as edl_mod
+    speed = speed if speed is not None else style.speed
+    ordered = edl_mod.ordered_segments(edl_doc, segments)
+    work = work_dir or Path(tempfile.mkdtemp(prefix="reels_render_"))
+    work.mkdir(parents=True, exist_ok=True)
+
+    # 1) 베이스: 컷+배속+크롭+pad
+    filt = build_base_filter(ordered, speed, style, _probe_size(video_path))
+    fpath = work / "base_filter.txt"
+    fpath.write_text(filt)
+    base = work / "base.mp4"
+    _ffmpeg(["-i", str(video_path), "-filter_complex_script", str(fpath),
+             "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast",
+             "-crf", "20", "-c:a", "aac", str(base)])
+
+    # 2) 텍스트 오버레이: 타이틀 + 워터마크(상시) + 자막(시간창)
+    title = edl_doc["title_candidates"][edl_doc.get("selected_title", 0)]
+    title_png = render_title_png(title["text"], title.get("keyword", ""), style,
+                                 work / "title.png")
+    wm_png = render_watermark_png(style, work / "wm.png")
+    items = [[a, b, apply_text_fixes(t, DEFAULT_TEXT_FIXES)]
+             for a, b, t in timeline_items(ordered, speed)]
+    groups = group_captions(items)
+    sub_paths = render_subtitle_pngs(groups, edl_doc.get("subtitle_keywords", []),
+                                     style, work / "subs")
+    filt2, last = build_overlay_filter(n_static=2, groups=groups)
+    args = ["-i", str(base), "-i", str(title_png), "-i", str(wm_png)]
+    for p in sub_paths:
+        args += ["-i", str(p)]
+    args += ["-filter_complex", filt2, "-map", last, "-map", "0:a",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+             "-c:a", "copy", str(out_path)]
+    _ffmpeg(args)
+    return out_path

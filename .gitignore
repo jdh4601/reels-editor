@@ -1,0 +1,12 @@
+# 미디어 원본·산출물은 커밋하지 않는다
+*.mov
+*.mp4
+*.MOV
+out/
+.reels/
+
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/

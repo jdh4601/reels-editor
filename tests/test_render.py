@@ -49,3 +49,9 @@ def test_build_overlay_filter_static_then_timed() -> None:
     assert "between(t,0.000,2.000)" in filt
     assert filt.count("overlay") == 4
     assert last == "[o3]"
+
+
+def test_split_by_keywords_ignores_empty_keyword() -> None:
+    # 빈 키워드는 무한 재귀 없이 무시되어야 한다
+    assert render.split_by_keywords("문장", ["", "문장"]) == [("문장", True)]
+    assert render.split_by_keywords("문장", [""]) == [("문장", False)]

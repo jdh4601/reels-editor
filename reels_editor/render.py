@@ -57,6 +57,8 @@ def group_captions(items: list[list], max_dur: float = 2.4,
 def split_by_keywords(text: str, keywords: list[str]) -> list[tuple[str, bool]]:
     """텍스트를 (조각, 강조여부) 시퀀스로 분리. 먼저 매칭되는 키워드 우선."""
     for kw in keywords:
+        if not kw:
+            continue
         i = text.find(kw)
         if i < 0:
             continue

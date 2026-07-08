@@ -1,5 +1,7 @@
 import json
 import threading
+import time
+import urllib.error
 import urllib.request
 
 from reels_editor import gate
@@ -48,3 +50,34 @@ def test_terminal_gate_revise(edl_doc: dict, segments: dict) -> None:
     d = gate.run_gate_terminal(edl_doc, segments, 30.0, 30,
                                input_fn=lambda _p: next(answers))
     assert d.action == "revise" and d.feedback == "훅을 더 강하게"
+
+
+def test_run_gate_ignores_malformed_post(edl_doc: dict, segments: dict) -> None:
+    html = gate.build_gate_html(edl_doc, segments, {}, 30.0, 30)
+    result: list[gate.GateDecision] = []
+
+    def serve() -> None:
+        result.append(gate.run_gate(html, open_browser=False, port=8767))
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    time.sleep(0.1)  # Let server start
+    bad = urllib.request.Request("http://127.0.0.1:8767/decision", data=b"not json",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(bad, timeout=5)
+    except urllib.error.HTTPError as e:
+        assert e.code == 400
+    body = json.dumps({"action": "approve", "title_index": 0, "feedback": ""}).encode()
+    req = urllib.request.Request("http://127.0.0.1:8767/decision", data=body,
+                                 headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req, timeout=5)
+    t.join(timeout=5)
+    assert result and result[0].action == "approve"
+
+
+def test_terminal_gate_reprompts_on_invalid_title(edl_doc: dict, segments: dict) -> None:
+    answers = iter(["abc", "9", "1", "y"])
+    d = gate.run_gate_terminal(edl_doc, segments, 30.0, 30,
+                               input_fn=lambda _p: next(answers))
+    assert d.action == "approve" and d.title_index == 0

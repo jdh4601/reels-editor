@@ -143,9 +143,16 @@ def run_gate(html: str, *, open_browser: bool = True, port: int = 0) -> GateDeci
             self.wfile.write(html.encode())
 
         def do_POST(self) -> None:  # noqa: N802
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            decision.append(GateDecision(body["action"], int(body["title_index"]),
-                                         body.get("feedback", "")))
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length))
+                d = GateDecision(body["action"], int(body["title_index"]),
+                                 body.get("feedback", ""))
+            except (TypeError, ValueError, KeyError):
+                self.send_response(400)
+                self.end_headers()
+                return
+            decision.append(d)
             self.send_response(200)
             self.end_headers()
             done.set()
@@ -165,6 +172,19 @@ def run_gate(html: str, *, open_browser: bool = True, port: int = 0) -> GateDeci
     return decision[0]
 
 
+def _ask_title_index(n: int, input_fn: Callable[[str], str]) -> int:
+    while True:
+        raw = input_fn("타이틀 번호 선택: ").strip() or "1"
+        try:
+            ti = int(raw) - 1
+        except ValueError:
+            print(f"1~{n} 사이 숫자를 입력하세요.")
+            continue
+        if 0 <= ti < n:
+            return ti
+        print(f"1~{n} 사이 숫자를 입력하세요.")
+
+
 def run_gate_terminal(edl_doc: dict, segments: dict, duration_s: float,
                       target_s: int,
                       input_fn: Callable[[str], str] = input) -> GateDecision:
@@ -176,7 +196,7 @@ def run_gate_terminal(edl_doc: dict, segments: dict, duration_s: float,
     for cut in edl_doc["cuts"]:
         text = " ".join(idx[sid]["text"] for sid in cut["seg_ids"] if sid in idx)
         print(f"  [{cut.get('beat', '?')}] {text}")
-    ti = int(input_fn("타이틀 번호 선택: ").strip() or "1") - 1
+    ti = _ask_title_index(len(edl_doc["title_candidates"]), input_fn)
     ans = input_fn("[y] 승인 / 그 외 입력 = 수정 요청: ").strip()
     if ans.lower() == "y":
         return GateDecision("approve", ti)

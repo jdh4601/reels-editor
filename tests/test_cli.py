@@ -44,3 +44,22 @@ def test_render_command_rerenders_workdir(tmp_path: Path, segments: dict,
     result = runner.invoke(cli.app, ["render", str(tmp_path)])
     assert result.exit_code == 0
     assert called["out"] == tmp_path / "reel.mp4"
+
+
+def test_render_command_clears_stale_cuts(tmp_path: Path, segments: dict,
+                                          edl_doc: dict, monkeypatch) -> None:
+    (tmp_path / "edl.json").write_text(json.dumps(edl_doc, ensure_ascii=False))
+    (tmp_path / "segments.json").write_text(json.dumps(segments, ensure_ascii=False))
+    stale = tmp_path / "cuts" / "999-옛컷.mp4"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"old")
+
+    def fake_render(video_path, segs, doc, style, out_path, **kw):
+        Path(out_path).write_bytes(b"")
+        return out_path
+
+    monkeypatch.setattr(cli.render, "render_reel", fake_render)
+    monkeypatch.setattr(cli.export, "export_cuts", lambda *a, **kw: [])
+    result = runner.invoke(cli.app, ["render", str(tmp_path)])
+    assert result.exit_code == 0
+    assert not stale.exists()  # 이전 실행의 컷은 정리되어야 한다

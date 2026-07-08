@@ -54,7 +54,11 @@ def _render_all(video: Path, segments: dict, edl_doc: dict, style: StylePreset,
         [a, b, render.apply_text_fixes(t, render.DEFAULT_TEXT_FIXES)]
         for a, b, t in render.timeline_items(ordered, speed)])
     export.write_srt(groups, work / "reel.srt")
-    export.export_cuts(video, edl_doc, segments, work / "cuts", speed)
+    cuts_dir = work / "cuts"
+    if cuts_dir.is_dir():
+        for old in cuts_dir.glob("*.mp4"):  # 이전 실행 잔존 컷이 새 EDL과 어긋나는 것 방지
+            old.unlink()
+    export.export_cuts(video, edl_doc, segments, cuts_dir, speed)
     typer.echo(f"✅ 완료: {work / 'reel.mp4'}")
     typer.echo(f"   수정용 재료: {work}/reel.srt, edl.json, cuts/")
 

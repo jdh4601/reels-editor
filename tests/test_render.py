@@ -42,6 +42,30 @@ def test_build_base_filter_has_pad_for_bars(edl_doc: dict, segments: dict) -> No
     assert f":0:{style.top_bar}" in f  # 영상이 top_bar 아래에 놓임
 
 
+def test_build_base_filter_content_crop_first(edl_doc: dict, segments: dict) -> None:
+    # 원본이 필러박스(가로 화면 속 세로 영상)면 콘텐츠 크롭 → 비율 크롭 순
+    style = load_style(STYLE)
+    ordered = edl.ordered_segments(edl_doc, segments)
+    f = render.build_base_filter(ordered, 1.2, style, in_size=(1920, 1080),
+                                 content_crop=(608, 1080, 656, 0))
+    vw, vh = style.video_area()
+    aspect = render._crop_expr(608, 1080, vw, vh)
+    assert f"crop=608:1080:656:0,{aspect}" in f
+
+
+def test_parse_cropdetect_picks_most_common() -> None:
+    lines = [
+        "[Parsed_cropdetect_0] x1:656 ... crop=608:1080:656:0",
+        "[Parsed_cropdetect_0] x1:656 ... crop=608:1080:656:0",
+        "[Parsed_cropdetect_0] x1:0 ... crop=1920:1080:0:0",
+    ]
+    assert render.parse_cropdetect(lines) == (608, 1080, 656, 0)
+
+
+def test_parse_cropdetect_empty_returns_none() -> None:
+    assert render.parse_cropdetect(["no crop info"]) is None
+
+
 def test_build_overlay_filter_static_then_timed() -> None:
     groups = [[0.0, 2.0, "안녕"], [2.0, 4.0, "하세요"]]
     filt, last = render.build_overlay_filter(n_static=2, groups=groups)

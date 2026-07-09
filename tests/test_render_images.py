@@ -28,6 +28,20 @@ def test_watermark_png_in_bottom_bar(tmp_path: Path) -> None:
     assert top.getbbox() is None  # 텍스트는 하단 바에만 존재
 
 
+def test_subtitle_position_mid_canvas(tmp_path: Path) -> None:
+    # 참고 릴스의 자막은 캔버스 높이 ~68% 지점(영상 영역 하단에서 15% 위)
+    style = load_style(STYLE)
+    (p,) = render.render_subtitle_pngs([[0.0, 2.0, "꿈이 있다면"]], [], style, tmp_path)
+    img = Image.open(p).convert("RGBA")
+    bbox = img.getbbox()
+    assert bbox is not None
+    _l, top, _r, bottom = bbox
+    _w, h = style.canvas
+    assert top >= style.top_bar
+    assert bottom <= h - style.bottom_bar
+    assert 0.66 <= (top + bottom) / 2 / h <= 0.71
+
+
 def test_subtitle_pngs_one_per_group(tmp_path: Path) -> None:
     style = load_style(STYLE)
     groups = [[0.0, 2.0, "일단 무조건 거부감을 가져요"], [2.0, 4.0, "보수적인 시장이고요"]]

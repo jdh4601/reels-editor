@@ -22,6 +22,14 @@ def test_video_area_excludes_bars() -> None:
     assert s.video_area() == (1080, 1920 - s.top_bar - s.bottom_bar)
 
 
+def test_video_area_near_square() -> None:
+    # 참고 릴스(examples/완성된릴스화면*.png) 측정값: w/h 0.83~0.88
+    s = load_style(STYLE)
+    w, h = s.video_area()
+    assert 0.80 <= w / h <= 0.95
+    assert s.sub_y_frac == 0.85
+
+
 def test_missing_font_raises(tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
     bad.write_text(STYLE.read_text().replace("Pretendard-ExtraBold", "없는폰트"),

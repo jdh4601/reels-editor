@@ -5,8 +5,10 @@ ffmpeg/Pillow 오케스트레이션(Task 5)을 분리한다.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -83,9 +85,29 @@ def _crop_expr(in_w: int, in_h: int, aspect_w: int, aspect_h: int) -> str:
     return f"crop={cw}:{ch}:{x}:{y}"
 
 
+def parse_cropdetect(lines: list[str]) -> tuple[int, int, int, int] | None:
+    """ffmpeg cropdetect 로그에서 최빈 crop=w:h:x:y를 (w,h,x,y)로 반환."""
+    found = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", "\n".join(lines))
+    if not found:
+        return None
+    w, h, x, y = Counter(found).most_common(1)[0][0]
+    return int(w), int(h), int(x), int(y)
+
+
+def detect_content_crop(video_path: Path, at_s: float,
+                        dur: float = 2.0) -> tuple[int, int, int, int] | None:
+    """원본의 레터/필러박스를 제외한 실제 콘텐츠 영역 탐지. 실패 시 None."""
+    r = subprocess.run(
+        ["ffmpeg", "-v", "info", "-ss", str(at_s), "-t", str(dur),
+         "-i", str(video_path), "-vf", "cropdetect=24:2:0", "-f", "null", "-"],
+        capture_output=True, text=True)
+    return parse_cropdetect(r.stderr.splitlines())
+
+
 def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
-                      in_size: tuple[int, int]) -> str:
-    """트림+배속+concat → 영상영역 크롭·스케일 → 캔버스 pad(상하 블랙바)."""
+                      in_size: tuple[int, int],
+                      content_crop: tuple[int, int, int, int] | None = None) -> str:
+    """트림+배속+concat → (콘텐츠 크롭) → 영상영역 크롭·스케일 → 캔버스 pad."""
     vw, vh = style.video_area()
     cw, ch = style.canvas
     parts: list[str] = []
@@ -96,7 +118,13 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
         parts.append(f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed}[v{i}];")
         parts.append(f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={speed}[a{i}];")
     concat = "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a];"
-    vid = (f"[vc]{_crop_expr(in_size[0], in_size[1], vw, vh)},scale={vw}:{vh},"
+    src_w, src_h = in_size
+    pre = ""
+    if content_crop:
+        c_w, c_h, c_x, c_y = content_crop
+        pre = f"crop={c_w}:{c_h}:{c_x}:{c_y},"
+        src_w, src_h = c_w, c_h
+    vid = (f"[vc]{pre}{_crop_expr(src_w, src_h, vw, vh)},scale={vw}:{vh},"
            f"pad={cw}:{ch}:0:{style.top_bar}:black[v]")
     return "".join(parts) + concat + vid
 
@@ -197,8 +225,9 @@ def render_subtitle_pngs(groups: list[list], keywords: list[str],
         tw = int(d.textlength(t, font=font))
         th = style.sub_size
         x = (W - tw) // 2
-        # 영상 하단(하단 바 위 8%) — 예시 릴스의 자막 위치
-        y = H - style.bottom_bar - int(H * 0.08) - th
+        # 예시 릴스의 자막 위치: 영상 영역 높이의 y_frac(기본 85%) 지점
+        _vw, vh = style.video_area()
+        y = style.top_bar + int(vh * style.sub_y_frac) - th
         d.rectangle((x - pad_x, y - pad_y, x + tw + pad_x, y + th + pad_y),
                     fill=(0, 0, 0, style.sub_box_alpha))
         _draw_highlighted_line(d, (x, y), t, keywords, font,
@@ -237,7 +266,10 @@ def render_reel(video_path: Path, segments: dict, edl_doc: dict, style: StylePre
     work.mkdir(parents=True, exist_ok=True)
 
     # 1) 베이스: 컷+배속+크롭+pad
-    filt = build_base_filter(ordered, speed, style, _probe_size(video_path))
+    # 콘텐츠 크롭은 첫 세그먼트 시점 기준(v0: 컷 전체가 같은 레이아웃 가정)
+    content = detect_content_crop(video_path, ordered[0]["source_start_us"] / US)
+    filt = build_base_filter(ordered, speed, style, _probe_size(video_path),
+                             content_crop=content)
     fpath = work / "base_filter.txt"
     fpath.write_text(filt)
     base = work / "base.mp4"

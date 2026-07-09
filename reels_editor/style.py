@@ -22,6 +22,7 @@ class StylePreset:
     sub_color: str
     sub_highlight: str
     sub_box_alpha: int
+    sub_y_frac: float
     watermark_text: str
     watermark_font: Path
     watermark_size: int
@@ -52,7 +53,7 @@ def load_style(path: Path) -> StylePreset:
         title_max_lines=t["max_lines"],
         sub_font=_font(font_dir, s["font"]), sub_size=s["size"],
         sub_color=s["color"], sub_highlight=s["highlight"],
-        sub_box_alpha=s["box_alpha"],
+        sub_box_alpha=s["box_alpha"], sub_y_frac=float(s["y_frac"]),
         watermark_text=w["text"], watermark_font=_font(font_dir, w["font"]),
         watermark_size=w["size"],
         speed=float(raw["speed"]),

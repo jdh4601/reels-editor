@@ -1,11 +1,16 @@
 """config 3단 병합: 파일 없음 기본값 / 부분 오버라이드 / 스타일 병합 / 저장 왕복."""
 import dataclasses
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from reels_editor import config as config_mod
-from reels_editor.config import AppConfig, load_config, merged_style, save_config
+from reels_editor.config import (
+    AppConfig, load_config, merged_style, save_config,
+    KEY_ENV_VARS, mask_key, resolve_api_key, save_credential,
+)
 
 
 def test_load_config_missing_file_returns_defaults(tmp_path: Path) -> None:
@@ -50,3 +55,27 @@ def test_merged_style_applies_known_keys(style_preset) -> None:
 def test_merged_style_ignores_unknown_keys(style_preset) -> None:
     merged = merged_style(style_preset, {"nonsense": 1})
     assert merged == style_preset
+
+
+def test_mask_key() -> None:
+    assert mask_key("sk-proj-abcdefgh1234") == "sk-…1234"
+    assert mask_key("short") == "…"          # 8자 이하는 전부 가림
+
+
+def test_save_credential_sets_0600(tmp_path: Path) -> None:
+    p = tmp_path / "credentials.yaml"
+    save_credential("openai", "sk-test-key", p)
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert resolve_api_key("openai", p) == "sk-test-key"
+
+
+def test_resolve_api_key_env_wins(tmp_path: Path, monkeypatch) -> None:
+    p = tmp_path / "credentials.yaml"
+    save_credential("openai", "sk-file", p)
+    monkeypatch.setenv(KEY_ENV_VARS["openai"], "sk-env")
+    assert resolve_api_key("openai", p) == "sk-env"
+
+
+def test_resolve_api_key_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv(KEY_ENV_VARS["kimi"], raising=False)
+    assert resolve_api_key("kimi", tmp_path / "none.yaml") is None

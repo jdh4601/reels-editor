@@ -73,3 +73,39 @@ def save_config(cfg: AppConfig, path: Path | None = None) -> Path:
 def merged_style(preset: StylePreset, overrides: dict[str, Any]) -> StylePreset:
     known = {k: v for k, v in overrides.items() if k in STYLE_OVERRIDE_KEYS}
     return dataclasses.replace(preset, **known) if known else preset
+
+
+KEY_ENV_VARS = {"openai": "OPENAI_API_KEY", "kimi": "MOONSHOT_API_KEY",
+                "custom": "REELS_LLM_API_KEY"}
+
+
+def credentials_path() -> Path:
+    return user_config_path().parent / "credentials.yaml"
+
+
+def mask_key(key: str) -> str:
+    prefix = key.split("-", 1)[0]
+    return f"{prefix}-…{key[-4:]}" if len(key) > 8 else "…"
+
+
+def save_credential(provider: str, key: str, path: Path | None = None) -> Path:
+    p = path or credentials_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    if p.is_file():
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    data[provider] = key
+    p.write_text(yaml.safe_dump(data), encoding="utf-8")
+    p.chmod(0o600)
+    return p
+
+
+def resolve_api_key(provider: str, path: Path | None = None) -> str | None:
+    env = KEY_ENV_VARS.get(provider)
+    if env and os.environ.get(env):
+        return os.environ[env]
+    p = path or credentials_path()
+    if p.is_file():
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        return data.get(provider)
+    return None

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from reels_editor import storyteller
-from reels_editor.storyteller import ANGLES, build_prompt
+from reels_editor.storyteller import ANGLES, StorylineResult, build_prompt, generate_many
 
 
 def test_angles_has_three_named_hints() -> None:
@@ -82,3 +82,52 @@ def test_generate_script_dumps_raw_on_final_failure(segments: dict, tmp_path: Pa
         storyteller.generate_script(
             segments, runner=lambda _p: "JSON 없음", raw_dump=dump)
     assert dump.read_text(encoding="utf-8") == "JSON 없음"
+
+
+def _ok_doc(segments):
+    sid = segments["segments"][0]["id"]
+    return {"story": {"five_lines": {}, "lens": "l"},
+            "title_candidates": [{"text": "t", "keyword": "t"}],
+            "subtitle_keywords": [],
+            "cuts": [{"beat": "훅", "seg_ids": [sid]}]}
+
+
+def test_generate_many_runs_in_parallel(segments: dict) -> None:
+    import threading
+    barrier = threading.Barrier(3, timeout=5)   # 3개가 동시에 도달해야 통과
+
+    def runner(prompt: str) -> str:
+        barrier.wait()
+        return json.dumps(_ok_doc(segments), ensure_ascii=False)
+
+    results = storyteller.generate_many(segments, 3, runner=runner)
+    assert [r.index for r in results] == [0, 1, 2]
+    assert all(r.doc is not None and r.error is None for r in results)
+    assert results[0].angle_name == "정면승부형"
+
+
+def test_generate_many_isolates_failure(segments: dict) -> None:
+    import threading
+    calls = {"n": 0}
+    lock = threading.Lock()
+
+    def runner(prompt: str) -> str:
+        with lock:
+            calls["n"] += 1
+            mine = calls["n"]
+        if "반전" in prompt:                # 두 번째 각도만 항상 실패
+            raise RuntimeError("boom")
+        return json.dumps(_ok_doc(segments), ensure_ascii=False)
+
+    results = storyteller.generate_many(segments, 3, runner=runner)
+    assert results[0].doc is not None
+    assert results[1].doc is None and "boom" in results[1].error
+    assert results[2].doc is not None
+
+
+def test_generate_many_only_indices(segments: dict) -> None:
+    def runner(prompt: str) -> str:
+        return json.dumps(_ok_doc(segments), ensure_ascii=False)
+
+    results = storyteller.generate_many(segments, 3, runner=runner, only_indices=[2])
+    assert [r.index for r in results] == [2]

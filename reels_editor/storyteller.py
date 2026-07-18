@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -87,3 +89,34 @@ def generate_script(segments: dict, duration_s: int = 30,
         raw_dump.write_text(last_raw, encoding="utf-8")
         hint = f" (원문 응답 저장됨: {raw_dump})"
     raise RuntimeError(f"대본 생성 3회 실패{hint} — 마지막 응답:\n" + last_raw[:2000])
+
+
+@dataclass(frozen=True)
+class StorylineResult:
+    """병렬 생성 결과 하나."""
+    index: int
+    angle_name: str
+    doc: dict | None
+    error: str | None = None
+
+
+def generate_many(segments: dict, n: int, duration_s: int = 30, *,
+                  runner: Callable[[str], str] | None = None,
+                  raw_dump_dir: Path | None = None,
+                  feedback: str | None = None,
+                  only_indices: list[int] | None = None) -> list[StorylineResult]:
+    """스토리라인 n개를 병렬 생성. 개별 실패는 error로 담고 나머지는 살린다."""
+    indices = only_indices if only_indices is not None else list(range(n))
+
+    def one(i: int) -> StorylineResult:
+        name, hint = ANGLES[i % len(ANGLES)]
+        dump = (raw_dump_dir / f"llm_raw_s{i + 1}.txt") if raw_dump_dir else None
+        try:
+            doc = generate_script(segments, duration_s, feedback,
+                                  runner=runner, raw_dump=dump, angle=hint)
+            return StorylineResult(i, name, doc)
+        except RuntimeError as e:
+            return StorylineResult(i, name, None, str(e))
+
+    with ThreadPoolExecutor(max_workers=max(len(indices), 1)) as ex:
+        return list(ex.map(one, indices))

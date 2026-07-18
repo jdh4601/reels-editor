@@ -79,3 +79,9 @@ def test_split_by_keywords_ignores_empty_keyword() -> None:
     # 빈 키워드는 무한 재귀 없이 무시되어야 한다
     assert render.split_by_keywords("문장", ["", "문장"]) == [("문장", True)]
     assert render.split_by_keywords("문장", [""]) == [("문장", False)]
+
+
+def test_parse_progress_line() -> None:
+    assert render.parse_progress_line("out_time_us=1500000") == 1.5
+    assert render.parse_progress_line("frame=42") is None
+    assert render.parse_progress_line("out_time_us=N/A") is None

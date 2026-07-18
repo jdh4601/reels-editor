@@ -4,6 +4,24 @@ from pathlib import Path
 import pytest
 
 from reels_editor import storyteller
+from reels_editor.storyteller import ANGLES, build_prompt
+
+
+def test_angles_has_three_named_hints() -> None:
+    assert len(ANGLES) == 3
+    names = [n for n, _ in ANGLES]
+    assert names == ["정면승부형", "반전형", "감정선형"]
+
+
+def test_build_prompt_injects_angle(segments: dict) -> None:
+    name, hint = ANGLES[1]
+    p = build_prompt(segments, 30, None, angle=hint)
+    assert hint in p
+
+
+def test_build_prompt_without_angle_has_no_block(segments: dict) -> None:
+    p = build_prompt(segments, 30, None)
+    assert "{angle_block}" not in p     # 플레이스홀더 잔존 금지
 
 
 def test_build_prompt_lists_segments_and_budget(segments: dict) -> None:

@@ -12,6 +12,12 @@ PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "storytelling-30s.md"
 DEFAULT_SPEED = 1.2
 MAX_RETRIES = 2
 
+ANGLES: list[tuple[str, str]] = [
+    ("정면승부형", "주제를 정면으로 드러내는 각도 — 훅부터 핵심 사건을 직진으로 전개한다."),
+    ("반전형", "예상을 뒤집는 각도 — 통념/실패를 먼저 세우고 반전 문장을 축으로 전개한다."),
+    ("감정선형", "감정의 흐름 각도 — 불안·좌절·확신 같은 감정 변화 문장을 축으로 전개한다."),
+]
+
 _SCHEMA = json.dumps({
     "story": {"five_lines": {"situation": "…", "desire": "…", "conflict": "…",
                              "change": "…", "result": "…"}, "lens": "…"},
@@ -21,17 +27,20 @@ _SCHEMA = json.dumps({
 }, ensure_ascii=False, indent=2)
 
 
-def build_prompt(segments: dict, duration_s: int, feedback: str | None) -> str:
+def build_prompt(segments: dict, duration_s: int, feedback: str | None,
+                 angle: str | None = None) -> str:
     template = PROMPT_PATH.read_text(encoding="utf-8")
     listing = "\n".join(f"- {s['id']}: {s['text']}" for s in segments["segments"])
     fb = f"\n## 수정 피드백 (반드시 반영)\n{feedback}\n" if feedback else ""
+    ab = f"\n## 스토리 각도 (이 각도로만)\n{angle}\n" if angle else ""
     return (template
             .replace("{speed}", str(DEFAULT_SPEED))
             .replace("{duration_s}", str(duration_s))
             .replace("{source_budget_s}", str(round(duration_s * DEFAULT_SPEED)))
             .replace("{schema}", _SCHEMA)
             .replace("{segments_listing}", listing)
-            .replace("{feedback_block}", fb))
+            .replace("{feedback_block}", fb)
+            .replace("{angle_block}", ab))
 
 
 def extract_json(text: str) -> dict:
@@ -55,11 +64,12 @@ def _run_claude(prompt: str) -> str:
 def generate_script(segments: dict, duration_s: int = 30,
                     feedback: str | None = None, *,
                     runner: Callable[[str], str] | None = None,
-                    raw_dump: Path | None = None) -> dict:
+                    raw_dump: Path | None = None,
+                    angle: str | None = None) -> dict:
     run = runner or _run_claude
     last_raw = ""
     for _attempt in range(1 + MAX_RETRIES):
-        last_raw = run(build_prompt(segments, duration_s, feedback))
+        last_raw = run(build_prompt(segments, duration_s, feedback, angle))
         try:
             doc = extract_json(last_raw)
         except ValueError as e:

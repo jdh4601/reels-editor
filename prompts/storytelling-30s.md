@@ -22,6 +22,7 @@
    약 {source_budget_s}초가 되도록 문장을 고른다.
 7. subtitle_keywords: 자막에서 레드로 강조할 단어 3~6개 (원문에 실제 등장하는 단어만).
 
+{angle_block}
 ## 출력
 설명 없이 아래 JSON 하나만 출력한다:
 {schema}

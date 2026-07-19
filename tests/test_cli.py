@@ -305,6 +305,35 @@ def test_render_combos_clears_stale_cuts_dir(
 
 
 # ---------------------------------------------------------------------------
+# _validate_combos — 브라우저 게이트(parse_decision)는 combos를 검증하지 않으므로
+# 터미널 경로(gate.parse_combo_selection)와 동일한 규칙을 cli.py 쪽에서 강제한다.
+# ---------------------------------------------------------------------------
+
+def test_validate_combos_rejects_unknown_storyline_and_out_of_range_title() -> None:
+    storylines = [StorylineResult(0, "a", _fake_doc(0))]
+    valid, rejected = cli._validate_combos([(0, 0), (5, 0), (0, 9)], storylines)
+    assert valid == [(0, 0)]
+    assert any("스토리라인 6" in m for m in rejected)
+    assert any("타이틀 10" in m for m in rejected)
+
+
+def test_validate_combos_skips_failed_storylines() -> None:
+    storylines = [StorylineResult(0, "a", None, "생성 실패"),
+                 StorylineResult(1, "b", _fake_doc(1))]
+    valid, rejected = cli._validate_combos([(0, 0), (1, 0)], storylines)
+    assert valid == [(1, 0)]
+    assert any("스토리라인 1 없음" in m for m in rejected)
+
+
+def test_validate_combos_dedupes_preserving_order() -> None:
+    storylines = [StorylineResult(0, "a", _fake_doc(0))]
+    valid, rejected = cli._validate_combos(
+        [(0, 1), (0, 0), (0, 1), (0, 0)], storylines)
+    assert valid == [(0, 1), (0, 0)]     # 최초 등장 순서 유지, 중복은 제거
+    assert rejected == []
+
+
+# ---------------------------------------------------------------------------
 # preview_fn — /preview 실패 경로가 원본 예외(잠재적 키 포함)를 흘리지 않는지
 # ---------------------------------------------------------------------------
 
@@ -463,6 +492,130 @@ def test_make_exits_nonzero_when_any_output_failed(
                                     "--out", str(out_dir),
                                     "--config", str(config_path)])
     assert result.exit_code == 1
+
+
+def test_make_reopens_gate_on_invalid_settings_without_losing_storylines(
+        tmp_path: Path, segments: dict, monkeypatch) -> None:
+    """게이트 POST의 settings는 config._validate가 ValueError로 거부할 수 있는
+    시스템 경계값이다 — out-of-range n_storylines가 와도 raw traceback 없이
+    Korean 메시지로 게이트를 다시 열고, 이미 생성된 스토리라인은 재사용해야 한다."""
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text("provider: openai\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    _wire_common_mocks(monkeypatch, tmp_path, segments)
+
+    gen_calls: list = []
+
+    def fake_generate_many(segs, n, duration_s, *, runner, raw_dump_dir,
+                           feedback, only_indices):
+        gen_calls.append(only_indices)
+        indices = only_indices if only_indices is not None else list(range(n))
+        return [StorylineResult(i, f"angle{i}", _fake_doc(i)) for i in indices]
+
+    monkeypatch.setattr(cli, "generate_many", fake_generate_many)
+
+    decisions = [
+        # n_storylines=99는 config.MAX_STORYLINES(3)를 벗어남 — save_config가
+        # ValueError를 던져야 한다.
+        gate.MultiGateDecision("render", [(0, 0)], [], "", {"n_storylines": "99"}),
+        gate.MultiGateDecision("render", [(0, 0)], [], "", {}),
+    ]
+    gate_calls = {"n": 0}
+
+    def fake_gate_terminal(storylines, segs, durations, target_s):
+        d = decisions[gate_calls["n"]]
+        gate_calls["n"] += 1
+        return d
+
+    monkeypatch.setattr(cli.gate, "run_gate_terminal_v2", fake_gate_terminal)
+    monkeypatch.setattr(
+        cli, "render_combos",
+        lambda video, segs, storylines, combos, style, work, speed, progress=None:
+            [{"storyline": 1, "title_index": 1, "title": "타이틀0-1",
+              "file": "s1/reel-t1.mp4", "error": None}])
+
+    result = runner.invoke(cli.app, ["make", "무엇이든", "--no-ui",
+                                    "--out", str(out_dir),
+                                    "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert result.exception is None                  # ValueError가 흘러나오지 않음
+    assert "설정 오류" in result.output
+    assert gen_calls == [None, []]                    # 두 번째 라운드는 재생성 없음(작업 보존)
+    assert gate_calls["n"] == 2                       # 게이트가 다시 열림
+
+    new_cfg = load_config(config_path)
+    assert new_cfg.n_storylines == 3                  # 잘못된 값은 저장되지 않음
+
+
+def test_make_rejects_invalid_combos_and_dedupes_valid_ones(
+        tmp_path: Path, segments: dict, monkeypatch) -> None:
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text("provider: openai\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    _wire_common_mocks(monkeypatch, tmp_path, segments)
+    monkeypatch.setattr(
+        cli, "generate_many",
+        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices:
+            [StorylineResult(0, "angle0", _fake_doc(0))])
+    monkeypatch.setattr(
+        cli.gate, "run_gate_terminal_v2",
+        lambda storylines, segs, durations, target_s:
+            gate.MultiGateDecision(
+                "render", [(0, 0), (0, 0), (5, 0), (0, 9)], [], "", {}))
+
+    render_calls: dict = {}
+
+    def fake_render_combos(video, segs, storylines, combos, style, work, speed,
+                           progress=None):
+        render_calls["combos"] = combos
+        return [{"storyline": 1, "title_index": 1, "title": "타이틀0-1",
+                 "file": "s1/reel-t1.mp4", "error": None}]
+
+    monkeypatch.setattr(cli, "render_combos", fake_render_combos)
+
+    result = runner.invoke(cli.app, ["make", "무엇이든", "--no-ui",
+                                    "--storylines", "1",
+                                    "--out", str(out_dir),
+                                    "--config", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    assert render_calls["combos"] == [(0, 0)]          # 중복+오류 조합 배제 후 1개만 렌더
+    assert "스토리라인 6 없음" in result.output
+    assert "타이틀 10 없음" in result.output
+
+
+def test_make_exits_when_all_combos_invalid(
+        tmp_path: Path, segments: dict, monkeypatch) -> None:
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text("provider: openai\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    _wire_common_mocks(monkeypatch, tmp_path, segments)
+    monkeypatch.setattr(
+        cli, "generate_many",
+        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices:
+            [StorylineResult(0, "angle0", _fake_doc(0))])
+    monkeypatch.setattr(
+        cli.gate, "run_gate_terminal_v2",
+        lambda storylines, segs, durations, target_s:
+            gate.MultiGateDecision("render", [(5, 0)], [], "", {}))
+
+    render_calls = {"called": False}
+    monkeypatch.setattr(
+        cli, "render_combos",
+        lambda *a, **kw: render_calls.__setitem__("called", True) or [])
+
+    result = runner.invoke(cli.app, ["make", "무엇이든", "--no-ui",
+                                    "--storylines", "1",
+                                    "--out", str(out_dir),
+                                    "--config", str(config_path)])
+
+    assert result.exit_code == 1
+    assert "유효한 조합이 없습니다" in result.output
+    assert render_calls["called"] is False
 
 
 def test_make_exits_when_all_storylines_fail_generation(

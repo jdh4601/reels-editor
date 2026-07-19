@@ -171,6 +171,43 @@ def render_combos(video: Path, segments: dict,
     return outputs
 
 
+def _validate_combos(combos: list[tuple[int, int]],
+                     storylines: list[StorylineResult]
+                     ) -> tuple[list[tuple[int, int]], list[str]]:
+    """게이트 POST가 보낸 combos는 신뢰하지 않는다 — 터미널 경로(gate.parse_combo_selection)와
+    동일한 규칙으로 검증해, 실패한 스토리라인이나 범위 밖 타이틀 인덱스가 render_combos의
+    KeyError/IndexError로 이어지지 않게 걸러낸다. 중복 조합은 최초 등장 순서만 남긴다."""
+    by_index = {r.index: r for r in storylines if r.doc is not None}
+    valid: list[tuple[int, int]] = []
+    rejected: list[str] = []
+    seen: set[tuple[int, int]] = set()
+    for si, ti in combos:
+        if (si, ti) in seen:
+            continue
+        if si not in by_index:
+            rejected.append(f"스토리라인 {si + 1} 없음")
+            continue
+        titles = by_index[si].doc["title_candidates"]
+        if not 0 <= ti < len(titles):
+            rejected.append(f"타이틀 {ti + 1} 없음 (스토리라인 {si + 1})")
+            continue
+        seen.add((si, ti))
+        valid.append((si, ti))
+    return valid, rejected
+
+
+def _report_outputs(work: Path, cfg: AppConfig, outputs: list[dict]) -> None:
+    """manifest 기록 + 콘솔 리포트. 실패한 출력이 하나라도 있으면 typer.Exit(1)."""
+    write_manifest(work, cfg, outputs)
+    for o in outputs:
+        mark = "[green]✅[/]" if not o["error"] else f"[red]✗ {o['error']}[/]"
+        target = o["file"] or f"s{o['storyline']}/reel-t{o['title_index']}.mp4"
+        console.print(f"{mark} {target} — {o['title']}")
+    console.print(f"📄 manifest: {work}/manifest.json")
+    if any(o["error"] for o in outputs):
+        raise typer.Exit(1)
+
+
 def _key_status(cfg: AppConfig) -> dict[str, str]:
     status = {}
     for p in ("openai", "kimi", "custom"):
@@ -211,33 +248,19 @@ def _make_preview_fn(work: Path, video: Path, preset: StylePreset,
     return preview_fn
 
 
-@app.command()
-def make(project: str,
-         speed: float = typer.Option(None, help="배속 (기본: 스타일 프리셋)"),
-         duration: int = typer.Option(30, help="목표 길이(초)"),
-         style: Path = typer.Option(DEFAULT_STYLE, help="스타일 yaml"),
-         storylines: int = typer.Option(None, help="스토리라인 개수 (기본: 설정)"),
-         no_ui: bool = typer.Option(False, "--no-ui", help="터미널 게이트 사용"),
-         out: Path = typer.Option(Path("out"), help="산출물 루트"),
-         config: Path = typer.Option(
-             None, "--config", help="설정 파일 경로 (테스트용 — 미지정 시 사용자 기본 경로)"
-         )) -> None:
-    """CapCut 프로젝트 → 다중 스토리라인 게이트 → 조합별 릴스."""
-    _fail_if_problems(preflight(project, style))
-    cfg = load_config(config)
-    _fail_if_problems(_preflight_provider(cfg))
-    creds_path = (config.parent / "credentials.yaml") if config is not None else None
-    if storylines is not None:
-        cfg = dataclasses.replace(cfg, n_storylines=storylines)
-    preset = merged_style(load_style(style), cfg.style)
-    spd = speed if speed is not None else preset.speed
-    pdir = capcut.find_project(project)
-    segments = capcut.build_segments(capcut.load_project(pdir))
-    video = Path(segments["video_path"])
-    work = out / f"{pdir.name}-{dt.date.today():%Y%m%d}"
-    work.mkdir(parents=True, exist_ok=True)
-    console.print(f"[green]✓[/] 자막 {len(segments['segments'])}개 로드")
+def _review_until_render(cfg: AppConfig, segments: dict, duration: int, work: Path,
+                         video: Path, preset: StylePreset, spd: float,
+                         speed_opt: float | None, no_ui: bool, style: Path,
+                         config: Path | None, creds_path: Path | None
+                         ) -> tuple["gate.MultiGateDecision", AppConfig, StylePreset,
+                                    float, list[StorylineResult]]:
+    """대본 생성 → 게이트 표시를 action == "render"가 나올 때까지 반복.
 
+    게이트 POST의 settings는 config._validate에서 ValueError로 거부될 수 있는
+    시스템 경계값이다 — 이미 LLM 생성을 기다린 뒤이므로, 잘못된 값 하나 때문에
+    그 작업을 버리고 abort하는 대신 재생성 없이(todo=[]) 게이트를 다시 열어
+    사용자가 값을 고쳐 재제출하게 한다.
+    """
     results: dict[int, StorylineResult] = {}
     feedback: str | None = None
     todo: list[int] | None = None      # None = 전체 생성
@@ -272,27 +295,63 @@ def make(project: str,
             console.print("⏳ 브라우저에서 검토를 완료하세요…")
             decision = gate.run_gate_v2(html, preview_fn)
         if decision.settings:
-            cfg = apply_gate_settings(decision.settings, cfg, config, creds_path)
+            try:
+                cfg = apply_gate_settings(decision.settings, cfg, config, creds_path)
+            except ValueError as e:
+                console.print(f"[red]✗ 설정 오류:[/] {e} — 값을 고쳐 다시 제출하세요.")
+                feedback, todo = None, []
+                continue
             preset = merged_style(load_style(style), cfg.style)
-            spd = speed if speed is not None else preset.speed
+            spd = speed_opt if speed_opt is not None else preset.speed
         if decision.action == "render":
-            break
+            return decision, cfg, preset, spd, alive
         feedback = decision.feedback or None
         todo = decision.regen
 
+
+@app.command()
+def make(project: str,
+         speed: float = typer.Option(None, help="배속 (기본: 스타일 프리셋)"),
+         duration: int = typer.Option(30, help="목표 길이(초)"),
+         style: Path = typer.Option(DEFAULT_STYLE, help="스타일 yaml"),
+         storylines: int = typer.Option(None, help="스토리라인 개수 (기본: 설정)"),
+         no_ui: bool = typer.Option(False, "--no-ui", help="터미널 게이트 사용"),
+         out: Path = typer.Option(Path("out"), help="산출물 루트"),
+         config: Path = typer.Option(
+             None, "--config", help="설정 파일 경로 (테스트용 — 미지정 시 사용자 기본 경로)"
+         )) -> None:
+    """CapCut 프로젝트 → 다중 스토리라인 게이트 → 조합별 릴스."""
+    _fail_if_problems(preflight(project, style))
+    cfg = load_config(config)
+    _fail_if_problems(_preflight_provider(cfg))
+    creds_path = (config.parent / "credentials.yaml") if config is not None else None
+    if storylines is not None:
+        cfg = dataclasses.replace(cfg, n_storylines=storylines)
+    preset = merged_style(load_style(style), cfg.style)
+    spd = speed if speed is not None else preset.speed
+    pdir = capcut.find_project(project)
+    segments = capcut.build_segments(capcut.load_project(pdir))
+    video = Path(segments["video_path"])
+    work = out / f"{pdir.name}-{dt.date.today():%Y%m%d}"
+    work.mkdir(parents=True, exist_ok=True)
+    console.print(f"[green]✓[/] 자막 {len(segments['segments'])}개 로드")
+
+    decision, cfg, preset, spd, alive = _review_until_render(
+        cfg, segments, duration, work, video, preset, spd, speed,
+        no_ui, style, config, creds_path)
+
+    combos, rejected = _validate_combos(decision.combos, alive)
+    for msg in rejected:
+        console.print(f"[red]✗ 조합 거부:[/] {msg}")
+    if not combos:
+        console.print("[red]✗ 렌더할 유효한 조합이 없습니다[/]")
+        raise typer.Exit(1)
+
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
                   BarColumn(), console=console) as progress:
-        outputs = render_combos(video, segments, alive, decision.combos,
+        outputs = render_combos(video, segments, alive, combos,
                                 preset, work, spd, progress)
-    write_manifest(work, cfg, outputs)
-    failed = [o for o in outputs if o["error"]]
-    for o in outputs:
-        mark = "[green]✅[/]" if not o["error"] else f"[red]✗ {o['error']}[/]"
-        target = o["file"] or f"s{o['storyline']}/reel-t{o['title_index']}.mp4"
-        console.print(f"{mark} {target} — {o['title']}")
-    console.print(f"📄 manifest: {work}/manifest.json")
-    if failed:
-        raise typer.Exit(1)
+    _report_outputs(work, cfg, outputs)
 
 
 @app.command("render")

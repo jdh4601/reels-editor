@@ -44,7 +44,7 @@ def test_preflight_ok_without_project() -> None:
     assert cli.preflight(None, STYLE) == []
 
 
-def test_preflight_provider_requires_claude_binary_only_for_claude_cli(monkeypatch) -> None:
+def test_preflight_provider_requires_matching_cli_binary(monkeypatch) -> None:
     real_which = cli.shutil.which
 
     def fake_which(name: str):
@@ -54,6 +54,13 @@ def test_preflight_provider_requires_claude_binary_only_for_claude_cli(monkeypat
     problems = cli._preflight_provider(AppConfig(provider="claude-cli"))
     assert any("claude" in p for p in problems)
     assert cli._preflight_provider(AppConfig(provider="openai")) == []
+
+    def fake_codex_which(name: str):
+        return None if name == "codex" else real_which(name)
+
+    monkeypatch.setattr(cli.shutil, "which", fake_codex_which)
+    problems = cli._preflight_provider(AppConfig(provider="codex-cli"))
+    assert any("codex" in p for p in problems)
 
 
 def test_make_fails_fast_on_missing_project() -> None:

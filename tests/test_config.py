@@ -30,6 +30,14 @@ def test_load_config_partial_override(tmp_path: Path) -> None:
     assert cfg.style == {"sub_size": 52}
 
 
+def test_load_config_accepts_codex_cli_provider(tmp_path: Path) -> None:
+    p = tmp_path / "config.yaml"
+    p.write_text("provider: codex-cli\nmodel: gpt-5.6-sol\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.provider == "codex-cli"
+    assert cfg.model == "gpt-5.6-sol"
+
+
 def test_load_config_rejects_bad_values(tmp_path: Path) -> None:
     p = tmp_path / "config.yaml"
     p.write_text("n_storylines: 9\n", encoding="utf-8")

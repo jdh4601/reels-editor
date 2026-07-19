@@ -52,10 +52,11 @@ def preflight(project: str | None, style_path: Path) -> list[str]:
 
 
 def _preflight_provider(cfg: AppConfig) -> list[str]:
-    """claude-cli 프로바이더는 로컬 바이너리가 필요 — 그 외 프로바이더는 llm.build_runner
-    시점의 API 키 오류로 충분하므로 여기서는 claude-cli만 검사한다."""
+    """CLI 프로바이더는 대응 로컬 바이너리가 필요하다."""
     if cfg.provider == "claude-cli" and not shutil.which("claude"):
         return ["claude 없음 — Claude Code CLI 설치 또는 게이트에서 프로바이더 변경"]
+    if cfg.provider == "codex-cli" and not shutil.which("codex"):
+        return ["codex 없음 — OpenAI Codex CLI 설치 또는 게이트에서 프로바이더 변경"]
     return []
 
 

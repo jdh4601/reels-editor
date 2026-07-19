@@ -67,7 +67,23 @@ python3 -m venv .venv
 claude --version
 ```
 
-Claude Code CLI 대신 OpenAI를 사용하려면 API 키와 설정 파일을 먼저 만듭니다.
+OpenAI Codex CLI를 사용하려면 먼저 로그인합니다.
+
+```bash
+codex login
+mkdir -p ~/.config/reels-editor
+```
+
+`~/.config/reels-editor/config.yaml` 파일을 다음과 같이 만듭니다.
+
+```yaml
+provider: codex-cli
+model: gpt-5.6-sol
+n_storylines: 3
+style: {}
+```
+
+Codex CLI 대신 OpenAI API를 직접 사용하려면 API 키와 설정 파일을 준비합니다.
 
 ```bash
 export OPENAI_API_KEY="sk-여기에-키를-입력"
@@ -88,6 +104,7 @@ style: {}
 | 프로바이더 | `provider` 값 | API 키 환경변수 |
 | --- | --- | --- |
 | Claude Code CLI | `claude-cli` | 필요 없음 |
+| OpenAI Codex CLI | `codex-cli` | Codex CLI 로그인 사용 |
 | OpenAI | `openai` | `OPENAI_API_KEY` |
 | Kimi | `kimi` | `MOONSHOT_API_KEY` |
 | OpenAI 호환 서버 | `custom` | `REELS_LLM_API_KEY` |

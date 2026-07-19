@@ -7,7 +7,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from reels_editor.config import AppConfig
-from reels_editor.llm import PROVIDER_DEFAULTS, build_runner, claude_cli_args
+from reels_editor.llm import (
+    PROVIDER_DEFAULTS, build_runner, claude_cli_args, codex_cli_args,
+)
 from reels_editor.llm_http import openai_chat_runner
 
 
@@ -17,6 +19,21 @@ def test_claude_cli_args_default_model() -> None:
 
 def test_claude_cli_args_with_model() -> None:
     assert claude_cli_args("opus") == ["claude", "-p", "--model", "opus"]
+
+
+def test_codex_cli_args_are_ephemeral_and_read_only() -> None:
+    args = codex_cli_args("")
+    assert args[:2] == ["codex", "exec"]
+    assert "--ephemeral" in args
+    assert "--skip-git-repo-check" in args
+    assert args[args.index("--sandbox") + 1] == "read-only"
+    assert "--ignore-user-config" in args
+    assert "--ignore-rules" in args
+
+
+def test_codex_cli_args_with_model() -> None:
+    args = codex_cli_args("gpt-5.6-sol")
+    assert args[-2:] == ["--model", "gpt-5.6-sol"]
 
 
 def test_build_runner_openai_without_key_raises(tmp_path, monkeypatch) -> None:
@@ -128,6 +145,36 @@ def test_claude_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> No
     with pytest.raises(RuntimeError, match="claude CLI를 찾을 수 없습니다") as ei:
         run("프롬프트")
     assert "No such file or directory" in str(ei.value)
+
+
+def test_codex_cli_runner_returns_last_message(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["input"] = kwargs["input"]
+        output_path = args[args.index("--output-last-message") + 1]
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write('{"ok": 1}')
+        return subprocess.CompletedProcess(args, 0, stdout="events", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = build_runner(AppConfig(provider="codex-cli", model="gpt-5.6-sol"))
+
+    assert run("프롬프트") == '{"ok": 1}'
+    assert captured["input"] == "프롬프트"
+    assert captured["args"][-1] == "-"
+    assert "--output-last-message" in captured["args"]
+
+
+def test_codex_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'codex'")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = build_runner(AppConfig(provider="codex-cli"))
+    with pytest.raises(RuntimeError, match="Codex CLI를 찾을 수 없습니다"):
+        run("프롬프트")
 
 
 def test_build_runner_unknown_provider_raises_korean_error() -> None:

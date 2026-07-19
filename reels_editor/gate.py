@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Callable
+from urllib.parse import parse_qsl, urlparse
 
 from reels_editor.capcut import US
 from reels_editor.gate_html import build_gate_html  # noqa: F401 — 하위호환 재수출
@@ -43,12 +44,50 @@ def extract_thumbs(video_path: Path, edl_doc: dict, segments: dict,
     return thumbs
 
 
-def run_gate(html: str, *, open_browser: bool = True, port: int = 0) -> GateDecision:
-    decision: list[GateDecision] = []
+@dataclass(frozen=True)
+class MultiGateDecision:
+    action: str                       # "render" | "revise"
+    combos: list[tuple[int, int]]     # (storyline_index, title_index)
+    regen: list[int]
+    feedback: str = ""
+    settings: dict = None             # type: ignore[assignment]
+
+
+def parse_decision(body: dict) -> MultiGateDecision:
+    action = body.get("action")
+    if action not in ("render", "revise"):
+        raise ValueError(f"알 수 없는 action: {action!r}")
+    combos = [(int(a), int(b)) for a, b in body.get("combos", [])]
+    regen = [int(i) for i in body.get("regen", [])]
+    settings = body.get("settings") or {}
+    if not isinstance(settings, dict):
+        raise ValueError("settings는 객체여야 함")
+    return MultiGateDecision(action, combos, regen,
+                             str(body.get("feedback", "")), settings)
+
+
+def run_gate_v2(html: str, preview_fn: Callable[[dict], bytes], *,
+                open_browser: bool = True, port: int = 0,
+                on_url: Callable[[str], None] | None = None) -> MultiGateDecision:
+    decision: list[MultiGateDecision] = []
     done = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path == "/preview":
+                try:
+                    png = preview_fn(dict(parse_qsl(parsed.query)))
+                except Exception as e:  # noqa: BLE001 — 프리뷰 실패는 게이트를 죽이면 안 됨
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(str(e)[:200].encode())
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.end_headers()
+                self.wfile.write(png)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -57,9 +96,7 @@ def run_gate(html: str, *, open_browser: bool = True, port: int = 0) -> GateDeci
         def do_POST(self) -> None:  # noqa: N802
             try:
                 length = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(length))
-                d = GateDecision(body["action"], int(body["title_index"]),
-                                 body.get("feedback", ""))
+                d = parse_decision(json.loads(self.rfile.read(length)))
             except (TypeError, ValueError, KeyError):
                 self.send_response(400)
                 self.end_headers()
@@ -70,12 +107,13 @@ def run_gate(html: str, *, open_browser: bool = True, port: int = 0) -> GateDeci
             done.set()
 
         def log_message(self, *args: object) -> None:
-            pass  # 테스트/CLI 출력 오염 방지
+            pass
 
     server = HTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    if on_url:
+        on_url(url)
     if open_browser:
         webbrowser.open(url)
     print(f"대본 검토 페이지: {url}")

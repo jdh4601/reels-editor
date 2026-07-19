@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 from reels_editor import edl, export, render
+from reels_editor.cli import render_combos, write_manifest
+from reels_editor.config import AppConfig
+from reels_editor.storyteller import StorylineResult
 from reels_editor.style import load_style
 
 STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
@@ -60,3 +63,62 @@ def test_srt_matches_render_groups(segments: dict, edl_doc: dict,
     groups = render.group_captions(render.timeline_items(ordered, 1.2))
     p = export.write_srt(groups, tmp_path / "reel.srt")
     assert "-->" in p.read_text(encoding="utf-8")
+
+
+def test_multi_combo_render_reuses_storyline_base(
+        synth_video: Path, segments: dict, style_preset,
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """스토리라인 2개와 조합 3개를 실제 ffmpeg로 렌더한다."""
+    segments = dict(segments)
+    segments["video_path"] = str(synth_video)
+    common = {
+        "story": {"five_lines": {}, "lens": "통합 테스트"},
+        "subtitle_keywords": [],
+    }
+    storylines = [
+        StorylineResult(0, "정면승부형", {
+            **common,
+            "title_candidates": [
+                {"text": "첫 번째 타이틀", "keyword": "첫 번째"},
+                {"text": "두 번째 타이틀", "keyword": "두 번째"},
+            ],
+            "cuts": [{"beat": "훅", "seg_ids": ["t1"]}],
+        }),
+        StorylineResult(1, "반전형", {
+            **common,
+            "title_candidates": [
+                {"text": "반전 타이틀", "keyword": "반전"},
+            ],
+            "cuts": [{"beat": "결말", "seg_ids": ["t2"]}],
+        }),
+    ]
+    base_calls: list[Path] = []
+    real_render_base = render.render_base_and_assets
+
+    def tracked_render_base(*args, **kwargs):
+        base_calls.append(args[4])
+        return real_render_base(*args, **kwargs)
+
+    monkeypatch.setattr(render, "render_base_and_assets", tracked_render_base)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    outputs = render_combos(
+        synth_video, segments, storylines,
+        [(0, 0), (0, 1), (1, 0)], style_preset, work, speed=1.2)
+
+    assert len(base_calls) == 2
+    assert [o["error"] for o in outputs] == [None, None, None]
+    expected = [
+        work / "s1" / "reel-t1.mp4",
+        work / "s1" / "reel-t2.mp4",
+        work / "s2" / "reel-t1.mp4",
+    ]
+    assert all(path.stat().st_size > 0 for path in expected)
+    assert (work / "s1" / "reel.srt").is_file()
+    assert (work / "s2" / "reel.srt").is_file()
+
+    manifest = write_manifest(work, AppConfig(), outputs)
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert len(data["outputs"]) == 3
+    assert "api_key" not in json.dumps(data)

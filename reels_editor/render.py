@@ -8,8 +8,11 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+import threading
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -256,43 +259,113 @@ def _ffmpeg(args: list[str]) -> None:
         raise RuntimeError(f"ffmpeg 실패:\n{r.stderr}")
 
 
-def render_reel(video_path: Path, segments: dict, edl_doc: dict, style: StylePreset,
-                out_path: Path, speed: float | None = None,
-                work_dir: Path | None = None) -> Path:
-    from reels_editor import edl as edl_mod
-    speed = speed if speed is not None else style.speed
-    ordered = edl_mod.ordered_segments(edl_doc, segments)
-    work = work_dir or Path(tempfile.mkdtemp(prefix="reels_render_"))
-    work.mkdir(parents=True, exist_ok=True)
+@dataclass(frozen=True)
+class RenderAssets:
+    base: Path
+    wm_png: Path
+    sub_pngs: list[Path]
+    groups: list[list]
+    work: Path
+    keywords: list[str]
 
-    # 1) 베이스: 컷+배속+크롭+pad
+
+def parse_progress_line(line: str) -> float | None:
+    if not line.startswith("out_time_us="):
+        return None
+    try:
+        return int(line.split("=", 1)[1]) / 1_000_000
+    except ValueError:
+        return None
+
+
+def _ffmpeg_progress(args: list[str], total_s: float,
+                     cb: Callable[[float], None] | None) -> None:
+    """-progress pipe:1 로 진행률을 cb(0.0~1.0)에 보고하며 실행.
+
+    stdout(진행률)과 stderr를 동시에 비우지 않으면, ffmpeg가 stderr에 OS 파이프
+    버퍼(약 64KB)를 채울 만큼 쓰는 순간 자식은 stderr 쓰기에서, 부모는 stdout
+    읽기에서 서로 블록되는 교착 상태가 된다. stderr는 별도 스레드에서 동시에
+    드레인한다.
+    """
+    if cb is None:
+        _ffmpeg(args)
+        return
+    proc = subprocess.Popen(
+        ["ffmpeg", "-y", "-loglevel", "error", "-progress", "pipe:1", *args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        for chunk in proc.stderr:  # type: ignore[union-attr]
+            stderr_chunks.append(chunk)
+
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
+    for line in proc.stdout:
+        t = parse_progress_line(line.strip())
+        if t is not None and total_s > 0:
+            cb(max(0.0, min(t / total_s, 1.0)))
+
+    proc.wait()
+    stderr_thread.join()
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg 실패:\n{''.join(stderr_chunks)}")
+
+
+def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
+                           style: StylePreset, work_dir: Path, speed: float,
+                           progress_cb: Callable[[float], None] | None = None,
+                           ) -> RenderAssets:
+    from reels_editor import edl as edl_mod
+    ordered = edl_mod.ordered_segments(edl_doc, segments)
+    work_dir.mkdir(parents=True, exist_ok=True)
     # 콘텐츠 크롭은 첫 세그먼트 시점 기준(v0: 컷 전체가 같은 레이아웃 가정)
     content = detect_content_crop(video_path, ordered[0]["source_start_us"] / US)
     filt = build_base_filter(ordered, speed, style, _probe_size(video_path),
                              content_crop=content)
-    fpath = work / "base_filter.txt"
+    fpath = work_dir / "base_filter.txt"
     fpath.write_text(filt)
-    base = work / "base.mp4"
-    _ffmpeg(["-i", str(video_path), "-filter_complex_script", str(fpath),
-             "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast",
-             "-crf", "20", "-c:a", "aac", str(base)])
-
-    # 2) 텍스트 오버레이: 타이틀 + 워터마크(상시) + 자막(시간창)
-    title = edl_doc["title_candidates"][edl_doc.get("selected_title", 0)]
-    title_png = render_title_png(title["text"], title.get("keyword", ""), style,
-                                 work / "title.png")
-    wm_png = render_watermark_png(style, work / "wm.png")
+    base = work_dir / "base.mp4"
+    total_s = sum(s["source_end_us"] - s["source_start_us"]
+                  for s in ordered) / US / speed
+    _ffmpeg_progress(["-i", str(video_path), "-filter_complex_script", str(fpath),
+                      "-map", "[v]", "-map", "[a]", "-c:v", "libx264",
+                      "-preset", "veryfast", "-crf", "20", "-c:a", "aac",
+                      str(base)], total_s, progress_cb)
+    wm_png = render_watermark_png(style, work_dir / "wm.png")
     items = [[a, b, apply_text_fixes(t, DEFAULT_TEXT_FIXES)]
              for a, b, t in timeline_items(ordered, speed)]
     groups = group_captions(items)
-    sub_paths = render_subtitle_pngs(groups, edl_doc.get("subtitle_keywords", []),
-                                     style, work / "subs")
-    filt2, last = build_overlay_filter(n_static=2, groups=groups)
-    args = ["-i", str(base), "-i", str(title_png), "-i", str(wm_png)]
-    for p in sub_paths:
+    keywords = edl_doc.get("subtitle_keywords", [])
+    sub_paths = render_subtitle_pngs(groups, keywords, style, work_dir / "subs")
+    return RenderAssets(base, wm_png, sub_paths, groups, work_dir, keywords)
+
+
+def render_with_title(assets: RenderAssets, title_text: str, keyword: str,
+                      style: StylePreset, out_path: Path) -> Path:
+    title_png = render_title_png(title_text, keyword, style,
+                                 assets.work / f"title-{out_path.stem}.png")
+    filt2, last = build_overlay_filter(n_static=2, groups=assets.groups)
+    args = ["-i", str(assets.base), "-i", str(title_png), "-i", str(assets.wm_png)]
+    for p in assets.sub_pngs:
         args += ["-i", str(p)]
     args += ["-filter_complex", filt2, "-map", last, "-map", "0:a",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
              "-c:a", "copy", str(out_path)]
     _ffmpeg(args)
     return out_path
+
+
+def render_reel(video_path: Path, segments: dict, edl_doc: dict, style: StylePreset,
+                out_path: Path, speed: float | None = None,
+                work_dir: Path | None = None) -> Path:
+    speed = speed if speed is not None else style.speed
+    work = work_dir or Path(tempfile.mkdtemp(prefix="reels_render_"))
+    assets = render_base_and_assets(video_path, segments, edl_doc, style, work, speed)
+    title = edl_doc["title_candidates"][edl_doc.get("selected_title", 0)]
+    return render_with_title(assets, title["text"], title.get("keyword", ""),
+                             style, out_path)

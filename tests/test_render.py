@@ -1,3 +1,7 @@
+import subprocess
+import sys
+import threading
+
 import pytest
 
 from reels_editor import edl, render
@@ -79,3 +83,56 @@ def test_split_by_keywords_ignores_empty_keyword() -> None:
     # 빈 키워드는 무한 재귀 없이 무시되어야 한다
     assert render.split_by_keywords("문장", ["", "문장"]) == [("문장", True)]
     assert render.split_by_keywords("문장", [""]) == [("문장", False)]
+
+
+def test_parse_progress_line() -> None:
+    assert render.parse_progress_line("out_time_us=1500000") == 1.5
+    assert render.parse_progress_line("frame=42") is None
+    assert render.parse_progress_line("out_time_us=N/A") is None
+
+
+# stdout 파이프를 라인 단위로 소비하는 동안, stderr에 OS 파이프 버퍼(약 64KB)를
+# 채울 만큼의 출력이 쌓이면 자식은 stderr write에서, 부모는 stdout read에서
+# 서로 블록되는 교착 상태가 재현된다. ffmpeg 대신 이 조건을 흉내내는 python
+# 서브프로세스를 실행해 회귀를 검증한다.
+_STDERR_FLOOD_SCRIPT = """
+import sys
+import time
+
+sys.stderr.write("e" * 300000)  # 파이프 버퍼(~64KB)보다 훨씬 크게
+sys.stderr.flush()
+for i in range(5):
+    print(f"out_time_us={(i + 1) * 500000}")
+    sys.stdout.flush()
+    time.sleep(0.01)
+sys.exit(0)
+"""
+
+
+def test_ffmpeg_progress_drains_stderr_concurrently_no_deadlock(monkeypatch) -> None:
+    real_popen = subprocess.Popen
+
+    def fake_popen(_cmd, **kwargs):
+        # ffmpeg 실행 대신, stderr를 대량으로 흘리는 파이썬 스크립트로 교체
+        return real_popen([sys.executable, "-c", _STDERR_FLOOD_SCRIPT], **kwargs)
+
+    monkeypatch.setattr(render.subprocess, "Popen", fake_popen)
+
+    seen: list[float] = []
+    result: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            render._ffmpeg_progress(["-i", "in.mp4"], total_s=2.5, cb=seen.append)
+        except Exception as exc:  # pragma: no cover - 실패 시 진단용
+            result["error"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=15)
+
+    # 데드락이 재발하면 스레드가 끝나지 않는다 — 무한 대기 대신 여기서 실패시킨다.
+    assert not t.is_alive(), "deadlock: _ffmpeg_progress가 완료되지 않음"
+    assert "error" not in result, result.get("error")
+    assert seen  # 진행률 콜백이 최소 한 번 이상 소비됨
+    assert all(0.0 <= v <= 1.0 for v in seen)

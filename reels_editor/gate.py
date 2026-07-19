@@ -16,13 +16,6 @@ from reels_editor.capcut import US
 from reels_editor.gate_html import build_gate_html  # noqa: F401 — 하위호환 재수출
 
 
-@dataclass(frozen=True)
-class GateDecision:
-    action: str          # "approve" | "revise"
-    title_index: int
-    feedback: str = ""
-
-
 def extract_thumbs(video_path: Path, edl_doc: dict, segments: dict,
                    out_dir: Path) -> dict[int, str]:
     """각 cut 시작 프레임 → base64 jpg. 실패한 컷은 조용히 건너뛴다(썸네일은 장식)."""
@@ -122,32 +115,56 @@ def run_gate_v2(html: str, preview_fn: Callable[[dict], bytes], *,
     return decision[0]
 
 
-def _ask_title_index(n: int, input_fn: Callable[[str], str]) -> int:
-    while True:
-        raw = input_fn("타이틀 번호 선택: ").strip() or "1"
+def parse_combo_selection(raw: str,
+                          storylines: list) -> list[tuple[int, int]]:
+    by_index = {r.index: r for r in storylines if r.doc is not None}
+    combos: list[tuple[int, int]] = []
+    for token in raw.split(","):
+        token = token.strip()
+        parts = token.split("-")
+        if len(parts) != 2:
+            raise ValueError(f"형식 오류: {token!r} (예: 1-2,3-1)")
         try:
-            ti = int(raw) - 1
-        except ValueError:
-            print(f"1~{n} 사이 숫자를 입력하세요.")
-            continue
-        if 0 <= ti < n:
-            return ti
-        print(f"1~{n} 사이 숫자를 입력하세요.")
+            si, ti = int(parts[0]) - 1, int(parts[1]) - 1
+        except ValueError as e:
+            raise ValueError(f"숫자가 아님: {token!r}") from e
+        if si not in by_index:
+            raise ValueError(f"스토리라인 {si + 1} 없음")
+        if not 0 <= ti < len(by_index[si].doc["title_candidates"]):
+            raise ValueError(f"타이틀 {ti + 1} 없음 (스토리라인 {si + 1})")
+        combos.append((si, ti))
+    if not combos:
+        raise ValueError("조합이 비어 있음")
+    return combos
 
 
-def run_gate_terminal(edl_doc: dict, segments: dict, duration_s: float,
-                      target_s: int,
-                      input_fn: Callable[[str], str] = input) -> GateDecision:
+def run_gate_terminal_v2(storylines: list, segments: dict,
+                         durations: dict[int, float], target_s: int,
+                         input_fn: Callable[[str], str] = input) -> MultiGateDecision:
     idx = {s["id"]: s for s in segments["segments"]}
-    warn = " ⚠️ ±10% 벗어남" if abs(duration_s - target_s) > target_s * 0.10 else ""
-    print(f"\n=== 대본 검토 — 총 {duration_s:.1f}초 (목표 {target_s}초){warn} ===")
-    for i, t in enumerate(edl_doc["title_candidates"], 1):
-        print(f"  타이틀 {i}: {t['text']}  (강조: {t.get('keyword', '-')})")
-    for cut in edl_doc["cuts"]:
-        text = " ".join(idx[sid]["text"] for sid in cut["seg_ids"] if sid in idx)
-        print(f"  [{cut.get('beat', '?')}] {text}")
-    ti = _ask_title_index(len(edl_doc["title_candidates"]), input_fn)
-    ans = input_fn("[y] 승인 / 그 외 입력 = 수정 요청: ").strip()
+    for r in storylines:
+        if r.doc is None:
+            print(f"\n=== 스토리라인 {r.index + 1} ({r.angle_name}) — 생성 실패: {r.error}")
+            continue
+        dur = durations.get(r.index)
+        warn = (" ⚠️ ±10% 벗어남"
+                if dur is not None and abs(dur - target_s) > target_s * 0.10 else "")
+        print(f"\n=== 스토리라인 {r.index + 1} ({r.angle_name}) — "
+              f"{dur:.1f}초/목표 {target_s}초{warn} ===")
+        for ti, t in enumerate(r.doc["title_candidates"], 1):
+            print(f"  타이틀 {ti}: {t['text']}")
+        for cut in r.doc["cuts"]:
+            text = " ".join(idx[sid]["text"] for sid in cut["seg_ids"] if sid in idx)
+            print(f"  [{cut.get('beat', '?')}] {text}")
+    while True:
+        raw = input_fn("렌더할 조합 (예 1-2,3-1): ").strip()
+        try:
+            combos = parse_combo_selection(raw, storylines)
+            break
+        except ValueError as e:
+            print(f"입력 오류: {e}")
+    ans = input_fn("[y] 렌더 / 그 외 입력 = 전체 재생성 피드백: ").strip()
     if ans.lower() == "y":
-        return GateDecision("approve", ti)
-    return GateDecision("revise", ti, ans)
+        return MultiGateDecision("render", combos, [], "", {})
+    regen = [r.index for r in storylines]
+    return MultiGateDecision("revise", combos, regen, ans, {})

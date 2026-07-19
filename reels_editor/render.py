@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+import threading
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -279,7 +280,13 @@ def parse_progress_line(line: str) -> float | None:
 
 def _ffmpeg_progress(args: list[str], total_s: float,
                      cb: Callable[[float], None] | None) -> None:
-    """-progress pipe:1 로 진행률을 cb(0.0~1.0)에 보고하며 실행."""
+    """-progress pipe:1 로 진행률을 cb(0.0~1.0)에 보고하며 실행.
+
+    stdout(진행률)과 stderr를 동시에 비우지 않으면, ffmpeg가 stderr에 OS 파이프
+    버퍼(약 64KB)를 채울 만큼 쓰는 순간 자식은 stderr 쓰기에서, 부모는 stdout
+    읽기에서 서로 블록되는 교착 상태가 된다. stderr는 별도 스레드에서 동시에
+    드레인한다.
+    """
     if cb is None:
         _ffmpeg(args)
         return
@@ -287,14 +294,26 @@ def _ffmpeg_progress(args: list[str], total_s: float,
         ["ffmpeg", "-y", "-loglevel", "error", "-progress", "pipe:1", *args],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        for chunk in proc.stderr:  # type: ignore[union-attr]
+            stderr_chunks.append(chunk)
+
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
     for line in proc.stdout:
         t = parse_progress_line(line.strip())
         if t is not None and total_s > 0:
-            cb(min(t / total_s, 1.0))
+            cb(max(0.0, min(t / total_s, 1.0)))
+
     proc.wait()
+    stderr_thread.join()
     if proc.returncode != 0:
-        err = proc.stderr.read() if proc.stderr else ""
-        raise RuntimeError(f"ffmpeg 실패:\n{err}")
+        raise RuntimeError(f"ffmpeg 실패:\n{''.join(stderr_chunks)}")
 
 
 def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,

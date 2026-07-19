@@ -51,12 +51,22 @@ def load_config(path: Path | None = None) -> AppConfig:
     if not p.is_file():
         return AppConfig()
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"설정 파일 형식이 올바르지 않습니다 (key: value 형태여야 함): {p}"
+        )
     defaults = AppConfig()
+    try:
+        n_storylines = int(raw.get("n_storylines", defaults.n_storylines))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"n_storylines 값이 올바르지 않습니다 (정수여야 함): {raw.get('n_storylines')!r}"
+        ) from exc
     return _validate(AppConfig(
         provider=raw.get("provider", defaults.provider),
         model=raw.get("model", defaults.model),
         base_url=raw.get("base_url", defaults.base_url),
-        n_storylines=int(raw.get("n_storylines", defaults.n_storylines)),
+        n_storylines=n_storylines,
         style={k: v for k, v in (raw.get("style") or {}).items()},
     ))
 
@@ -84,8 +94,18 @@ def credentials_path() -> Path:
 
 
 def mask_key(key: str) -> str:
-    prefix = key.split("-", 1)[0]
-    return f"{prefix}-…{key[-4:]}" if len(key) > 8 else "…"
+    """API 키를 `scheme-…끝4자리` 형태로 마스킹. 어떤 입력이든 끝 4자리 +
+    (있다면) 4자 이하 스킴 접두사 이상은 노출하지 않는다.
+
+    `-`가 없거나 첫 토큰이 긴 키(dashless/custom 프로바이더 등)는 접두사를
+    생략해 전체 키가 노출되는 것을 막는다.
+    """
+    if len(key) <= 8:
+        return "…"
+    prefix, sep, _rest = key.partition("-")
+    if sep and len(prefix) <= 4:
+        return f"{prefix}-…{key[-4:]}"
+    return f"…{key[-4:]}"
 
 
 def save_credential(provider: str, key: str, path: Path | None = None) -> Path:
@@ -95,8 +115,12 @@ def save_credential(provider: str, key: str, path: Path | None = None) -> Path:
     if p.is_file():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     data[provider] = key
-    p.write_text(yaml.safe_dump(data), encoding="utf-8")
-    p.chmod(0o600)
+    # 파일 생성과 권한 제한(0o600)을 원자적으로 수행 — write_text 후 chmod 순서로
+    # 하면 그 사이 창에서 평문 키가 느슨한 umask에 노출될 수 있음.
+    fd = os.open(p, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(yaml.safe_dump(data))
+    p.chmod(0o600)  # 기존 파일이 더 느슨한 권한으로 이미 존재했던 경우 대비
     return p
 
 

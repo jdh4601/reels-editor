@@ -171,3 +171,36 @@ def test_terminal_gate_reprompts_on_invalid_combo(edl_doc: dict, segments: dict)
     d = run_gate_terminal_v2(sl, segments, {0: 30.0}, 30,
                              input_fn=lambda _p: next(answers))
     assert d.action == "render" and d.combos == [(0, 0)]
+
+
+def test_run_gate_v2_closes_listening_socket() -> None:
+    """게이트 종료 시 리스닝 소켓을 명시적으로 닫아야 한다.
+
+    shutdown()은 serve_forever 루프만 멈추고 소켓은 열어둔다. CPython에서는
+    참조 카운팅이 뒤늦게 회수해 주지만, 그건 GC 종료자에 의존하는 것이고
+    ResourceWarning으로 드러난다. CLI 수정요청 루프가 게이트를 반복 호출하므로
+    해제 시점을 GC에 맡기지 않고 server_close()로 확정한다.
+    """
+    import gc
+    import warnings
+
+    def client(url: str) -> None:
+        body = json.dumps({"action": "render", "combos": [[0, 0]], "regen": [],
+                           "feedback": "", "settings": {}}).encode()
+        req = urllib.request.Request(url + "decision", data=body,
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        q: queue.Queue = queue.Queue()
+        t = threading.Thread(target=lambda: client(q.get()), daemon=True)
+        t.start()
+        run_gate_v2("<html>ok</html>", lambda p: b"png", open_browser=False,
+                    port=0, on_url=q.put)
+        t.join(timeout=5)
+        gc.collect()
+
+    leaked = [str(c.message) for c in caught
+              if issubclass(c.category, ResourceWarning) and "socket" in str(c.message)]
+    assert not leaked, f"소켓이 명시적으로 닫히지 않음: {leaked}"

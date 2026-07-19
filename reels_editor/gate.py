@@ -110,8 +110,11 @@ def run_gate_v2(html: str, preview_fn: Callable[[dict], bytes], *,
     if open_browser:
         webbrowser.open(url)
     print(f"대본 검토 페이지: {url}")
-    done.wait()
-    server.shutdown()
+    try:
+        done.wait()
+    finally:
+        server.shutdown()
+        server.server_close()  # shutdown()은 루프만 멈춘다 — 리스닝 소켓은 여기서 닫힌다
     return decision[0]
 
 

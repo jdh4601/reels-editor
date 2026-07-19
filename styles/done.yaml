@@ -1,4 +1,5 @@
 # D.one 릴스 스타일 (examples/완성된릴스화면*.png에서 추출)
+# 게이트에서 바꾼 값은 ~/.config/reels-editor/config.yaml의 style 설정이 우선한다.
 canvas: [1080, 1920]
 top_bar: 300        # 상단 블랙바(타이틀 영역) 높이 px — 영상 영역 1080x1240 (참고 캡처 w/h≈0.87)
 bottom_bar: 380     # 하단 블랙바(워터마크 영역) 높이 px

@@ -114,7 +114,6 @@ def test_generate_many_isolates_failure(segments: dict) -> None:
     def runner(prompt: str) -> str:
         with lock:
             calls["n"] += 1
-            mine = calls["n"]
         if "반전" in prompt:                # 두 번째 각도만 항상 실패
             raise RuntimeError("boom")
         return json.dumps(_ok_doc(segments), ensure_ascii=False)
@@ -123,6 +122,22 @@ def test_generate_many_isolates_failure(segments: dict) -> None:
     assert results[0].doc is not None
     assert results[1].doc is None and "boom" in results[1].error
     assert results[2].doc is not None
+
+
+def test_generate_many_isolates_missing_binary_failure(segments: dict) -> None:
+    """claude 바이너리가 PATH에 없는 경우(FileNotFoundError)도 격리돼야 한다."""
+
+    def runner(prompt: str) -> str:
+        if "반전" in prompt:                # 두 번째 각도만 바이너리 누락 시뮬레이션
+            raise FileNotFoundError(2, "No such file or directory", "claude")
+        return json.dumps(_ok_doc(segments), ensure_ascii=False)
+
+    results = storyteller.generate_many(segments, 3, runner=runner)
+    assert results[0].doc is not None and results[0].error is None
+    assert results[1].doc is None
+    assert results[1].error
+    assert "FileNotFoundError" in results[1].error
+    assert results[2].doc is not None and results[2].error is None
 
 
 def test_generate_many_only_indices(segments: dict) -> None:

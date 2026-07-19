@@ -5,11 +5,13 @@ import urllib.error
 import urllib.request
 
 from reels_editor import gate
+from reels_editor.config import AppConfig
+from reels_editor.storyteller import StorylineResult
 
 
 def test_html_contains_titles_beats_and_warning(edl_doc: dict, segments: dict) -> None:
-    html = gate.build_gate_html(edl_doc, segments, thumbs={},
-                                duration_s=34.2, target_s=30)
+    sl = [StorylineResult(0, "정면승부형", edl_doc)]
+    html = gate.build_gate_html(sl, segments, {}, {0: 34.2}, 30, AppConfig(), {})
     assert "대기업을 버린 이유" in html          # 타이틀 후보
     assert "훅" in html and "라스트 답" in html  # 비트
     assert "그래서 바로 시작했습니다" in html      # 자막 원문
@@ -17,12 +19,13 @@ def test_html_contains_titles_beats_and_warning(edl_doc: dict, segments: dict) -
 
 
 def test_html_no_warning_within_tolerance(edl_doc: dict, segments: dict) -> None:
-    html = gate.build_gate_html(edl_doc, segments, {}, duration_s=31.0, target_s=30)
+    sl = [StorylineResult(0, "정면승부형", edl_doc)]
+    html = gate.build_gate_html(sl, segments, {}, {0: 31.0}, 30, AppConfig(), {})
     assert "⚠️" not in html
 
 
-def test_run_gate_approve_roundtrip(edl_doc: dict, segments: dict) -> None:
-    html = gate.build_gate_html(edl_doc, segments, {}, 30.0, 30)
+def test_run_gate_approve_roundtrip() -> None:
+    html = "<html>ok</html>"  # run_gate는 html 내용을 검사하지 않음
     result: list[gate.GateDecision] = []
 
     def serve() -> None:
@@ -52,8 +55,8 @@ def test_terminal_gate_revise(edl_doc: dict, segments: dict) -> None:
     assert d.action == "revise" and d.feedback == "훅을 더 강하게"
 
 
-def test_run_gate_ignores_malformed_post(edl_doc: dict, segments: dict) -> None:
-    html = gate.build_gate_html(edl_doc, segments, {}, 30.0, 30)
+def test_run_gate_ignores_malformed_post() -> None:
+    html = "<html>ok</html>"  # run_gate는 html 내용을 검사하지 않음
     result: list[gate.GateDecision] = []
 
     def serve() -> None:

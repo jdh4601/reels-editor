@@ -1,5 +1,6 @@
 """프로바이더 러너: claude-cli 인자 구성 / 미지정 모델 기본값 / 키 없음 오류."""
 import json
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -63,6 +64,7 @@ def test_openai_chat_runner_success() -> None:
         assert captured["body"]["messages"][0]["content"] == "프롬프트"
     finally:
         server.shutdown()
+        server.server_close()
 
 
 def test_openai_chat_runner_http_error_masks_key() -> None:
@@ -88,3 +90,47 @@ def test_openai_chat_runner_http_error_masks_key() -> None:
         assert "sk-secret-key-1234" not in str(ei.value)   # 키 노출 금지
     finally:
         server.shutdown()
+        server.server_close()
+
+
+def test_openai_chat_runner_non_json_body_raises_korean_error() -> None:
+    class NonJson(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            if length:
+                self.rfile.read(length)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html>upstream proxy error</html>")
+        def log_message(self, *a): pass
+
+    server, base = _mock_server(NonJson)
+    try:
+        run = openai_chat_runner(base, "sk-secret-key-1234", "m")
+        with pytest.raises(RuntimeError) as ei:
+            run("p")
+        assert "LLM 응답 형식 오류" in str(ei.value)
+        assert "upstream proxy error" in str(ei.value)
+        assert "sk-secret-key-1234" not in str(ei.value)   # 키 노출 금지
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_claude_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'claude'")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cfg = AppConfig(provider="claude-cli")
+    run = build_runner(cfg)
+    with pytest.raises(RuntimeError, match="claude CLI를 찾을 수 없습니다") as ei:
+        run("프롬프트")
+    assert "No such file or directory" in str(ei.value)
+
+
+def test_build_runner_unknown_provider_raises_korean_error() -> None:
+    cfg = AppConfig(provider="typo")
+    with pytest.raises(RuntimeError, match="알 수 없는 프로바이더"):
+        build_runner(cfg)

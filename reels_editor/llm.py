@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from reels_editor.config import AppConfig, resolve_api_key
+from reels_editor.config import PROVIDERS, AppConfig, resolve_api_key
 
 TIMEOUT_S = 600
 PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
@@ -31,6 +31,11 @@ def _claude_cli_runner(model: str) -> Callable[[str], str]:
                                capture_output=True, text=True, timeout=TIMEOUT_S)
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"claude -p 타임아웃({TIMEOUT_S}초): {e}") from e
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "claude CLI를 찾을 수 없습니다 — Claude Code CLI가 설치되어 있고 "
+                "PATH에 등록되어 있는지 확인하거나, 설정 패널에서 다른 프로바이더로 "
+                f"전환하세요: {e}") from e
         if r.returncode != 0:
             raise RuntimeError(f"claude -p 실패:\n{r.stderr}")
         return r.stdout
@@ -46,7 +51,12 @@ def build_runner(cfg: AppConfig,
         if not base_url or not model:
             raise RuntimeError("custom 프로바이더는 base_url과 model이 필요합니다.")
     else:
-        default_url, default_model = PROVIDER_DEFAULTS[cfg.provider]
+        try:
+            default_url, default_model = PROVIDER_DEFAULTS[cfg.provider]
+        except KeyError as e:
+            raise RuntimeError(
+                f"알 수 없는 프로바이더 {cfg.provider!r} — "
+                f"사용 가능한 프로바이더: {', '.join(PROVIDERS)}") from e
         base_url = cfg.base_url or default_url
         model = cfg.model or default_model
     key = resolve_api_key(cfg.provider, credentials)

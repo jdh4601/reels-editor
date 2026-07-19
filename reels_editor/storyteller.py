@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -11,6 +13,12 @@ from reels_editor import edl as edl_mod
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "storytelling-30s.md"
 DEFAULT_SPEED = 1.2
 MAX_RETRIES = 2
+
+ANGLES: list[tuple[str, str]] = [
+    ("정면승부형", "주제를 정면으로 드러내는 각도 — 훅부터 핵심 사건을 직진으로 전개한다."),
+    ("반전형", "예상을 뒤집는 각도 — 통념/실패를 먼저 세우고 반전 문장을 축으로 전개한다."),
+    ("감정선형", "감정의 흐름 각도 — 불안·좌절·확신 같은 감정 변화 문장을 축으로 전개한다."),
+]
 
 _SCHEMA = json.dumps({
     "story": {"five_lines": {"situation": "…", "desire": "…", "conflict": "…",
@@ -21,17 +29,20 @@ _SCHEMA = json.dumps({
 }, ensure_ascii=False, indent=2)
 
 
-def build_prompt(segments: dict, duration_s: int, feedback: str | None) -> str:
+def build_prompt(segments: dict, duration_s: int, feedback: str | None,
+                 angle: str | None = None) -> str:
     template = PROMPT_PATH.read_text(encoding="utf-8")
     listing = "\n".join(f"- {s['id']}: {s['text']}" for s in segments["segments"])
     fb = f"\n## 수정 피드백 (반드시 반영)\n{feedback}\n" if feedback else ""
+    ab = f"\n## 스토리 각도 (이 각도로만)\n{angle}\n" if angle else ""
     return (template
             .replace("{speed}", str(DEFAULT_SPEED))
             .replace("{duration_s}", str(duration_s))
             .replace("{source_budget_s}", str(round(duration_s * DEFAULT_SPEED)))
             .replace("{schema}", _SCHEMA)
             .replace("{segments_listing}", listing)
-            .replace("{feedback_block}", fb))
+            .replace("{feedback_block}", fb)
+            .replace("{angle_block}", ab))
 
 
 def extract_json(text: str) -> dict:
@@ -55,11 +66,12 @@ def _run_claude(prompt: str) -> str:
 def generate_script(segments: dict, duration_s: int = 30,
                     feedback: str | None = None, *,
                     runner: Callable[[str], str] | None = None,
-                    raw_dump: Path | None = None) -> dict:
+                    raw_dump: Path | None = None,
+                    angle: str | None = None) -> dict:
     run = runner or _run_claude
     last_raw = ""
     for _attempt in range(1 + MAX_RETRIES):
-        last_raw = run(build_prompt(segments, duration_s, feedback))
+        last_raw = run(build_prompt(segments, duration_s, feedback, angle))
         try:
             doc = extract_json(last_raw)
         except ValueError as e:
@@ -77,3 +89,42 @@ def generate_script(segments: dict, duration_s: int = 30,
         raw_dump.write_text(last_raw, encoding="utf-8")
         hint = f" (원문 응답 저장됨: {raw_dump})"
     raise RuntimeError(f"대본 생성 3회 실패{hint} — 마지막 응답:\n" + last_raw[:2000])
+
+
+@dataclass(frozen=True)
+class StorylineResult:
+    """병렬 생성 결과 하나."""
+    index: int
+    angle_name: str
+    doc: dict | None
+    error: str | None = None
+
+
+def generate_many(segments: dict, n: int, duration_s: int = 30, *,
+                  runner: Callable[[str], str] | None = None,
+                  raw_dump_dir: Path | None = None,
+                  feedback: str | None = None,
+                  only_indices: list[int] | None = None) -> list[StorylineResult]:
+    """스토리라인 n개를 병렬 생성. 개별 실패는 error로 담고 나머지는 살린다.
+
+    러너(claude 바이너리 실행 등) 수준에서 터지는 환경/실행 오류
+    (OSError·FileNotFoundError, RuntimeError, ValueError,
+    subprocess.SubprocessError)는 해당 인덱스의 error로만 담아 격리한다.
+    그 외 예외(TypeError, KeyError 등 프로그래밍 버그로 보이는 것)는
+    격리 대상이 아니므로 그대로 전파시켜 디버깅 가능하게 둔다.
+    """
+    indices = only_indices if only_indices is not None else list(range(n))
+
+    def one(i: int) -> StorylineResult:
+        name, hint = ANGLES[i % len(ANGLES)]
+        dump = (raw_dump_dir / f"llm_raw_s{i + 1}.txt") if raw_dump_dir else None
+        try:
+            doc = generate_script(segments, duration_s, feedback,
+                                  runner=runner, raw_dump=dump, angle=hint)
+            return StorylineResult(i, name, doc)
+        except (RuntimeError, ValueError, OSError,
+                subprocess.SubprocessError) as e:
+            return StorylineResult(i, name, None, f"{type(e).__name__}: {e}")
+
+    with ThreadPoolExecutor(max_workers=max(len(indices), 1)) as ex:
+        return list(ex.map(one, indices))

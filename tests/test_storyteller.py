@@ -4,6 +4,24 @@ from pathlib import Path
 import pytest
 
 from reels_editor import storyteller
+from reels_editor.storyteller import ANGLES, StorylineResult, build_prompt, generate_many
+
+
+def test_angles_has_three_named_hints() -> None:
+    assert len(ANGLES) == 3
+    names = [n for n, _ in ANGLES]
+    assert names == ["정면승부형", "반전형", "감정선형"]
+
+
+def test_build_prompt_injects_angle(segments: dict) -> None:
+    name, hint = ANGLES[1]
+    p = build_prompt(segments, 30, None, angle=hint)
+    assert hint in p
+
+
+def test_build_prompt_without_angle_has_no_block(segments: dict) -> None:
+    p = build_prompt(segments, 30, None)
+    assert "{angle_block}" not in p     # 플레이스홀더 잔존 금지
 
 
 def test_build_prompt_lists_segments_and_budget(segments: dict) -> None:
@@ -64,3 +82,67 @@ def test_generate_script_dumps_raw_on_final_failure(segments: dict, tmp_path: Pa
         storyteller.generate_script(
             segments, runner=lambda _p: "JSON 없음", raw_dump=dump)
     assert dump.read_text(encoding="utf-8") == "JSON 없음"
+
+
+def _ok_doc(segments):
+    sid = segments["segments"][0]["id"]
+    return {"story": {"five_lines": {}, "lens": "l"},
+            "title_candidates": [{"text": "t", "keyword": "t"}],
+            "subtitle_keywords": [],
+            "cuts": [{"beat": "훅", "seg_ids": [sid]}]}
+
+
+def test_generate_many_runs_in_parallel(segments: dict) -> None:
+    import threading
+    barrier = threading.Barrier(3, timeout=5)   # 3개가 동시에 도달해야 통과
+
+    def runner(prompt: str) -> str:
+        barrier.wait()
+        return json.dumps(_ok_doc(segments), ensure_ascii=False)
+
+    results = storyteller.generate_many(segments, 3, runner=runner)
+    assert [r.index for r in results] == [0, 1, 2]
+    assert all(r.doc is not None and r.error is None for r in results)
+    assert results[0].angle_name == "정면승부형"
+
+
+def test_generate_many_isolates_failure(segments: dict) -> None:
+    import threading
+    calls = {"n": 0}
+    lock = threading.Lock()
+
+    def runner(prompt: str) -> str:
+        with lock:
+            calls["n"] += 1
+        if "반전" in prompt:                # 두 번째 각도만 항상 실패
+            raise RuntimeError("boom")
+        return json.dumps(_ok_doc(segments), ensure_ascii=False)
+
+    results = storyteller.generate_many(segments, 3, runner=runner)
+    assert results[0].doc is not None
+    assert results[1].doc is None and "boom" in results[1].error
+    assert results[2].doc is not None
+
+
+def test_generate_many_isolates_missing_binary_failure(segments: dict) -> None:
+    """claude 바이너리가 PATH에 없는 경우(FileNotFoundError)도 격리돼야 한다."""
+
+    def runner(prompt: str) -> str:
+        if "반전" in prompt:                # 두 번째 각도만 바이너리 누락 시뮬레이션
+            raise FileNotFoundError(2, "No such file or directory", "claude")
+        return json.dumps(_ok_doc(segments), ensure_ascii=False)
+
+    results = storyteller.generate_many(segments, 3, runner=runner)
+    assert results[0].doc is not None and results[0].error is None
+    assert results[1].doc is None
+    assert results[1].error
+    assert "FileNotFoundError" in results[1].error
+    assert results[2].doc is not None and results[2].error is None
+
+
+def test_generate_many_only_indices(segments: dict) -> None:
+    def runner(prompt: str) -> str:
+        return json.dumps(_ok_doc(segments), ensure_ascii=False)
+
+    results = storyteller.generate_many(segments, 3, runner=runner, only_indices=[2])
+    assert [r.index for r in results] == [2]

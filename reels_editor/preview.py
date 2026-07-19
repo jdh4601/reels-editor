@@ -18,17 +18,22 @@ from reels_editor.style import StylePreset
 
 
 def extract_frame(video_path: Path, at_s: float, out: Path) -> Path | None:
+    """ffmpeg로 지정 시각의 프레임 1장을 추출한다. 실패/타임아웃 시 None."""
     out.parent.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{at_s:.3f}",
-         "-i", str(video_path), "-frames:v", "1", str(out)],
-        capture_output=True)
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{at_s:.3f}",
+             "-i", str(video_path), "-frames:v", "1", str(out)],
+            capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return None
     return out if r.returncode == 0 and out.is_file() else None
 
 
 def compose_preview(frame: Path | None, title_text: str, title_keyword: str,
                     sub_text: str, sub_keywords: list[str],
                     style: StylePreset) -> bytes:
+    """추출 프레임(또는 회색 placeholder) 위에 타이틀·자막·워터마크를 합성해 PNG 바이트를 반환한다."""
     W, H = style.canvas
     vw, vh = style.video_area()
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 255))

@@ -1,4 +1,8 @@
+from pathlib import Path
+
 import pytest
+
+from reels_editor.style import load_style
 
 
 def _video_seg(sid: str, tl_start: int, tl_dur: int, src_start: int, speed: float = 1.0) -> dict:
@@ -64,3 +68,8 @@ def edl_doc() -> dict:
             {"beat": "라스트 답", "seg_ids": ["t2"], "broll_marker": None},
         ],
     }
+
+
+@pytest.fixture
+def style_preset():
+    return load_style(Path(__file__).parent.parent / "styles" / "done.yaml")

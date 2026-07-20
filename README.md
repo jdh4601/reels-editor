@@ -98,6 +98,15 @@ cd ../..
 open "dist/Reels Editor.app"
 ```
 
+일반 macOS 앱처럼 `응용 프로그램` 폴더에 설치하려면 다음 명령을 한 번 실행합니다.
+
+```bash
+ditto "dist/Reels Editor.app" "/Applications/Reels Editor.app"
+open "/Applications/Reels Editor.app"
+```
+
+이후에는 Finder의 `응용 프로그램`에서 `Reels Editor` 아이콘을 클릭하거나 Spotlight에서 `Reels Editor`를 검색해 실행할 수 있습니다. 자주 쓴다면 실행 중인 Dock 아이콘을 우클릭하고 `옵션 > Dock에 유지`를 선택합니다.
+
 이 앱은 개인용 unsigned/unnotarized 빌드입니다. macOS가 처음 실행을 막으면 Finder에서 앱을 Control-클릭한 뒤 `열기`를 선택합니다.
 
 ## CapCut 프로젝트 준비

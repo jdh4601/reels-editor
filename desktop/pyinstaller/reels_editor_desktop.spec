@@ -64,7 +64,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="Reels Editor.app",
-    icon=None,
+    icon=str(repo / "desktop" / "assets" / "ReelsEditor.icns"),
     bundle_identifier="com.jdh4601.reels-editor",
     info_plist={
         "NSHighResolutionCapable": "True",

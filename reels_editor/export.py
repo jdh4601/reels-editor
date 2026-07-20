@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 from reels_editor.capcut import US
+from reels_editor import processes
 
 
 def srt_timestamp(seconds: float) -> str:
@@ -48,7 +48,7 @@ def export_cuts(video_path: Path, edl_doc: dict, segments: dict,
         segs = [idx[sid] for sid in cut["seg_ids"]]
         safe_beat = (cut.get("beat") or f"cut{i}").replace("/", "-")
         p = out_dir / f"{i:03d}-{safe_beat}.mp4"
-        r = subprocess.run(
+        r = processes.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video_path),
              "-filter_complex", cut_filter(segs, speed),
              "-map", "[v]", "-map", "[a]",

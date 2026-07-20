@@ -6,9 +6,10 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from reels_editor import edl as edl_mod
+from reels_editor import processes
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "storytelling-30s.md"
 DEFAULT_SPEED = 1.2
@@ -52,9 +53,33 @@ def extract_json(text: str) -> dict:
     return json.loads(text[a:b + 1])
 
 
+def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
+    """Desktop contract: exactly three non-empty AI title choices.
+
+    A keyword that is not present in the title is not worth failing the whole
+    storyline for, so it is downgraded to an empty highlight.
+    """
+    candidates = doc.get("title_candidates")
+    if not isinstance(candidates, list) or len(candidates) != 3:
+        return ["title_candidates는 정확히 3개여야 함"]
+    errors: list[str] = []
+    for i, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            errors.append(f"title_candidates[{i}]: 객체여야 함")
+            continue
+        text = str(candidate.get("text", "")).strip()
+        if not text:
+            errors.append(f"title_candidates[{i}].text 비어있음")
+            continue
+        keyword = str(candidate.get("keyword", "")).strip()
+        candidate["text"] = text
+        candidate["keyword"] = keyword if keyword and keyword in text else ""
+    return errors
+
+
 def _run_claude(prompt: str) -> str:
     try:
-        r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True,
+        r = processes.run(["claude", "-p", prompt], capture_output=True, text=True,
                            timeout=600)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"claude -p 타임아웃(600초): {e}") from e
@@ -77,12 +102,14 @@ def generate_script(segments: dict, duration_s: int = 30,
         except ValueError as e:
             feedback = f"이전 응답이 JSON 파싱에 실패했다: {e}. JSON 하나만 출력할 것."
             continue
-        errs = edl_mod.validate_edl(doc, segments)
+        title_errs = validate_and_normalize_title_candidates(doc)
+        errs = title_errs + edl_mod.validate_edl(doc, segments)
         if not errs:
             doc.setdefault("selected_title", 0)
             return doc
         feedback = ("이전 EDL이 검증에 실패했다. 다음 오류를 고쳐라 "
-                    "(seg_ids는 SEGMENTS의 id만, verbatim 유지):\n" + "\n".join(errs))
+                    "(title_candidates는 정확히 3개, seg_ids는 SEGMENTS의 id만, "
+                    "verbatim 유지):\n" + "\n".join(errs))
     hint = ""
     if raw_dump is not None:
         raw_dump.parent.mkdir(parents=True, exist_ok=True)

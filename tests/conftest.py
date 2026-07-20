@@ -60,7 +60,11 @@ def edl_doc() -> dict:
     return {
         "story": {"five_lines": {"situation": "s", "desire": "d", "conflict": "c",
                                  "change": "ch", "result": "r"}, "lens": "lens"},
-        "title_candidates": [{"text": "대기업을 버린 이유", "keyword": "대기업"}],
+        "title_candidates": [
+            {"text": "대기업을 버린 이유", "keyword": "대기업"},
+            {"text": "꿈을 포기 못 한 순간", "keyword": "꿈"},
+            {"text": "바로 시작한 대표의 선택", "keyword": "선택"},
+        ],
         "selected_title": 0,
         "subtitle_keywords": ["대기업"],
         "cuts": [

@@ -1,15 +1,25 @@
 [project]
 name = "reels-editor"
 version = "0.1.0"
-description = "창업가 인터뷰를 30초 스토리텔링 릴스로 자동 편집하는 CLI"
+description = "창업가 인터뷰를 30초 스토리텔링 릴스로 자동 편집하는 macOS 앱과 CLI"
 requires-python = ">=3.11"
-dependencies = ["typer>=0.12", "Pillow>=10", "PyYAML>=6", "rich>=13"]
+dependencies = [
+  "typer>=0.12",
+  "Pillow>=10",
+  "PyYAML>=6",
+  "rich>=13",
+  "fastapi>=0.116",
+  "uvicorn>=0.35",
+  "websockets>=13",
+  "pywebview>=6.0",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.28", "pyinstaller>=6.14"]
 
 [project.scripts]
 reels-editor = "reels_editor.cli:app"
+reels-editor-desktop = "reels_editor.desktop.app:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -17,3 +27,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["reels_editor*"]
+
+[tool.setuptools.package-data]
+"reels_editor.desktop" = ["ui/**/*"]

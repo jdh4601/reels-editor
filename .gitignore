@@ -4,6 +4,10 @@
 *.MOV
 out/
 .reels/
+build/
+dist/
+desktop/ui/node_modules/
+desktop/ui/test-results/
 
 # Python
 __pycache__/

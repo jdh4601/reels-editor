@@ -136,3 +136,103 @@ def test_ffmpeg_progress_drains_stderr_concurrently_no_deadlock(monkeypatch) -> 
     assert "error" not in result, result.get("error")
     assert seen  # 진행률 콜백이 최소 한 번 이상 소비됨
     assert all(0.0 <= v <= 1.0 for v in seen)
+
+
+def test_render_assets_manifest_round_trips(tmp_path: Path) -> None:
+    assets = render.RenderAssets(
+        base=tmp_path / "base.mp4",
+        wm_png=tmp_path / "wm.png",
+        sub_pngs=[tmp_path / "subs" / "0.png"],
+        groups=[[0.0, 1.0, "자막"]],
+        work=tmp_path,
+        keywords=["자막"],
+    )
+
+    restored = render.RenderAssets.read_manifest(
+        assets.write_manifest(tmp_path / "assets.json")
+    )
+
+    assert restored == assets
+
+
+def test_overlay_variant_subtitle_off_reuses_base_without_sub_inputs(
+        tmp_path: Path, style_preset, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = tmp_path / "base.mp4"
+    wm = tmp_path / "wm.png"
+    sub = tmp_path / "subs" / "0.png"
+    sub.parent.mkdir()
+    base.write_bytes(b"base")
+    wm.write_bytes(b"wm")
+    sub.write_bytes(b"sub")
+    assets = render.RenderAssets(
+        base=base,
+        wm_png=wm,
+        sub_pngs=[sub],
+        groups=[[0.0, 1.0, "자막"]],
+        work=tmp_path,
+        keywords=["자막"],
+    )
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        render,
+        "render_title_png",
+        lambda *_args, **_kwargs: tmp_path / "title.png",
+    )
+    (tmp_path / "title.png").write_bytes(b"title")
+
+    def fake_ffmpeg(args: list[str]) -> None:
+        calls["args"] = args
+        Path(args[-1]).write_bytes(b"variant")
+
+    monkeypatch.setattr(render, "_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(
+        render,
+        "render_base_and_assets",
+        lambda *a, **kw: pytest.fail("base render must not run for overlay variant"),
+    )
+
+    out = render.render_overlay_variant(
+        assets,
+        title_text="새 제목",
+        keyword="새",
+        style=style_preset,
+        out_path=tmp_path / "variant.mp4",
+        subtitles_enabled=False,
+    )
+
+    assert out.read_bytes() == b"variant"
+    args = calls["args"]
+    assert isinstance(args, list)
+    assert str(base) in args
+    assert str(sub) not in args
+    assert args[-1].endswith(".part.mp4")
+    assert not (tmp_path / ".variant.part.mp4").exists()
+
+
+def test_variant_cache_key_changes_by_title_subtitle_and_style() -> None:
+    base = render.variant_cache_key(
+        storyline_id="s1",
+        title_text="A",
+        subtitles_enabled=True,
+        style_hash_value="style",
+    )
+
+    assert base != render.variant_cache_key(
+        storyline_id="s1",
+        title_text="B",
+        subtitles_enabled=True,
+        style_hash_value="style",
+    )
+    assert base != render.variant_cache_key(
+        storyline_id="s1",
+        title_text="A",
+        subtitles_enabled=False,
+        style_hash_value="style",
+    )
+    assert base != render.variant_cache_key(
+        storyline_id="s1",
+        title_text="A",
+        subtitles_enabled=True,
+        style_hash_value="other",
+    )

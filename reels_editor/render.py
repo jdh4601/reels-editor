@@ -10,12 +10,16 @@ import subprocess
 import tempfile
 import threading
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import hashlib
+import json
+import os
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from PIL import Image, ImageDraw, ImageFont
 
+from reels_editor import processes
 from reels_editor.capcut import US
 from reels_editor.style import StylePreset
 
@@ -100,7 +104,7 @@ def parse_cropdetect(lines: list[str]) -> tuple[int, int, int, int] | None:
 def detect_content_crop(video_path: Path, at_s: float,
                         dur: float = 2.0) -> tuple[int, int, int, int] | None:
     """원본의 레터/필러박스를 제외한 실제 콘텐츠 영역 탐지. 실패 시 None."""
-    r = subprocess.run(
+    r = processes.run(
         ["ffmpeg", "-v", "info", "-ss", str(at_s), "-t", str(dur),
          "-i", str(video_path), "-vf", "cropdetect=24:2:0", "-f", "null", "-"],
         capture_output=True, text=True)
@@ -243,7 +247,7 @@ def render_subtitle_pngs(groups: list[list], keywords: list[str],
 
 
 def _probe_size(video_path: Path) -> tuple[int, int]:
-    out = subprocess.run(
+    out = processes.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
          str(video_path)],
@@ -253,8 +257,8 @@ def _probe_size(video_path: Path) -> tuple[int, int]:
 
 
 def _ffmpeg(args: list[str]) -> None:
-    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *args],
-                       capture_output=True, text=True)
+    r = processes.run(["ffmpeg", "-y", "-loglevel", "error", *args],
+                      capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg 실패:\n{r.stderr}")
 
@@ -267,6 +271,67 @@ class RenderAssets:
     groups: list[list]
     work: Path
     keywords: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "base": str(self.base),
+            "wm_png": str(self.wm_png),
+            "sub_pngs": [str(path) for path in self.sub_pngs],
+            "groups": self.groups,
+            "work": str(self.work),
+            "keywords": self.keywords,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RenderAssets":
+        return cls(
+            base=Path(data["base"]),
+            wm_png=Path(data["wm_png"]),
+            sub_pngs=[Path(path) for path in data.get("sub_pngs", [])],
+            groups=list(data.get("groups", [])),
+            work=Path(data["work"]),
+            keywords=[str(item) for item in data.get("keywords", [])],
+        )
+
+    def write_manifest(self, path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".part")
+        tmp.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return path
+
+    @classmethod
+    def read_manifest(cls, path: Path) -> "RenderAssets":
+        return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def style_hash(style: StylePreset) -> str:
+    data = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in asdict(style).items()
+    }
+    payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def variant_cache_key(
+    *,
+    storyline_id: str,
+    title_text: str,
+    subtitles_enabled: bool,
+    style_hash_value: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "storyline_id": storyline_id,
+            "title_text": title_text,
+            "subtitles_enabled": subtitles_enabled,
+            "style_hash": style_hash_value,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def parse_progress_line(line: str) -> float | None:
@@ -290,7 +355,7 @@ def _ffmpeg_progress(args: list[str], total_s: float,
     if cb is None:
         _ffmpeg(args)
         return
-    proc = subprocess.Popen(
+    proc = processes.popen(
         ["ffmpeg", "-y", "-loglevel", "error", "-progress", "pipe:1", *args],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert proc.stdout is not None
@@ -305,15 +370,20 @@ def _ffmpeg_progress(args: list[str], total_s: float,
     stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
     stderr_thread.start()
 
-    for line in proc.stdout:
-        t = parse_progress_line(line.strip())
-        if t is not None and total_s > 0:
-            cb(max(0.0, min(t / total_s, 1.0)))
+    try:
+        for line in proc.stdout:
+            t = parse_progress_line(line.strip())
+            if t is not None and total_s > 0:
+                cb(max(0.0, min(t / total_s, 1.0)))
 
-    proc.wait()
-    stderr_thread.join()
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg 실패:\n{''.join(stderr_chunks)}")
+        proc.wait()
+        stderr_thread.join()
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg 실패:\n{''.join(stderr_chunks)}")
+    finally:
+        registry = processes.current_registry()
+        if registry is not None:
+            registry.unregister(proc)
 
 
 def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
@@ -347,16 +417,38 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
 
 def render_with_title(assets: RenderAssets, title_text: str, keyword: str,
                       style: StylePreset, out_path: Path) -> Path:
+    return render_overlay_variant(
+        assets,
+        title_text=title_text,
+        keyword=keyword,
+        style=style,
+        out_path=out_path,
+        subtitles_enabled=True,
+    )
+
+
+def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: str,
+                           style: StylePreset, out_path: Path,
+                           subtitles_enabled: bool) -> Path:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     title_png = render_title_png(title_text, keyword, style,
                                  assets.work / f"title-{out_path.stem}.png")
-    filt2, last = build_overlay_filter(n_static=2, groups=assets.groups)
+    groups = assets.groups if subtitles_enabled else []
+    sub_pngs = assets.sub_pngs if subtitles_enabled else []
+    filt2, last = build_overlay_filter(n_static=2, groups=groups)
     args = ["-i", str(assets.base), "-i", str(title_png), "-i", str(assets.wm_png)]
-    for p in assets.sub_pngs:
+    for p in sub_pngs:
         args += ["-i", str(p)]
+    tmp = out_path.with_name(f".{out_path.stem}.part{out_path.suffix}")
     args += ["-filter_complex", filt2, "-map", last, "-map", "0:a",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-             "-c:a", "copy", str(out_path)]
-    _ffmpeg(args)
+             "-c:a", "copy", str(tmp)]
+    try:
+        _ffmpeg(args)
+        os.replace(tmp, out_path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
     return out_path
 
 

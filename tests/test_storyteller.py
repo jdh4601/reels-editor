@@ -87,9 +87,41 @@ def test_generate_script_dumps_raw_on_final_failure(segments: dict, tmp_path: Pa
 def _ok_doc(segments):
     sid = segments["segments"][0]["id"]
     return {"story": {"five_lines": {}, "lens": "l"},
-            "title_candidates": [{"text": "t", "keyword": "t"}],
+            "title_candidates": [
+                {"text": "첫 번째 제목", "keyword": "첫"},
+                {"text": "두 번째 제목", "keyword": "두"},
+                {"text": "세 번째 제목", "keyword": "세"},
+            ],
             "subtitle_keywords": [],
             "cuts": [{"beat": "훅", "seg_ids": [sid]}]}
+
+
+def test_generate_script_requires_exactly_three_title_candidates(
+        segments: dict, edl_doc: dict) -> None:
+    calls: list[str] = []
+    bad = {**edl_doc, "title_candidates": edl_doc["title_candidates"][:2]}
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(bad if len(calls) == 1 else edl_doc, ensure_ascii=False)
+
+    out = storyteller.generate_script(segments, runner=runner)
+
+    assert len(calls) == 2
+    assert "정확히 3개" in calls[1]
+    assert len(out["title_candidates"]) == 3
+
+
+def test_generate_script_normalizes_missing_title_keyword(
+        segments: dict, edl_doc: dict) -> None:
+    edl_doc["title_candidates"][0]["keyword"] = "없는키워드"
+
+    out = storyteller.generate_script(
+        segments,
+        runner=lambda _p: json.dumps(edl_doc, ensure_ascii=False),
+    )
+
+    assert out["title_candidates"][0]["keyword"] == ""
 
 
 def test_generate_many_runs_in_parallel(segments: dict) -> None:

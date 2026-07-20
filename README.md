@@ -1,39 +1,40 @@
-# reels-editor
+# Reels Editor
 
-CapCut 자동자막이 들어 있는 인터뷰 프로젝트를 읽어 여러 개의 30초
-스토리텔링 릴스를 만드는 macOS용 CLI입니다.
+CapCut 자동자막이 들어 있는 인터뷰 프로젝트를 읽고, AI가 추천한 3개 스토리라인을 한 화면에서 비교한 뒤 선택한 릴스 하나만 내보내는 개인용 macOS 앱입니다.
 
-실행하면 다음 순서로 작업합니다.
-
-1. CapCut 프로젝트에서 자동자막을 읽습니다.
-2. 서로 다른 관점의 스토리라인을 최대 3개까지 동시에 만듭니다.
-3. 브라우저에서 스토리라인과 타이틀 조합을 선택합니다.
-4. 선택한 조합을 세로형 MP4로 렌더합니다.
-
-## 빠른 시작
+## 가장 쉬운 실행 방법
 
 ### 1. 필요한 프로그램 설치
 
-다음 프로그램이 필요합니다.
+macOS에서 아래 프로그램이 필요합니다.
 
-- macOS
 - Python 3.11 이상
 - CapCut 데스크톱
 - ffmpeg와 ffprobe
-- Claude Code CLI 또는 OpenAI 호환 API 키
+- OpenAI Codex CLI
+- Pretendard 폰트
 
-Homebrew가 있다면 ffmpeg를 다음 명령으로 설치합니다.
+Homebrew가 있다면 ffmpeg를 설치합니다.
 
 ```bash
 brew install ffmpeg
+brew install --cask font-pretendard
 ```
 
-설치 여부를 확인합니다.
+Codex CLI를 설치하고 로그인합니다.
+
+```bash
+npm install -g @openai/codex
+codex login
+```
+
+설치가 됐는지 확인합니다.
 
 ```bash
 python3 --version
 ffmpeg -version
 ffprobe -version
+codex --version
 ```
 
 ### 2. 프로젝트 내려받기
@@ -43,93 +44,88 @@ git clone https://github.com/jdh4601/reels-editor.git
 cd reels-editor
 ```
 
-### 3. Python 환경 만들기
+### 3. Python 앱 설치
 
-아래 명령은 최초 한 번만 실행하면 됩니다.
+최초 한 번만 실행합니다.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e .
+.venv/bin/pip install -e ".[dev]"
 ```
 
-설치가 끝나면 CLI가 정상적으로 보이는지 확인합니다.
+### 4. 대시보드 UI 빌드
 
 ```bash
-.venv/bin/reels-editor --help
+cd desktop/ui
+npm install
+npm run build
+cd ../..
 ```
 
-### 4. 사용할 AI 선택하기
+### 5. macOS 앱 실행
 
-기본값은 로컬 Claude Code CLI입니다. `claude` 명령이 설치되어 있고 로그인이
-완료되어 있다면 추가 설정 없이 사용할 수 있습니다.
+개발 중에는 아래 명령으로 바로 앱을 열 수 있습니다.
 
 ```bash
-claude --version
+.venv/bin/reels-editor-desktop
 ```
 
-OpenAI Codex CLI를 사용하려면 먼저 로그인합니다.
+앱이 열리면 다음 순서로 사용합니다.
+
+1. `프로젝트` 버튼을 누릅니다.
+2. CapCut 프로젝트 폴더를 선택합니다. `draft_info.json`이 들어 있는 폴더면 됩니다.
+3. 폴더를 선택하면 AI가 스토리라인 3개를 만들고 대표 영상 3개를 자동으로 렌더합니다.
+4. 각 스토리라인에서 `AI 추천 제목 3개 중 선택` 중 하나를 고릅니다.
+5. 자막 스위치를 ON/OFF로 바꿉니다.
+6. 내보낼 영상 하나만 `이 영상 선택`으로 고릅니다.
+7. `선택 영상 내보내기`를 누르고 저장 위치를 선택합니다.
+
+완료된 프로젝트를 새 스토리라인으로 다시 만들 때만 `다시 생성`을 누릅니다.
+
+제목이나 자막 ON/OFF를 바꿀 때는 전체 영상을 다시 만들지 않고 오버레이만 빠르게 다시 렌더합니다.
+
+## 앱 파일로 빌드하기
+
+`dist/Reels Editor.app`을 만들려면 아래 명령을 실행합니다.
 
 ```bash
-codex login
-mkdir -p ~/.config/reels-editor
+.venv/bin/pyinstaller desktop/pyinstaller/reels_editor_desktop.spec --noconfirm
 ```
 
-`~/.config/reels-editor/config.yaml` 파일을 다음과 같이 만듭니다.
-
-```yaml
-provider: codex-cli
-model: gpt-5.6-sol
-n_storylines: 3
-style: {}
-```
-
-Codex CLI 대신 OpenAI API를 직접 사용하려면 API 키와 설정 파일을 준비합니다.
+빌드 후 Finder에서 열거나 터미널에서 실행할 수 있습니다.
 
 ```bash
-export OPENAI_API_KEY="sk-여기에-키를-입력"
-mkdir -p ~/.config/reels-editor
+open "dist/Reels Editor.app"
 ```
 
-`~/.config/reels-editor/config.yaml` 파일을 만들고 다음 내용을 넣습니다.
+이 앱은 개인용 unsigned/unnotarized 빌드입니다. macOS가 처음 실행을 막으면 Finder에서 앱을 Control-클릭한 뒤 `열기`를 선택합니다.
 
-```yaml
-provider: openai
-model: gpt-4o
-n_storylines: 3
-style: {}
-```
+## CapCut 프로젝트 준비
 
-지원하는 프로바이더는 다음과 같습니다.
+1. CapCut에서 인터뷰 원본 영상을 추가합니다.
+2. `Text`에서 자동자막을 생성합니다.
+3. 프로젝트를 저장합니다.
+4. 앱에서 해당 프로젝트 폴더를 선택합니다.
 
-| 프로바이더 | `provider` 값 | API 키 환경변수 |
-| --- | --- | --- |
-| Claude Code CLI | `claude-cli` | 필요 없음 |
-| OpenAI Codex CLI | `codex-cli` | Codex CLI 로그인 사용 |
-| OpenAI | `openai` | `OPENAI_API_KEY` |
-| Kimi | `kimi` | `MOONSHOT_API_KEY` |
-| OpenAI 호환 서버 | `custom` | `REELS_LLM_API_KEY` |
-
-`custom`을 사용할 때는 `config.yaml`에 `base_url`과 `model`도 지정해야 합니다.
-
-### 5. CapCut 프로젝트 준비하기
-
-1. CapCut에서 새 프로젝트를 만들고 인터뷰 원본 영상을 추가합니다.
-2. **Text → 자동자막**을 실행합니다.
-3. 자동자막이 타임라인에 생성됐는지 확인하고 프로젝트를 저장합니다.
-4. CapCut 프로젝트 폴더 이름 또는 폴더 경로를 확인합니다.
-
-기본적으로 다음 폴더 아래에서 프로젝트를 찾습니다.
+기본 CapCut 프로젝트 위치는 보통 아래입니다.
 
 ```text
 ~/Movies/CapCut/User Data/Projects/com.lveditor.draft/
 ```
 
-프로젝트 이름으로 찾지 못하면 `draft_info.json`이 들어 있는 프로젝트 폴더의
-전체 경로를 실행 명령에 전달하면 됩니다.
+## 데이터 저장 위치
 
-### 6. 첫 릴스 만들기
+앱 작업 상태와 렌더 중간 파일은 아래에 저장됩니다.
 
-`<CapCut 프로젝트 폴더명>`을 실제 프로젝트 폴더 이름으로 바꿉니다.
+```text
+~/Library/Application Support/reels-editor/jobs/
+```
+
+내보낸 최종 MP4는 사용자가 저장 대화상자에서 고른 위치에 저장됩니다.
+
+## CLI로 실행하기
+
+GUI 대신 기존 CLI를 쓸 수도 있습니다.
 
 ```bash
 .venv/bin/reels-editor make "<CapCut 프로젝트 폴더명>"
@@ -142,127 +138,83 @@ style: {}
   "$HOME/Movies/CapCut/User Data/Projects/com.lveditor.draft/<프로젝트 폴더명>"
 ```
 
-실행 후 브라우저 검토 화면이 열립니다.
-
-1. 원하는 스토리라인과 타이틀 조합을 체크합니다.
-2. 필요한 경우 자막 크기, 색상, 위치와 배속을 조절합니다.
-3. **선택한 조합 렌더** 버튼을 누릅니다.
-4. 터미널에 완료 메시지가 나올 때까지 기다립니다.
-
-브라우저를 사용하지 않으려면 `--no-ui` 옵션을 추가합니다.
+브라우저 검토 화면 없이 바로 렌더하려면 다음 옵션을 씁니다.
 
 ```bash
 .venv/bin/reels-editor make "<CapCut 프로젝트 폴더명>" --no-ui
 ```
 
-스토리라인 개수와 목표 길이도 지정할 수 있습니다.
-
-```bash
-.venv/bin/reels-editor make "<CapCut 프로젝트 폴더명>" \
-  --storylines 3 \
-  --duration 30
-```
-
-## 결과 파일 찾기
-
-결과는 저장소의 `out/` 폴더에 생성됩니다.
-
-```text
-out/<프로젝트명-날짜>/
-├── manifest.json
-├── s1/
-│   ├── reel-t1.mp4
-│   ├── reel-t2.mp4
-│   ├── reel.srt
-│   ├── edl.json
-│   ├── segments.json
-│   └── cuts/
-└── s2/
-    └── ...
-```
-
-- `reel-t1.mp4`: 최종 릴스 영상
-- `reel.srt`: 최종 자막
-- `edl.json`: 사용한 장면과 타이틀 정보
-- `cuts/`: 비트별로 나눈 수정용 영상
-- `manifest.json`: 선택한 조합과 렌더 결과 요약
-
-## 수정 후 다시 렌더하기
-
-`s1/edl.json`을 수정한 뒤 LLM과 게이트를 다시 실행하지 않고 렌더할 수 있습니다.
+이미 만들어진 EDL을 다시 렌더할 수도 있습니다.
 
 ```bash
 .venv/bin/reels-editor render out/<프로젝트명-날짜>/s1 --title 2
 ```
 
-`--title 2`는 두 번째 타이틀 후보를 사용한다는 뜻입니다.
+## AI 설정
 
-## 설정 저장 위치
+GUI 앱은 Codex CLI를 사용합니다. 다른 AI provider는 CLI 모드에서만 사용하세요.
 
-브라우저 게이트에서 바꾼 설정은 다음 파일에 저장됩니다.
+```yaml
+provider: codex-cli
+model: gpt-5.6-sol
+n_storylines: 3
+style: {}
+```
+
+설정 파일 위치:
 
 ```text
 ~/.config/reels-editor/config.yaml
 ```
 
-게이트에서 입력한 API 키는 프로젝트 폴더가 아닌 다음 파일에 권한 `0600`으로
-저장됩니다.
+CLI 모드에서 지원하는 프로바이더:
 
-```text
-~/.config/reels-editor/credentials.yaml
-```
+| 프로바이더 | `provider` 값 | 인증 |
+| --- | --- | --- |
+| OpenAI Codex CLI | `codex-cli` | `codex login` |
+| Claude Code CLI | `claude-cli` | `claude` 로그인 |
+| OpenAI API | `openai` | `OPENAI_API_KEY` |
+| Kimi | `kimi` | `MOONSHOT_API_KEY` |
+| OpenAI 호환 서버 | `custom` | `REELS_LLM_API_KEY` |
 
-환경변수에 API 키가 있으면 저장된 키보다 환경변수를 우선 사용합니다.
+## 문제 해결
 
-## 자주 발생하는 문제
+### 앱에서 Codex 또는 ffmpeg를 찾지 못함
 
-### `ffmpeg 없음` 또는 `ffprobe 없음`
-
-```bash
-brew install ffmpeg
-```
-
-설치 후 새 터미널을 열고 다시 실행합니다.
-
-### `claude 없음`
-
-Claude Code CLI를 설치하고 로그인하거나, 위의 OpenAI 설정 방법에 따라
-`provider: openai`로 변경합니다.
-
-### `CapCut 프로젝트를 찾을 수 없습니다`
-
-- CapCut 프로젝트를 저장했는지 확인합니다.
-- 자동자막이 생성됐는지 확인합니다.
-- 프로젝트 이름 대신 `draft_info.json`이 있는 폴더의 전체 경로를 전달합니다.
-- 프로젝트 루트가 다른 경우 `CAPCUT_ROOT`를 지정합니다.
+터미널에서 아래 명령이 되는지 확인합니다.
 
 ```bash
-export CAPCUT_ROOT="/다른/CapCut/프로젝트/루트"
-.venv/bin/reels-editor make "<프로젝트 폴더명>"
+codex --version
+ffmpeg -version
+ffprobe -version
 ```
 
-### `API 키가 없습니다`
+앱은 Finder에서 실행해도 `~/.npm-global/bin`, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`을 자동으로 PATH에 넣습니다.
 
-사용하는 프로바이더에 맞는 환경변수를 확인합니다.
+### CapCut 프로젝트를 찾을 수 없음
 
-```bash
-echo "$OPENAI_API_KEY"
-echo "$MOONSHOT_API_KEY"
-echo "$REELS_LLM_API_KEY"
-```
+- 프로젝트를 저장했는지 확인합니다.
+- 자동자막이 만들어졌는지 확인합니다.
+- 프로젝트 이름 대신 `draft_info.json`이 있는 폴더 전체 경로를 선택합니다.
 
-API 키 자체를 터미널 화면이나 로그에 공유하지 마세요.
+### 빌드가 실패함
 
-## 스토리 원칙
-
-- 자막은 원문을 새로 쓰지 않고 삭제하거나 재배치합니다.
-- 타이틀 후보만 새로 만듭니다.
-
-## 테스트
-
-개발 의존성을 설치하고 전체 테스트를 실행합니다.
+의존성을 다시 설치합니다.
 
 ```bash
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest -q
+cd desktop/ui
+npm install
+npm run build
+cd ../..
+```
+
+## 개발 검증
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest
+cd desktop/ui
+npm run typecheck
+npm run build
+npm run test:dashboard
 ```

@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+from reels_editor import processes
 from reels_editor.config import PROVIDERS, AppConfig, resolve_api_key
 
 TIMEOUT_S = 600
@@ -45,8 +46,8 @@ def codex_cli_args(model: str) -> list[str]:
 def _claude_cli_runner(model: str) -> Callable[[str], str]:
     def run(prompt: str) -> str:
         try:
-            r = subprocess.run([*claude_cli_args(model), prompt],
-                               capture_output=True, text=True, timeout=TIMEOUT_S)
+            r = processes.run([*claude_cli_args(model), prompt],
+                              capture_output=True, text=True, timeout=TIMEOUT_S)
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"claude -p 타임아웃({TIMEOUT_S}초): {e}") from e
         except FileNotFoundError as e:
@@ -69,7 +70,7 @@ def _codex_cli_runner(model: str) -> Callable[[str], str]:
                 "--output-last-message", str(output_path), "-",
             ]
             try:
-                result = subprocess.run(
+                result = processes.run(
                     args, input=prompt, capture_output=True, text=True,
                     timeout=TIMEOUT_S,
                 )

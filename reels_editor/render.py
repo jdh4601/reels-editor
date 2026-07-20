@@ -188,20 +188,86 @@ def _wrap_lines(text: str, font: ImageFont.FreeTypeFont, max_w: int,
     return lines
 
 
+def _editor_y_to_canvas(y: int, canvas_h: int) -> int:
+    """중앙 원점 편집 좌표를 1080×1920 렌더 캔버스의 y 중심점으로 변환."""
+    return round(canvas_h / 2 - y / 2)
+
+
+def _ink_bbox(d: ImageDraw.ImageDraw, text: str,
+              font: ImageFont.FreeTypeFont) -> tuple[int, int, int, int]:
+    return d.textbbox((0, 0), text, font=font)
+
+
+def _centered_text_origin(d: ImageDraw.ImageDraw, text: str,
+                          font: ImageFont.FreeTypeFont, center: tuple[int, int]
+                          ) -> tuple[float, float]:
+    left, top, right, bottom = _ink_bbox(d, text, font)
+    return center[0] - (left + right) / 2, center[1] - (top + bottom) / 2
+
+
+def _split_title_lines(title: str, top_font: ImageFont.FreeTypeFont,
+                       bottom_font: ImageFont.FreeTypeFont,
+                       d: ImageDraw.ImageDraw, max_w: int) -> tuple[str, str]:
+    """서로 다른 글자 크기를 고려해 제목을 폭이 균형 잡힌 두 줄로 나눈다."""
+    explicit = [line.strip() for line in title.splitlines() if line.strip()]
+    if len(explicit) >= 2:
+        return explicit[0], " ".join(explicit[1:])
+
+    words = title.split()
+    if len(words) < 2:
+        chars = list(title.strip())
+        if len(chars) < 2:
+            return title.strip(), ""
+        candidates = [("".join(chars[:i]), "".join(chars[i:]))
+                      for i in range(1, len(chars))]
+    else:
+        candidates = [(" ".join(words[:i]), " ".join(words[i:]))
+                      for i in range(1, len(words))]
+
+    def score(lines: tuple[str, str]) -> float:
+        top_w = d.textlength(lines[0], font=top_font)
+        bottom_w = d.textlength(lines[1], font=bottom_font)
+        overflow = max(0, top_w - max_w) + max(0, bottom_w - max_w)
+        return overflow * 10 + abs(top_w - bottom_w)
+
+    return min(candidates, key=score)
+
+
 def render_title_png(title: str, keyword: str, style: StylePreset, out: Path) -> Path:
     W, H = style.canvas
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     font = ImageFont.truetype(str(style.title_font), style.title_size)
-    lines = _wrap_lines(title, font, max_w=W - 120, d=d)[:style.title_max_lines]
-    line_h = int(style.title_size * 1.25)
-    y0 = (style.top_bar - line_h * len(lines)) // 2
-    for i, line in enumerate(lines):
-        lw = int(d.textlength(line, font=font))
-        _draw_highlighted_line(d, ((W - lw) // 2, y0 + i * line_h), line,
-                               [keyword] if keyword else [], font,
-                               _hex_rgba(style.title_color),
-                               _hex_rgba(style.title_highlight))
+    if style.title_emphasis_size is not None:
+        emphasis_font = ImageFont.truetype(
+            str(style.title_font), style.title_emphasis_size)
+        top, bottom = _split_title_lines(title, font, emphasis_font, d, W - 120)
+        rows = [(top, font, _hex_rgba(style.title_color))]
+        if bottom:
+            rows.append((bottom, emphasis_font,
+                         _hex_rgba(style.title_highlight)))
+        heights = []
+        for text, row_font, _color in rows:
+            _left, row_top, _right, row_bottom = _ink_bbox(d, text, row_font)
+            heights.append(row_bottom - row_top)
+        gap = round(style.title_size * 0.15) if len(rows) > 1 else 0
+        group_h = sum(heights) + gap * (len(rows) - 1)
+        top_y = (style.top_bar - group_h) / 2
+        for (text, row_font, color), height in zip(rows, heights):
+            center = (W // 2, round(top_y + height / 2))
+            d.text(_centered_text_origin(d, text, row_font, center), text,
+                   font=row_font, fill=color)
+            top_y += height + gap
+    else:
+        lines = _wrap_lines(title, font, max_w=W - 120, d=d)[:style.title_max_lines]
+        line_h = int(style.title_size * 1.25)
+        y0 = (style.top_bar - line_h * len(lines)) // 2
+        for i, line in enumerate(lines):
+            lw = int(d.textlength(line, font=font))
+            _draw_highlighted_line(d, ((W - lw) // 2, y0 + i * line_h), line,
+                                   [keyword] if keyword else [], font,
+                                   _hex_rgba(style.title_color),
+                                   _hex_rgba(style.title_highlight))
     img.save(out)
     return out
 
@@ -211,10 +277,14 @@ def render_watermark_png(style: StylePreset, out: Path) -> Path:
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     font = ImageFont.truetype(str(style.watermark_font), style.watermark_size)
-    tw = int(d.textlength(style.watermark_text, font=font))
-    y = H - style.bottom_bar + (style.bottom_bar - style.watermark_size) // 2
-    d.text(((W - tw) // 2, y), style.watermark_text, font=font,
-           fill=(255, 255, 255, 230))
+    if style.watermark_y is None:
+        center_y = H - style.bottom_bar + style.bottom_bar // 2
+    else:
+        center_y = _editor_y_to_canvas(style.watermark_y, H)
+    d.text(_centered_text_origin(d, style.watermark_text, font,
+                                 (W // 2, center_y)),
+           style.watermark_text, font=font,
+           fill=(255, 255, 255, style.watermark_opacity))
     img.save(out)
     return out
 
@@ -229,17 +299,22 @@ def render_subtitle_pngs(groups: list[list], keywords: list[str],
     for i, (_a, _b, t) in enumerate(groups):
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        tw = int(d.textlength(t, font=font))
-        th = style.sub_size
-        x = (W - tw) // 2
-        # 예시 릴스의 자막 위치: 영상 영역 높이의 y_frac(기본 85%) 지점
-        _vw, vh = style.video_area()
-        y = style.top_bar + int(vh * style.sub_y_frac) - th
-        d.rectangle((x - pad_x, y - pad_y, x + tw + pad_x, y + th + pad_y),
+        left, top, right, bottom = _ink_bbox(d, t, font)
+        if style.sub_y is None:
+            _vw, vh = style.video_area()
+            center_y = style.top_bar + int(vh * style.sub_y_frac) - style.sub_size // 2
+        else:
+            center_y = _editor_y_to_canvas(style.sub_y, H)
+        origin_x, origin_y = _centered_text_origin(d, t, font,
+                                                    (W // 2, center_y))
+        ink_box = (origin_x + left, origin_y + top,
+                   origin_x + right, origin_y + bottom)
+        d.rectangle((ink_box[0] - pad_x, ink_box[1] - pad_y,
+                     ink_box[2] + pad_x, ink_box[3] + pad_y),
                     fill=(0, 0, 0, style.sub_box_alpha))
-        _draw_highlighted_line(d, (x, y), t, keywords, font,
-                               _hex_rgba(style.sub_color),
-                               _hex_rgba(style.sub_highlight))
+        _draw_highlighted_line(d, (origin_x, origin_y), t, keywords, font,
+                               _hex_rgba(style.sub_color, style.sub_opacity),
+                               _hex_rgba(style.sub_highlight, style.sub_opacity))
         p = out_dir / f"s{i:03d}.png"
         img.save(p)
         paths.append(p)

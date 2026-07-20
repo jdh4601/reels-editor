@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import html as html_mod
 
-from reels_editor.config import PROVIDERS, AppConfig
+from reels_editor.config import MAX_STORYLINES, PROVIDERS, AppConfig
 from reels_editor.storyteller import StorylineResult
 
 _SETTING_FIELDS = [   # (키, 라벨, input 타입, 속성)
     ("model", "모델명 (빈칸=기본)", "text", ""),
     ("base_url", "Base URL (custom 전용)", "text", ""),
     ("api_key", "API 키 (저장 시 credentials로)", "password", ""),
-    ("n_storylines", "스토리라인 개수", "number", 'min="1" max="3"'),
+    ("n_storylines", "스토리라인 개수", "number", f'min="1" max="{MAX_STORYLINES}"'),
     ("sub_size", "자막 크기", "number", 'min="28" max="72"'),
     ("title_size", "타이틀 크기", "number", 'min="48" max="96"'),
     ("sub_highlight", "자막 포인트 컬러", "color", ""),

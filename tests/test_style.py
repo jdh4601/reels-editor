@@ -13,6 +13,17 @@ def test_load_done_preset() -> None:
     assert s.title_highlight == "#FF7A00"
     assert s.sub_highlight == "#FF3B30"
     assert s.watermark_text == "D.one"
+    assert s.title_font.name == "Pretendard-Bold.otf"
+    assert s.sub_font.name == "Pretendard-Bold.otf"
+    assert s.watermark_font.name == "Pretendard-Bold.otf"
+    assert s.title_size == 65
+    assert s.title_emphasis_size == 85
+    assert s.sub_size == 40
+    assert s.sub_opacity == 255
+    assert s.sub_y == -400
+    assert s.watermark_size == 75
+    assert s.watermark_opacity == 128
+    assert s.watermark_y == -1000
     assert s.speed == 1.2
     assert s.title_font.is_file()  # Pretendard 실제 설치 확인
 
@@ -32,7 +43,7 @@ def test_video_area_near_square() -> None:
 
 def test_missing_font_raises(tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
-    bad.write_text(STYLE.read_text().replace("Pretendard-ExtraBold", "없는폰트"),
+    bad.write_text(STYLE.read_text().replace("Pretendard-Bold", "없는폰트"),
                    encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         load_style(bad)

@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 import time
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -16,6 +17,8 @@ from reels_editor import processes
 from reels_editor.render import RenderAssets
 from reels_editor.storyteller import StorylineResult
 from reels_editor.style import StylePreset
+from reels_editor.config import AppConfig
+from reels_editor.voice_isolation import IsolationResult
 
 
 @dataclass
@@ -24,6 +27,9 @@ class Calls:
     overlay: int = 0
     cuts: int = 0
     generate: int = 0
+    durations: list[int] = field(default_factory=list)
+    storyline_counts: list[int] = field(default_factory=list)
+    providers: list[str] = field(default_factory=list)
     max_active_base: int = 0
     active_base: int = 0
     base_version: int = 0
@@ -134,8 +140,13 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         find_project=lambda name: tmp_path / name,
         load_project=lambda _path: {"draft": True},
         build_segments=lambda _draft: _segments(video),
-        generate_many=lambda *_args, **_kwargs: _count_generate(calls, generated),
-        build_runner=lambda _cfg: (lambda prompt: prompt),
+        generate_many=lambda _segments, count, duration_s, **_kwargs: _count_generate(
+            calls,
+            generated[:count],
+            duration_s,
+            count,
+        ),
+        build_runner=lambda cfg: _capture_provider(calls, cfg.provider),
         load_style=lambda _path: style,
         render_base_and_assets=render_base,
         render_overlay_variant=render_overlay,
@@ -145,8 +156,20 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
     )
 
 
-def _count_generate(calls: Calls, results: list[StorylineResult]) -> list[StorylineResult]:
+def _capture_provider(calls: Calls, provider: str):
+    calls.providers.append(provider)
+    return lambda prompt: prompt
+
+
+def _count_generate(
+    calls: Calls,
+    results: list[StorylineResult],
+    duration_s: int,
+    storyline_count: int,
+) -> list[StorylineResult]:
     calls.generate += 1
+    calls.durations.append(duration_s)
+    calls.storyline_counts.append(storyline_count)
     return results
 
 
@@ -171,6 +194,66 @@ def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism
     assert calls.cuts == 2
     assert calls.max_active_base <= 2
     assert job.selected_storyline_id == "s1"
+
+
+def test_job_service_uses_duration_stored_on_each_job(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+
+    job = service.run_job_sync("김현지대표인터뷰", duration_s=60)
+
+    assert job.duration_s == 60
+    assert calls.durations == [60]
+
+
+def test_job_service_uses_storyline_count_and_provider_stored_on_each_job(tmp_path: Path) -> None:
+    calls = Calls()
+    results = [StorylineResult(index, f"관점 {index + 1}", _doc(str(index + 1))) for index in range(10)]
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls, results))
+
+    job = service.run_job_sync(
+        "김현지대표인터뷰",
+        n_storylines=10,
+        provider="claude-cli",
+    )
+
+    assert job.n_storylines == 10
+    assert job.provider == "claude-cli"
+    assert len(job.storylines) == 10
+    assert calls.storyline_counts == [10]
+    assert calls.providers == ["claude-cli"]
+
+
+def test_job_service_reports_detailed_progress_during_rendering(tmp_path: Path) -> None:
+    calls = Calls()
+    entered_render = threading.Event()
+    release_render = threading.Event()
+    deps = _deps(tmp_path, calls, [StorylineResult(0, "정면승부형", _doc("A"))])
+    render_base = deps.render_base_and_assets
+
+    def blocking_render_base(*args, **kwargs):
+        entered_render.set()
+        release_render.wait(3)
+        return render_base(*args, **kwargs)
+
+    deps = JobServiceDeps(**{**deps.__dict__, "render_base_and_assets": blocking_render_base})
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
+    job = service.start_job("김현지대표인터뷰", n_storylines=1)
+
+    try:
+        assert entered_render.wait(2)
+        current = service.store.load(job.id)
+        assert current.phase == "rendering"
+        assert current.progress > 0.28
+        assert "스토리라인 1" in (current.message or "")
+        assert "세로 영상" in (current.message or "")
+    finally:
+        release_render.set()
+
+    deadline = time.time() + 3
+    while service.store.load(job.id).status is not Status.READY and time.time() < deadline:
+        time.sleep(0.02)
+    assert service.store.load(job.id).status is Status.READY
 
 
 def test_job_service_all_fail_does_not_render(tmp_path: Path) -> None:
@@ -249,6 +332,89 @@ def test_export_reconciles_requested_subtitle_variant_before_copy(tmp_path: Path
     assert b":False" in destination.read_bytes()
     assert exported.export.status is Status.READY
     assert exported.export.selected_storyline_id == "s1"
+
+
+def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+    job = service.run_job_sync("김현지대표인터뷰")
+    destination = tmp_path / "exports"
+
+    exported = service.export_many(
+        job.id,
+        destination,
+        storyline_ids=["s1", "s3"],
+        subtitles_on=False,
+    )
+
+    assert sorted(path.name for path in destination.glob("storyline-*.mp4")) == [
+        "storyline-1.mp4",
+        "storyline-3.mp4",
+    ]
+    assert sorted(path.name for path in destination.glob("*.manifest.json")) == [
+        "storyline-1.mp4.manifest.json",
+        "storyline-3.mp4.manifest.json",
+    ]
+    assert all(b":False" in path.read_bytes() for path in destination.glob("storyline-*.mp4"))
+    assert exported.export.output_path == str(destination)
+
+
+def test_export_applies_voice_isolator_once_and_records_manifest(tmp_path: Path) -> None:
+    calls = Calls()
+    enhanced_sources: list[Path] = []
+
+    def enhance(source: Path, output: Path, *, cache_dir: Path, api_key: str) -> IsolationResult:
+        assert api_key == "xi-test-key"
+        assert cache_dir.name == ".voice-isolation"
+        enhanced_sources.append(source)
+        output.write_bytes(b"voice-isolated")
+        return IsolationResult(output, cache_hit=False, audio_hash="abc123")
+
+    deps = replace(
+        _deps(tmp_path, calls),
+        enhance_export_video=enhance,
+        resolve_voice_isolation_key=lambda: "xi-test-key",
+    )
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=deps,
+        config=AppConfig(provider="codex-cli", voice_isolation=True),
+    )
+    job = service.run_job_sync("김현지대표인터뷰")
+    destination = tmp_path / "isolated.mp4"
+
+    service.export_selected(job.id, destination, storyline_id="s1")
+
+    assert destination.read_bytes() == b"voice-isolated"
+    assert len(enhanced_sources) == 1
+    manifest = json.loads((tmp_path / "isolated.mp4.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["voice_isolation"] is True
+    assert manifest["voice_isolation_cache_hit"] is False
+    assert manifest["voice_isolation_audio_hash"] == "abc123"
+
+
+def test_export_requires_elevenlabs_key_when_voice_isolation_enabled(tmp_path: Path) -> None:
+    deps = replace(
+        _deps(tmp_path, Calls()),
+        resolve_voice_isolation_key=lambda: None,
+    )
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=deps,
+        config=AppConfig(provider="codex-cli", voice_isolation=True),
+    )
+    job = service.run_job_sync("김현지대표인터뷰")
+
+    with pytest.raises(JobServiceError, match="ElevenLabs API key"):
+        service.export_selected(job.id, tmp_path / "missing-key.mp4", storyline_id="s1")
+
+
+def test_batch_export_rejects_empty_selection(tmp_path: Path) -> None:
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, Calls()))
+    job = service.run_job_sync("김현지대표인터뷰")
+
+    with pytest.raises(JobServiceError, match="at least one"):
+        service.export_many(job.id, tmp_path / "exports", storyline_ids=[])
 
 
 def test_export_rejects_unselected_storyline_request(tmp_path: Path) -> None:

@@ -31,6 +31,8 @@ class JobStore:
         work_dir: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        duration_s: int = 30,
+        n_storylines: int = 3,
         job_id: str | None = None,
     ) -> Job:
         now = _now()
@@ -45,6 +47,8 @@ class JobStore:
             work_dir=work_dir,
             provider=provider,
             model=model,
+            duration_s=duration_s,
+            n_storylines=n_storylines,
         )
         return self.save(job)
 

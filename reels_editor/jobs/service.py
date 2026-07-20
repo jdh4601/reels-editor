@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from reels_editor import capcut, edl, export, render
-from reels_editor.config import AppConfig, merged_style
+from reels_editor import capcut, edl, export, render, voice_isolation
+from reels_editor.config import AppConfig, merged_style, resolve_api_key
 from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
 from reels_editor.storyteller import StorylineResult, generate_many
@@ -22,8 +22,10 @@ from .models import ExportState, Job, Status, Storyline, Variant
 from .store import JobStore
 
 DEFAULT_STYLE = Path(__file__).parent.parent.parent / "styles" / "done.yaml"
-MAX_DESKTOP_STORYLINES = 3
+MAX_DESKTOP_STORYLINES = 10
 MAX_BASE_RENDERS = 2
+ALLOWED_DURATIONS = frozenset({15, 30, 60})
+DESKTOP_PROVIDERS = frozenset({"codex-cli", "claude-cli", "openai", "kimi"})
 
 
 class JobServiceError(RuntimeError):
@@ -43,6 +45,8 @@ class JobServiceDeps:
     write_outputs: Callable[[Path, dict[str, Any], dict[str, Any]], None] = export.write_outputs
     write_srt: Callable[[list[list], Path], Path] = export.write_srt
     export_cuts: Callable[[Path, dict[str, Any], dict[str, Any], Path, float], list[Path]] = export.export_cuts
+    enhance_export_video: Callable[..., voice_isolation.IsolationResult] = voice_isolation.enhance_video
+    resolve_voice_isolation_key: Callable[[], str | None] = lambda: resolve_api_key("elevenlabs")
 
 
 class JobService:
@@ -58,7 +62,7 @@ class JobService:
         self.store = store or JobStore()
         self.deps = deps or JobServiceDeps()
         self.style_path = style_path
-        self.config = config or AppConfig(provider="codex-cli", n_storylines=MAX_DESKTOP_STORYLINES)
+        self.config = config or AppConfig(provider="codex-cli", n_storylines=3)
         self.duration_s = duration_s
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
@@ -69,11 +73,23 @@ class JobService:
         self._operation_counts: dict[str, int] = {}
         self._shutdown = threading.Event()
 
-    def start_job(self, project_path: str) -> Job:
+    def start_job(
+        self,
+        project_path: str,
+        *,
+        duration_s: int | None = None,
+        n_storylines: int | None = None,
+        provider: str | None = None,
+    ) -> Job:
         with self._lock:
             if self._active_job_id is not None:
                 raise JobServiceError("another job is already active")
-            job = self._create_job(project_path)
+            job = self._create_job(
+                project_path,
+                self._validated_duration(duration_s),
+                self._validated_storyline_count(n_storylines),
+                self._validated_provider(provider),
+            )
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
             self._operation_counts[job.id] = 1
@@ -87,11 +103,23 @@ class JobService:
             self._worker.start()
             return job
 
-    def run_job_sync(self, project_path: str) -> Job:
+    def run_job_sync(
+        self,
+        project_path: str,
+        *,
+        duration_s: int | None = None,
+        n_storylines: int | None = None,
+        provider: str | None = None,
+    ) -> Job:
         with self._lock:
             if self._active_job_id is not None:
                 raise JobServiceError("another job is already active")
-            job = self._create_job(project_path)
+            job = self._create_job(
+                project_path,
+                self._validated_duration(duration_s),
+                self._validated_storyline_count(n_storylines),
+                self._validated_provider(provider),
+            )
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
             self._operation_counts[job.id] = 1
@@ -252,27 +280,11 @@ class JobService:
             job.message = "선택한 영상을 내보내는 중입니다."
             self._save(job)
 
-        destination = destination.expanduser()
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        tmp = destination.with_name(destination.name + ".part")
-        shutil.copy2(variant.path, tmp)
-        os.replace(tmp, destination)
-        manifest = destination.with_suffix(destination.suffix + ".manifest.json")
-        manifest.write_text(
-            json.dumps(
-                {
-                    "job_id": job_id,
-                    "storyline_id": story.id,
-                    "variant_id": variant.id,
-                    "title": variant.title_text,
-                    "subtitles_on": variant.subtitles_enabled,
-                    "output_path": str(destination),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        try:
+            self._copy_export_variant(job_id, story, variant, destination)
+        except Exception as exc:
+            self._record_export_failure(job_id, exc)
+            raise
 
         with self._lock:
             job = self.store.load(job_id)
@@ -283,15 +295,167 @@ class JobService:
             job.message = "내보내기가 완료되었습니다."
             return self._save(job)
 
-    def _create_job(self, project_path: str) -> Job:
-        cfg = AppConfig(
-            provider="codex-cli",
-            model=self.config.model,
-            base_url=self.config.base_url,
-            n_storylines=MAX_DESKTOP_STORYLINES,
-            style=dict(self.config.style),
+    def export_many(
+        self,
+        job_id: str,
+        destination_dir: Path,
+        *,
+        storyline_ids: list[str],
+        subtitles_on: bool | None = None,
+    ) -> Job:
+        selected_ids = list(dict.fromkeys(storyline_ids))
+        if not selected_ids:
+            raise JobServiceError("at least one storyline_id is required")
+
+        initial = self.store.load(job_id)
+        for storyline_id in selected_ids:
+            story = self._find_storyline(initial, storyline_id)
+            if subtitles_on is not None and story.subtitles_on != subtitles_on:
+                self.select_variant(
+                    job_id,
+                    storyline_id,
+                    title_index=story.selected_title_index,
+                    subtitles_on=subtitles_on,
+                    selected_for_export=False,
+                )
+
+        with self._lock:
+            job = self.store.load(job_id)
+            exports: list[tuple[Storyline, Variant]] = []
+            for storyline_id in selected_ids:
+                story = self._find_storyline(job, storyline_id)
+                variant = self._active_variant(story)
+                if variant.path is None or variant.status is not Status.READY:
+                    raise JobServiceError(f"selected variant is not ready: {storyline_id}")
+                exports.append((story, variant))
+            job.export.status = Status.EXPORTING
+            job.phase = "export"
+            job.message = f"선택한 영상 {len(exports)}개를 내보내는 중입니다."
+            self._save(job)
+
+        destination_dir = destination_dir.expanduser()
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            for story, variant in exports:
+                destination = destination_dir / f"storyline-{story.index + 1}.mp4"
+                self._copy_export_variant(job_id, story, variant, destination)
+        except Exception as exc:
+            self._record_export_failure(job_id, exc)
+            raise
+
+        with self._lock:
+            job = self.store.load(job_id)
+            job.export.status = Status.READY
+            job.export.output_path = str(destination_dir)
+            job.export.error = None
+            job.phase = "ready"
+            job.message = f"선택한 영상 {len(exports)}개 내보내기가 완료되었습니다."
+            return self._save(job)
+
+    def _copy_export_variant(
+        self,
+        job_id: str,
+        story: Storyline,
+        variant: Variant,
+        destination: Path,
+    ) -> None:
+        if variant.path is None:
+            raise JobServiceError("selected variant has no output path")
+        destination = destination.expanduser()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        tmp = destination.with_name(f".{destination.stem}.part{destination.suffix}")
+        isolation_meta: dict[str, Any] = {
+            "voice_isolation": False,
+            "voice_isolation_cache_hit": None,
+            "voice_isolation_audio_hash": None,
+        }
+        try:
+            if self.config.voice_isolation:
+                api_key = self.deps.resolve_voice_isolation_key()
+                if not api_key:
+                    raise JobServiceError(
+                        "ElevenLabs API key가 없습니다. 설정에서 API 키를 저장하세요."
+                    )
+                try:
+                    result = self.deps.enhance_export_video(
+                        Path(variant.path),
+                        tmp,
+                        cache_dir=self.store.job_dir(job_id) / ".voice-isolation",
+                        api_key=api_key,
+                    )
+                except voice_isolation.VoiceIsolationError as exc:
+                    raise JobServiceError(str(exc)) from exc
+                isolation_meta = {
+                    "voice_isolation": True,
+                    "voice_isolation_cache_hit": result.cache_hit,
+                    "voice_isolation_audio_hash": result.audio_hash,
+                }
+            else:
+                shutil.copy2(variant.path, tmp)
+            os.replace(tmp, destination)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+        manifest = destination.with_suffix(destination.suffix + ".manifest.json")
+        manifest.write_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "storyline_id": story.id,
+                    "variant_id": variant.id,
+                    "title": variant.title_text,
+                    "subtitles_on": variant.subtitles_enabled,
+                    "output_path": str(destination),
+                    **isolation_meta,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
         )
-        job = self.store.create_job(project_path=project_path, provider=cfg.provider, model=cfg.model)
+
+    def _record_export_failure(self, job_id: str, exc: Exception) -> None:
+        with self._lock:
+            job = self.store.load(job_id)
+            job.export.status = Status.FAILED
+            job.export.error = str(exc)
+            job.phase = "export-failed"
+            job.message = "내보내기에 실패했습니다."
+            self._save(job)
+
+    def _validated_duration(self, duration_s: int | None) -> int:
+        selected = self.duration_s if duration_s is None else duration_s
+        if selected not in ALLOWED_DURATIONS:
+            raise JobServiceError(f"duration_s must be one of {sorted(ALLOWED_DURATIONS)}")
+        return selected
+
+    def _validated_storyline_count(self, n_storylines: int | None) -> int:
+        selected = self.config.n_storylines if n_storylines is None else n_storylines
+        if not 1 <= selected <= MAX_DESKTOP_STORYLINES:
+            raise JobServiceError(f"n_storylines must be between 1 and {MAX_DESKTOP_STORYLINES}")
+        return selected
+
+    def _validated_provider(self, provider: str | None) -> str:
+        selected = self.config.provider if provider is None else provider
+        if selected not in DESKTOP_PROVIDERS:
+            raise JobServiceError(f"provider must be one of {sorted(DESKTOP_PROVIDERS)}")
+        return selected
+
+    def _create_job(
+        self,
+        project_path: str,
+        duration_s: int,
+        n_storylines: int,
+        provider: str,
+    ) -> Job:
+        model = self.config.model if provider == self.config.provider else ""
+        job = self.store.create_job(
+            project_path=project_path,
+            provider=provider,
+            model=model,
+            duration_s=duration_s,
+            n_storylines=n_storylines,
+        )
         job.status = Status.LOADING
         job.phase = "loading"
         job.progress = 0.02
@@ -319,9 +483,28 @@ class JobService:
 
     def _run_job(self, job_id: str) -> None:
         job = self.store.load(job_id)
-        cfg = AppConfig(provider="codex-cli", model=self.config.model, n_storylines=MAX_DESKTOP_STORYLINES, style=dict(self.config.style))
+        provider = job.provider or self.config.provider
+        cfg = AppConfig(
+            provider=provider,
+            model=job.model or "",
+            base_url=self.config.base_url if provider == self.config.provider else "",
+            n_storylines=job.n_storylines,
+            style=dict(self.config.style),
+        )
         project_dir = self.deps.find_project(str(job.project_path))
+        self._set_job_progress(
+            job_id,
+            phase="loading",
+            progress=0.05,
+            message="CapCut 프로젝트 폴더와 초안 파일을 확인하는 중입니다.",
+        )
         draft = self.deps.load_project(project_dir)
+        self._set_job_progress(
+            job_id,
+            phase="loading",
+            progress=0.08,
+            message="타임라인의 영상·오디오·자막 구간을 분석하는 중입니다.",
+        )
         segments = self.deps.build_segments(draft)
         video = Path(segments["video_path"])
         style = merged_style(self.deps.load_style(self.style_path), cfg.style)
@@ -338,7 +521,7 @@ class JobService:
             job.status = Status.GENERATING
             job.phase = "generating"
             job.progress = 0.12
-            job.message = "Codex CLI로 스토리라인 3개를 생성하는 중입니다."
+            job.message = f"{cfg.provider}로 스토리라인 {job.n_storylines}개를 생성하는 중입니다."
             self._save(job)
         self._raise_if_cancelled(job_id)
 
@@ -351,8 +534,8 @@ class JobService:
 
         results = self.deps.generate_many(
             segments,
-            MAX_DESKTOP_STORYLINES,
-            self.duration_s,
+            job.n_storylines,
+            job.duration_s,
             runner=managed_runner,
             raw_dump_dir=work,
         )
@@ -372,7 +555,7 @@ class JobService:
             job.status = Status.RENDERING_BASE
             job.phase = "rendering"
             job.progress = 0.28
-            job.message = "대표 영상 3개를 렌더링하는 중입니다."
+            job.message = f"대표 영상 {job.n_storylines}개를 렌더링하는 중입니다."
             self._save(job)
 
         alive = [result for result in results if result.doc is not None]
@@ -406,15 +589,15 @@ class JobService:
                 job.selected_storyline_id = first.id
                 first.variants[0].selected = True
                 job.export = ExportState(status=Status.IDLE, selected_storyline_id=first.id, selected_variant_id=first.variants[0].id)
-                if len(ready) == MAX_DESKTOP_STORYLINES:
+                if len(ready) == job.n_storylines:
                     job.status = Status.READY
                     job.phase = "ready"
                     job.error = None
-                    job.message = "대표 영상 3개가 준비되었습니다."
+                    job.message = f"대표 영상 {job.n_storylines}개가 준비되었습니다."
                 else:
                     job.status = Status.FAILED
                     job.phase = "partial-failure"
-                    job.error = f"대표 영상 {len(ready)}/{MAX_DESKTOP_STORYLINES}개만 준비되었습니다."
+                    job.error = f"대표 영상 {len(ready)}/{job.n_storylines}개만 준비되었습니다."
                     job.message = job.error
             self._save(job)
 
@@ -459,21 +642,34 @@ class JobService:
         if result.doc is None:
             return
         story_id = f"s{result.index + 1}"
-        with self._lock:
-            job = self.store.load(job_id)
-            if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
-                return
-            storyline = self._find_storyline(job, story_id)
-            storyline.status = Status.RENDERING_BASE
-            storyline.progress = 0.25
-            self._save(job)
+        self._set_storyline_render_progress(
+            job_id,
+            story_id,
+            progress=0.25,
+            status=Status.RENDERING_BASE,
+            detail="컷 순서와 자막 구간을 준비하는 중입니다.",
+        )
         try:
             self._raise_if_cancelled(job_id)
             sdir = self.store.job_dir(job_id) / story_id
             self._write_storyline_outputs_once(sdir, result.doc, segments, video, style, speed)
             self._raise_if_cancelled(job_id)
+            self._set_storyline_render_progress(
+                job_id,
+                story_id,
+                progress=0.45,
+                status=Status.RENDERING_BASE,
+                detail="선택한 구간을 세로 영상으로 렌더링하는 중입니다.",
+            )
             assets = self.deps.render_base_and_assets(video, segments, result.doc, style, sdir / ".render", speed)
             self._raise_if_cancelled(job_id)
+            self._set_storyline_render_progress(
+                job_id,
+                story_id,
+                progress=0.78,
+                status=Status.RENDERING_OVERLAY,
+                detail="제목·자막 오버레이와 오디오를 합성하는 중입니다.",
+            )
             assets_path = assets.write_manifest(sdir / ".render" / "assets.json")
             title = result.doc["title_candidates"][0]
             key = render.variant_cache_key(
@@ -522,6 +718,13 @@ class JobService:
                     )
                 ]
                 self._save(job)
+            self._set_storyline_render_progress(
+                job_id,
+                story_id,
+                progress=1.0,
+                status=Status.READY,
+                detail="대표 영상 렌더링을 완료했습니다.",
+            )
         except Exception as exc:  # noqa: BLE001 - per-storyline partial success boundary
             with self._lock:
                 job = self.store.load(job_id)
@@ -533,6 +736,50 @@ class JobService:
                     storyline.error = str(exc)
                     storyline.progress = 1.0
                     self._save(job)
+
+    def _set_job_progress(self, job_id: str, *, phase: str, progress: float, message: str) -> None:
+        with self._lock:
+            job = self.store.load(job_id)
+            if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
+                return
+            job.phase = phase
+            job.progress = progress
+            job.message = message
+            self._save(job)
+
+    def _set_storyline_render_progress(
+        self,
+        job_id: str,
+        storyline_id: str,
+        *,
+        progress: float,
+        status: Status,
+        detail: str,
+    ) -> None:
+        with self._lock:
+            job = self.store.load(job_id)
+            if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
+                return
+            storyline = self._find_storyline(job, storyline_id)
+            storyline.status = status
+            storyline.progress = max(storyline.progress, progress)
+            if job.status is Status.RENDERING_BASE:
+                completed = sum(
+                    story.status in {Status.READY, Status.FAILED, Status.CANCELLED}
+                    for story in job.storylines
+                )
+                total = max(1, len(job.storylines))
+                aggregate = sum(
+                    1.0 if story.status in {Status.READY, Status.FAILED, Status.CANCELLED} else story.progress
+                    for story in job.storylines
+                ) / total
+                job.phase = "rendering"
+                job.progress = min(0.96, 0.28 + 0.68 * aggregate)
+                job.message = (
+                    f"스토리라인 {storyline.index + 1}: {detail} "
+                    f"· 전체 {completed}/{job.n_storylines}개 완료"
+                )
+            self._save(job)
 
     def _render_storyline_base(self, job_id: str, storyline_id: str) -> None:
         job = self.store.load(job_id)

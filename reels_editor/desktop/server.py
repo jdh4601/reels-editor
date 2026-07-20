@@ -5,16 +5,25 @@ import secrets
 import socket
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.request import urlopen
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from reels_editor.config import (
+    AppConfig,
+    load_config,
+    mask_key,
+    resolve_api_key,
+    save_config,
+    save_credential,
+)
 from reels_editor.jobs import Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
 
 from .dialogs import DialogProvider, FakeDialogProvider
@@ -27,6 +36,9 @@ class SaveDialogRequest(BaseModel):
 
 class CreateJobRequest(BaseModel):
     project_path: str
+    duration_s: Literal[15, 30, 60] = 30
+    n_storylines: int = Field(default=3, ge=1, le=10)
+    provider: Literal["codex-cli", "claude-cli", "openai", "kimi"] = "codex-cli"
 
 
 class SelectionRequest(BaseModel):
@@ -41,6 +53,16 @@ class ExportRequest(BaseModel):
     suggested_name: str = "reel.mp4"
 
 
+class BatchExportRequest(BaseModel):
+    storyline_ids: list[str] = Field(min_length=1, max_length=10)
+    subtitles_on: bool | None = None
+
+
+class VoiceIsolationSettingsRequest(BaseModel):
+    enabled: bool
+    api_key: str | None = Field(default=None, max_length=512)
+
+
 def create_app(
     *,
     static_dir: Path,
@@ -48,6 +70,8 @@ def create_app(
     dialog_provider: DialogProvider | None = None,
     job_service: JobService | None = None,
     session_token: str | None = None,
+    config_path: Path | None = None,
+    credentials_path: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Reels Editor Desktop")
     dialogs = dialog_provider or FakeDialogProvider()
@@ -74,6 +98,35 @@ def create_app(
     def tools(_auth: None = Depends(require_token)) -> dict[str, Any]:
         return probe_required_tools()
 
+    def voice_isolation_settings() -> dict[str, Any]:
+        key = resolve_api_key("elevenlabs", credentials_path)
+        config = getattr(service, "config", AppConfig(provider="codex-cli"))
+        return {
+            "enabled": bool(config.voice_isolation),
+            "configured": bool(key),
+            "masked_key": mask_key(key) if key else None,
+        }
+
+    @app.get("/api/settings/voice-isolation")
+    def get_voice_isolation_settings(_auth: None = Depends(require_token)) -> dict[str, Any]:
+        return voice_isolation_settings()
+
+    @app.put("/api/settings/voice-isolation")
+    def put_voice_isolation_settings(
+        request: VoiceIsolationSettingsRequest,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        api_key = (request.api_key or "").strip()
+        if api_key:
+            save_credential("elevenlabs", api_key, credentials_path)
+        if request.enabled and not resolve_api_key("elevenlabs", credentials_path):
+            raise HTTPException(status_code=400, detail="ElevenLabs API key가 필요합니다.")
+        persisted = replace(load_config(config_path), voice_isolation=request.enabled)
+        save_config(persisted, config_path)
+        current = getattr(service, "config", AppConfig(provider="codex-cli"))
+        service.config = replace(current, voice_isolation=request.enabled)
+        return voice_isolation_settings()
+
     @app.post("/api/dialogs/open-folder")
     def open_folder(_auth: None = Depends(require_token)) -> dict[str, str | None]:
         return {"path": dialogs.choose_folder()}
@@ -89,7 +142,12 @@ def create_app(
     @app.post("/api/jobs")
     def create_job(request: CreateJobRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:
         try:
-            job = service.start_job(request.project_path)
+            job = service.start_job(
+                request.project_path,
+                duration_s=request.duration_s,
+                n_storylines=request.n_storylines,
+                provider=request.provider,
+            )
         except JobServiceError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _snapshot_from_job(job)
@@ -134,6 +192,24 @@ def create_app(
             )
         except JobServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        dialogs.show_in_file_manager(Path(destination).expanduser().parent)
+        return _snapshot_from_job(job)
+
+    @app.post("/api/jobs/{job_id}/export-batch")
+    def export_batch(job_id: str, request: BatchExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:
+        destination = dialogs.choose_folder()
+        if not destination:
+            raise HTTPException(status_code=400, detail="export cancelled")
+        try:
+            job = service.export_many(
+                job_id,
+                Path(destination),
+                storyline_ids=request.storyline_ids,
+                subtitles_on=request.subtitles_on,
+            )
+        except JobServiceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        dialogs.show_in_file_manager(Path(destination).expanduser())
         return _snapshot_from_job(job)
 
     @app.post("/api/jobs/{job_id}/cancel")
@@ -228,6 +304,9 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
             "storylines": [_placeholder_storyline(index) for index in range(3)],
             "selected_storyline_id": None,
             "subtitles_on": True,
+            "duration_s": 30,
+            "n_storylines": 3,
+            "provider": "codex-cli",
             "seq": 0,
             "event_seq": 0,
         }
@@ -245,6 +324,9 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "error": job.error,
         "selected_storyline_id": job.selected_storyline_id or job.export.selected_storyline_id,
         "subtitles_on": _selected_subtitles(job),
+        "duration_s": job.duration_s,
+        "n_storylines": job.n_storylines,
+        "provider": job.provider or "codex-cli",
         "storylines": [_storyline_snapshot(job, storyline) for storyline in job.storylines],
         "export": job.export.to_dict(),
         "seq": job.seq,

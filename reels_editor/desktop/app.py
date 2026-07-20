@@ -53,6 +53,7 @@ def load_desktop_config() -> AppConfig:
         provider="codex-cli",
         model=cfg.model if cfg.provider == "codex-cli" else "",
         n_storylines=3,
+        voice_isolation=cfg.voice_isolation,
         style=dict(cfg.style),
     )
 

@@ -221,6 +221,8 @@ class Job:
     work_dir: str | None = None
     provider: str | None = None
     model: str | None = None
+    duration_s: int = 30
+    n_storylines: int = 3
     phase: str | None = None
     progress: float = 0.0
     message: str | None = None
@@ -248,6 +250,8 @@ class Job:
             "work_dir": self.work_dir,
             "provider": self.provider,
             "model": self.model,
+            "duration_s": self.duration_s,
+            "n_storylines": self.n_storylines,
             "phase": self.phase,
             "progress": self.progress,
             "message": self.message,
@@ -284,6 +288,8 @@ class Job:
             work_dir=data.get("work_dir"),
             provider=data.get("provider"),
             model=data.get("model"),
+            duration_s=int(data.get("duration_s", 30)),
+            n_storylines=int(data.get("n_storylines", 3)),
             phase=data.get("phase"),
             progress=float(data.get("progress", 0.0)),
             message=data.get("message"),

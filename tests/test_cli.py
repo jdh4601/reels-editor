@@ -523,7 +523,7 @@ def test_make_reopens_gate_on_invalid_settings_without_losing_storylines(
     monkeypatch.setattr(cli, "generate_many", fake_generate_many)
 
     decisions = [
-        # n_storylines=99는 config.MAX_STORYLINES(3)를 벗어남 — save_config가
+        # n_storylines=99는 config.MAX_STORYLINES를 벗어남 — save_config가
         # ValueError를 던져야 한다.
         gate.MultiGateDecision("render", [(0, 0)], [], "", {"n_storylines": "99"}),
         gate.MultiGateDecision("render", [(0, 0)], [], "", {}),

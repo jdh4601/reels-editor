@@ -186,6 +186,30 @@ CLI 모드에서 지원하는 프로바이더:
 | Kimi | `kimi` | `MOONSHOT_API_KEY` |
 | OpenAI 호환 서버 | `custom` | `REELS_LLM_API_KEY` |
 
+## ElevenLabs 음성 개선
+
+설정 화면의 `ElevenLabs Voice Isolator`에서 API 키를 입력하고 `음성 개선 ON`으로
+저장하면, 선택한 최종 영상을 내보낼 때 사람 목소리의 배경 소음과 잔향을 줄입니다.
+미리보기 렌더에는 API를 호출하지 않으며 최종 선택 영상마다 한 번만 호출합니다.
+같은 오디오는 작업 폴더의 SHA-256 캐시를 재사용하므로 다시 내보낼 때 중복 과금하지
+않습니다.
+
+API 키는 아래 로컬 파일에 권한 `0600`으로 저장됩니다.
+
+```text
+~/.config/reels-editor/credentials.yaml
+```
+
+환경변수로 설정할 수도 있습니다.
+
+```bash
+export ELEVENLABS_API_KEY="..."
+```
+
+Voice Isolator가 켜져 있는데 API 키가 없거나 호출이 실패하면 원본 음성으로 조용히
+대체하지 않고 내보내기 오류를 표시합니다. ElevenLabs 사용량은 처리한 오디오 길이에
+따라 계정에 차감됩니다.
+
 ## 문제 해결
 
 ### 앱에서 Codex 또는 ffmpeg를 찾지 못함

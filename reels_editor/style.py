@@ -27,6 +27,11 @@ class StylePreset:
     watermark_font: Path
     watermark_size: int
     speed: float
+    title_emphasis_size: int | None = None
+    sub_opacity: int = 255
+    sub_y: int | None = None
+    watermark_opacity: int = 230
+    watermark_y: int | None = None
 
     def video_area(self) -> tuple[int, int]:
         return self.canvas[0], self.canvas[1] - self.top_bar - self.bottom_bar
@@ -57,4 +62,9 @@ def load_style(path: Path) -> StylePreset:
         watermark_text=w["text"], watermark_font=_font(font_dir, w["font"]),
         watermark_size=w["size"],
         speed=float(raw["speed"]),
+        title_emphasis_size=t.get("emphasis_size"),
+        sub_opacity=int(s.get("opacity", 255)),
+        sub_y=int(s["y"]) if "y" in s else None,
+        watermark_opacity=int(w.get("opacity", 230)),
+        watermark_y=int(w["y"]) if "y" in w else None,
     )

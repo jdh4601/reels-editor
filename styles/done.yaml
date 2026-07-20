@@ -5,20 +5,25 @@ top_bar: 300        # 상단 블랙바(타이틀 영역) 높이 px — 영상 �
 bottom_bar: 380     # 하단 블랙바(워터마크 영역) 높이 px
 font_dir: ~/Library/Fonts
 title:
-  font: Pretendard-ExtraBold.otf
-  size: 72
+  font: Pretendard-Bold.otf
+  size: 65              # 편집기 표기 13 × 5 (첫째 줄)
+  emphasis_size: 85     # 편집기 표기 17 × 5 (둘째 줄)
   color: "#FFFFFF"
-  highlight: "#FF7A00"   # 타이틀 키워드 오렌지
+  highlight: "#FF7A00"   # 둘째 줄 전체 오렌지
   max_lines: 2
 subtitle:
-  font: Pretendard-SemiBold.otf
-  size: 44
+  font: Pretendard-Bold.otf
+  size: 40              # 편집기 표기 8 × 5
+  opacity: 255          # 100%
   color: "#FFFFFF"
   highlight: "#FF3B30"   # 자막 키워드 레드
   box_alpha: 200         # 검정 박스 불투명도 0-255
+  y: -400                # 중앙 원점 편집 좌표(음수=아래), 캔버스 중심 y=1160px
   y_frac: 0.85           # 영상 영역 높이 기준 자막 baseline 위치(0=상단, 1=하단)
 watermark:
   text: "D.one"
-  font: Pretendard-Medium.otf
-  size: 48
+  font: Pretendard-Bold.otf
+  size: 75              # 편집기 표기 15 × 5
+  opacity: 128          # 50%
+  y: -1000              # 중앙 원점 편집 좌표(음수=아래), 캔버스 중심 y=1460px
 speed: 1.2

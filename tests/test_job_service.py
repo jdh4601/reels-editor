@@ -150,7 +150,7 @@ def _count_generate(calls: Calls, results: list[StorylineResult]) -> list[Storyl
     return results
 
 
-def test_job_service_keeps_partial_success_and_limits_base_parallelism(tmp_path: Path) -> None:
+def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism(tmp_path: Path) -> None:
     calls = Calls()
     results = [
         StorylineResult(0, "정면승부형", _doc("A")),
@@ -161,7 +161,9 @@ def test_job_service_keeps_partial_success_and_limits_base_parallelism(tmp_path:
 
     job = service.run_job_sync("김현지대표인터뷰")
 
-    assert job.status is Status.READY
+    assert job.status is Status.FAILED
+    assert job.phase == "partial-failure"
+    assert job.error == "대표 영상 2/3개만 준비되었습니다."
     assert [story.status for story in job.storylines] == [Status.READY, Status.FAILED, Status.READY]
     assert calls.generate == 1
     assert calls.base == 2
@@ -354,7 +356,8 @@ def test_cancelled_job_cannot_resume_after_new_job_replaces_active_slot(tmp_path
 
     assert cancelled_a.status is Status.CANCELLED
     assert service.store.load(job_a.id).status is Status.CANCELLED
-    assert service.store.load(job_b.id).status is Status.READY
+    assert service.store.load(job_b.id).status is Status.FAILED
+    assert service.store.load(job_b.id).phase == "partial-failure"
     assert service.store.load(job_b.id).project_name == "B"
 
 
@@ -476,6 +479,49 @@ def test_cancel_terminates_overlay_process_and_blocks_new_job_until_done(tmp_pat
     while service.store.load(replacement.id).status is not Status.READY and time.time() < deadline:
         time.sleep(0.05)
     assert service.store.load(replacement.id).status is Status.READY
+
+
+def test_overlay_completion_does_not_release_active_slot_while_base_renders_continue(tmp_path: Path) -> None:
+    calls = Calls()
+    release_remaining = threading.Event()
+    results = [
+        StorylineResult(0, "정면승부형", _doc("A")),
+        StorylineResult(1, "반전형", _doc("B")),
+        StorylineResult(2, "감정선형", _doc("C")),
+    ]
+    deps = _deps(tmp_path, calls, results)
+    render_base = deps.render_base_and_assets
+
+    def staged_render_base(video, segments, doc, style, out_dir, speed):
+        if out_dir.parent.name != "s1":
+            release_remaining.wait(3)
+        return render_base(video, segments, doc, style, out_dir, speed)
+
+    deps = JobServiceDeps(**{**deps.__dict__, "render_base_and_assets": staged_render_base})
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
+    job = service.start_job("김현지대표인터뷰")
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        current = service.store.load(job.id)
+        if current.storylines and current.storylines[0].status is Status.READY:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail("first storyline did not become ready")
+
+    service.select_variant(job.id, "s1", title_index=1, subtitles_on=False)
+
+    with pytest.raises(JobServiceError, match="another job is already active"):
+        service.start_job("replacement")
+
+    service.cancel(job.id)
+    release_remaining.set()
+    deadline = time.time() + 3
+    while service._active_job_id is not None and time.time() < deadline:
+        time.sleep(0.02)
+    assert service._active_job_id is None
+    assert service.store.load(job.id).status is Status.CANCELLED
 
 
 def _capture_exception(errors: list[BaseException], fn, *args, **kwargs) -> None:

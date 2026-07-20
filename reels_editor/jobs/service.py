@@ -76,6 +76,7 @@ class JobService:
             job = self._create_job(project_path)
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
+            self._operation_counts[job.id] = 1
             self._active_job_id = job.id
             self._worker = threading.Thread(
                 target=self._run_job_guarded,
@@ -93,6 +94,7 @@ class JobService:
             job = self._create_job(project_path)
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
+            self._operation_counts[job.id] = 1
             self._active_job_id = job.id
         self._run_job_guarded(job.id)
         return self.store.load(job.id)
@@ -313,10 +315,7 @@ class JobService:
                     self._save(job)
         finally:
             with self._lock:
-                if self._active_job_id == job_id:
-                    self._active_job_id = None
-                self._process_registries.pop(job_id, None)
-                self._operation_counts.pop(job_id, None)
+                self._release_job_operation_locked(job_id)
 
     def _run_job(self, job_id: str) -> None:
         job = self.store.load(job_id)
@@ -403,13 +402,20 @@ class JobService:
                 job.message = job.error
             else:
                 first = ready[0]
-                job.status = Status.READY
-                job.phase = "ready"
                 job.progress = 1.0
-                job.message = "대표 영상이 준비되었습니다."
                 job.selected_storyline_id = first.id
                 first.variants[0].selected = True
                 job.export = ExportState(status=Status.IDLE, selected_storyline_id=first.id, selected_variant_id=first.variants[0].id)
+                if len(ready) == MAX_DESKTOP_STORYLINES:
+                    job.status = Status.READY
+                    job.phase = "ready"
+                    job.error = None
+                    job.message = "대표 영상 3개가 준비되었습니다."
+                else:
+                    job.status = Status.FAILED
+                    job.phase = "partial-failure"
+                    job.error = f"대표 영상 {len(ready)}/{MAX_DESKTOP_STORYLINES}개만 준비되었습니다."
+                    job.message = job.error
             self._save(job)
 
     def _storyline_from_result(self, result: StorylineResult) -> Storyline:
@@ -735,14 +741,17 @@ class JobService:
                 yield
         finally:
             with self._lock:
-                remaining = self._operation_counts.get(job_id, 0) - 1
-                if remaining > 0:
-                    self._operation_counts[job_id] = remaining
-                else:
-                    self._operation_counts.pop(job_id, None)
-                    if self._active_job_id == job_id:
-                        self._active_job_id = None
-                    self._process_registries.pop(job_id, None)
+                self._release_job_operation_locked(job_id)
+
+    def _release_job_operation_locked(self, job_id: str) -> None:
+        remaining = self._operation_counts.get(job_id, 0) - 1
+        if remaining > 0:
+            self._operation_counts[job_id] = remaining
+            return
+        self._operation_counts.pop(job_id, None)
+        if self._active_job_id == job_id:
+            self._active_job_id = None
+        self._process_registries.pop(job_id, None)
 
 
 def _assets_fingerprint(manifest_path: Path, assets: render.RenderAssets) -> str:

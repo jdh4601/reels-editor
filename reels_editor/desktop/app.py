@@ -15,7 +15,6 @@ from reels_editor.jobs import JobService, JobStore
 from reels_editor.storyteller import build_prompt
 
 from .dialogs import FakeDialogProvider, MutableDialogProvider, WebviewDialogProvider
-from .media import ensure_sample_media
 from .server import UvicornThread, create_app
 from .tools import inject_tool_paths
 
@@ -137,8 +136,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     inject_tool_paths()
-    ensure_sample_media(args.media_dir)
-
     dialog_provider = MutableDialogProvider(FakeDialogProvider())
     session_token = secrets.token_urlsafe(32)
     app, service = build_desktop_app(

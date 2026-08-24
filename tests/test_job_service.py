@@ -26,10 +26,10 @@ from reels_editor.youtube import YouTubeSource
 class Calls:
     base: int = 0
     overlay: int = 0
-    cuts: int = 0
     generate: int = 0
     durations: list[int] = field(default_factory=list)
     storyline_counts: list[int] = field(default_factory=list)
+    speeds: list[float] = field(default_factory=list)
     providers: list[str] = field(default_factory=list)
     max_active_base: int = 0
     active_base: int = 0
@@ -130,13 +130,6 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         (work / "edl.json").write_text(__import__("json").dumps(doc), encoding="utf-8")
         (work / "segments.json").write_text(__import__("json").dumps(segments), encoding="utf-8")
 
-    def export_cuts(_video, _doc, _segments, out_dir: Path, _speed):
-        calls.cuts += 1
-        out_dir.mkdir(parents=True, exist_ok=True)
-        cut = out_dir / "001-hook.mp4"
-        cut.write_bytes(b"cut")
-        return [cut]
-
     return JobServiceDeps(
         find_project=lambda name: tmp_path / name,
         load_project=lambda _path: {"draft": True},
@@ -146,6 +139,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
             generated[:count],
             duration_s,
             count,
+            _kwargs["speed"],
         ),
         build_runner=lambda cfg: _capture_provider(calls, cfg.provider),
         load_style=lambda _path: style,
@@ -153,7 +147,6 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         render_overlay_variant=render_overlay,
         write_outputs=write_outputs,
         write_srt=lambda _groups, path: path.write_text("srt", encoding="utf-8") or path,
-        export_cuts=export_cuts,
     )
 
 
@@ -167,10 +160,12 @@ def _count_generate(
     results: list[StorylineResult],
     duration_s: int,
     storyline_count: int,
+    speed: float,
 ) -> list[StorylineResult]:
     calls.generate += 1
     calls.durations.append(duration_s)
     calls.storyline_counts.append(storyline_count)
+    calls.speeds.append(speed)
     return results
 
 
@@ -192,9 +187,9 @@ def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism
     assert calls.generate == 1
     assert calls.base == 2
     assert calls.overlay == 2
-    assert calls.cuts == 2
     assert calls.max_active_base <= 2
     assert job.selected_storyline_id == "s1"
+    assert not (Path(job.work_dir or "") / "s1" / "cuts").exists()
 
 
 def test_job_service_uses_duration_stored_on_each_job(tmp_path: Path) -> None:
@@ -205,6 +200,19 @@ def test_job_service_uses_duration_stored_on_each_job(tmp_path: Path) -> None:
 
     assert job.duration_s == 60
     assert calls.durations == [60]
+
+
+def test_job_service_validates_storyline_length_with_configured_playback_speed(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, calls),
+        config=AppConfig(provider="codex-cli", style={"speed": 1.45}),
+    )
+
+    service.run_job_sync("김현지대표인터뷰", duration_s=60)
+
+    assert calls.speeds == [1.45]
 
 
 def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp_path: Path) -> None:
@@ -250,6 +258,50 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     assert job.transcript_kind == "automatic"
     assert download_args["output_dir"] == tmp_path / "jobs" / job.id / "source"
     assert calls.durations == [60]
+    assert calls.base == 3
+
+
+def test_youtube_job_reuses_complete_prior_download_for_same_video_id(tmp_path: Path) -> None:
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    store = JobStore(tmp_path / "jobs")
+    prior = store.create_job(
+        source_type="youtube",
+        source_url="https://www.youtube.com/watch?v=abc123&si=old",
+        project_name="이전 작업 제목",
+    )
+    source_dir = store.job_dir(prior.id) / "source"
+    source_dir.mkdir(parents=True)
+    video = source_dir / "source.mp4"
+    video.write_bytes(b"cached-video")
+    (source_dir / "source.en-orig.json3").write_text("{}", encoding="utf-8")
+    cached_segments = _segments(video)
+    cached_segments.update({
+        "transcript_language": "en-orig",
+        "transcript_kind": "automatic",
+    })
+    (source_dir / "segments.json").write_text(json.dumps(cached_segments), encoding="utf-8")
+    (source_dir / "source.info.json").write_text(json.dumps({
+        "id": "abc123",
+        "title": "캐시된 창업가 인터뷰",
+    }), encoding="utf-8")
+
+    def unexpected_download(*_args: Any, **_kwargs: Any) -> YouTubeSource:
+        raise AssertionError("complete cached source must skip YouTube download")
+
+    service = JobService(
+        store=store,
+        deps=replace(deps, download_youtube_source=unexpected_download),
+    )
+
+    job = service.run_youtube_job_sync("https://youtu.be/abc123?si=new")
+
+    assert job.status is Status.READY
+    assert job.project_name == "캐시된 창업가 인터뷰"
+    assert job.input_path == str(video)
+    assert job.transcript_language == "en-orig"
+    assert job.transcript_kind == "automatic"
+    assert calls.generate == 1
     assert calls.base == 3
 
 
@@ -317,14 +369,13 @@ def test_job_service_all_fail_does_not_render(tmp_path: Path) -> None:
     assert job.status is Status.FAILED
     assert calls.base == 0
     assert calls.overlay == 0
-    assert calls.cuts == 0
 
 
 def test_selection_change_rerenders_overlay_only_and_exports_one_selected(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
     job = service.run_job_sync("김현지대표인터뷰")
-    before = (calls.generate, calls.base, calls.cuts, calls.overlay)
+    before = (calls.generate, calls.base, calls.overlay)
 
     selected_story_change = service.select_variant(job.id, "s1", title_index=1, subtitles_on=False)
     selected_story = next(item for item in selected_story_change.storylines if item.id == "s1")
@@ -333,12 +384,12 @@ def test_selection_change_rerenders_overlay_only_and_exports_one_selected(tmp_pa
     assert selected_story_change.selected_storyline_id == "s1"
     assert selected_story_change.export.selected_variant_id == active_selected_variant.id
     assert active_selected_variant.selected is True
-    assert (calls.generate, calls.base, calls.cuts) == before[:3]
+    assert (calls.generate, calls.base) == before[:2]
 
     selected = service.select_variant(job.id, "s2", title_index=2, subtitles_on=False)
 
-    assert (calls.generate, calls.base, calls.cuts) == before[:3]
-    assert calls.overlay == before[3] + 2
+    assert (calls.generate, calls.base) == before[:2]
+    assert calls.overlay == before[2] + 2
     story = next(item for item in selected.storylines if item.id == "s2")
     assert story.selected_title_index == 2
     assert story.subtitles_on is False
@@ -554,7 +605,10 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
     calls = Calls()
     store = JobStore(tmp_path / "jobs")
     service = JobService(store=store, deps=_deps(tmp_path, calls))
-    video = tmp_path / "source.mp4"
+    cached_source_dir = store.job_dir("cached-source-job") / "source"
+    cached_source_dir.mkdir(parents=True)
+    video = cached_source_dir / "source.mp4"
+    video.write_bytes(b"cached-video")
     job = Job(
         id="recover-job",
         source_type="youtube",
@@ -572,10 +626,8 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
         )],
     )
     store.save(job)
-    source_dir = store.job_dir(job.id) / "source"
-    source_dir.mkdir(parents=True, exist_ok=True)
     segments = _segments(video)
-    (source_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
+    (cached_source_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
     malformed = json.dumps(_doc("복구"), ensure_ascii=False).replace(
         '"복구 제목 1"', '“복구 제목 1"', 1
     )

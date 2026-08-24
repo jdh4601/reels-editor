@@ -155,7 +155,8 @@ def render_combos(video: Path, segments: dict,
             out = sdir / f"reel-t{ti + 1}.mp4"
             try:
                 render.render_with_title(assets, t["text"],
-                                         t.get("keyword", ""), style, out)
+                                         t.get("keyword", ""), style, out,
+                                         speaker_text=render.speaker_label(doc))
                 rows.append({"storyline": si + 1, "title_index": ti + 1,
                              "title": t["text"],
                              "file": str(out.relative_to(work)), "error": None})
@@ -242,7 +243,8 @@ def _make_preview_fn(work: Path, video: Path, preset: StylePreset,
                 work / ".thumbs" / "preview_frame.png")
             return preview.compose_preview(
                 frame, t0["text"], t0.get("keyword", ""), sub_text,
-                first.doc.get("subtitle_keywords", []), p_style)
+                first.doc.get("subtitle_keywords", []), p_style,
+                speaker_text=render.speaker_label(first.doc))
         except Exception as e:  # noqa: BLE001 — 안전한 메시지로만 재포장해 전파
             raise RuntimeError("프리뷰 생성 실패 — 설정 값을 확인하세요.") from e
 
@@ -271,7 +273,8 @@ def _review_until_render(cfg: AppConfig, segments: dict, duration: int, work: Pa
                             f"스토리라인 {cfg.n_storylines}개 병렬…"):
             fresh = generate_many(segments, cfg.n_storylines, duration,
                                   runner=runner, raw_dump_dir=work,
-                                  feedback=feedback, only_indices=todo)
+                                  feedback=feedback, only_indices=todo,
+                                  speed=spd)
         for r in fresh:
             results[r.index] = r
             mark = "[green]✓[/]" if r.doc else f"[red]✗ {r.error}[/]"
@@ -381,7 +384,7 @@ def render_cmd(workdir: Path,
     t = edl_doc["title_candidates"][title - 1]
     out_path = workdir / f"reel-t{title}.mp4"
     render.render_with_title(assets, t["text"], t.get("keyword", ""), preset,
-                             out_path)
+                             out_path, speaker_text=render.speaker_label(edl_doc))
     console.print(f"[green]✅ 완료:[/] {out_path}")
 
 

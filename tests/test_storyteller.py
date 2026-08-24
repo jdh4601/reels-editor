@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from reels_editor import storyteller
-from reels_editor.storyteller import ANGLES, StorylineResult, build_prompt, generate_many
+from reels_editor.storyteller import ANGLES, build_prompt
 
 
 def test_angles_has_three_named_hints() -> None:
@@ -31,6 +31,13 @@ def test_build_prompt_lists_segments_and_budget(segments: dict) -> None:
     assert "36초" in p  # 소스 예산 = 30s * speed 1.2
 
 
+def test_build_prompt_allows_five_second_grace_for_long_reel(segments: dict) -> None:
+    p = storyteller.build_prompt(segments, duration_s=60, feedback=None)
+
+    assert "절대 65초" in p
+    assert "78초" in p  # 소스 예산 = 65s * speed 1.2
+
+
 def test_build_prompt_requires_korean_captions_for_english_transcript(segments: dict) -> None:
     english_segments = {
         **segments,
@@ -44,6 +51,23 @@ def test_build_prompt_requires_korean_captions_for_english_transcript(segments: 
     assert "선택한 모든 seg_id" in prompt
     assert "한국어 자막" in prompt
     assert "{translation_block}" not in prompt
+
+
+def test_build_prompt_includes_youtube_context_and_speaker_contract(segments: dict) -> None:
+    youtube_segments = {
+        **segments,
+        "source_title": "Sam Altman on Building OpenAI",
+        "source_channel": "Y Combinator",
+    }
+
+    prompt = storyteller.build_prompt(youtube_segments, duration_s=60, feedback=None)
+
+    assert "Sam Altman on Building OpenAI" in prompt
+    assert "Y Combinator" in prompt
+    assert '"speaker"' in prompt
+    assert "한국어 이름" in prompt
+    assert "영문 직함" in prompt
+    assert "{source_context_block}" not in prompt
 
 
 def test_build_prompt_includes_feedback(segments: dict) -> None:
@@ -100,6 +124,36 @@ def test_generate_script_requires_translation_for_each_selected_english_segment(
     assert len(calls) == 2
     assert "subtitle_translations는 객체여야 함" in calls[1]
     assert out["subtitle_translations"]["t1"] == "하지만 꿈을 포기할 수 없었어요."
+
+
+def test_generate_script_retries_when_translated_caption_ends_mid_quote(
+        segments: dict, edl_doc: dict) -> None:
+    english_segments = {**segments, "transcript_language": "en"}
+    incomplete = {
+        **edl_doc,
+        "subtitle_translations": {
+            "t1": '그는 "좋은 아이디어도',
+            "t2": "포기해야 한다고 말했습니다.",
+        },
+    }
+    complete = {
+        **edl_doc,
+        "subtitle_translations": {
+            "t1": '그는 "좋은 아이디어도',
+            "t2": '포기해야 한다"고 말했습니다.',
+        },
+    }
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(incomplete if len(calls) == 1 else complete, ensure_ascii=False)
+
+    out = storyteller.generate_script(english_segments, runner=runner)
+
+    assert len(calls) == 2
+    assert "큰따옴표가 닫힐 때까지" in calls[1]
+    assert out["subtitle_translations"]["t2"].startswith("포기해야 한다\"")
 
 
 def test_generate_script_retries_then_fails(segments: dict) -> None:
@@ -192,7 +246,101 @@ def test_generate_script_normalizes_missing_title_keyword(
     assert out["title_candidates"][0]["keyword"] == ""
 
 
-def test_generate_script_retries_when_clip_exceeds_requested_maximum(segments: dict, edl_doc: dict) -> None:
+def test_generate_script_normalizes_title_to_one_line_and_speaker_label(
+        segments: dict, edl_doc: dict) -> None:
+    edl_doc["title_candidates"][0]["text"] = "좋은 아이디어를\n포기하는 법"
+    edl_doc["speaker"] = {"name": " 샘  알트만 ", "role": " CEO of OpenAI "}
+
+    out = storyteller.generate_script(
+        segments,
+        runner=lambda _p: json.dumps(edl_doc, ensure_ascii=False),
+    )
+
+    assert out["title_candidates"][0]["text"] == "좋은 아이디어를 포기하는 법"
+    assert out["speaker"] == {"name": "샘 알트만", "role": "CEO of OpenAI"}
+
+
+def test_generate_script_retries_when_youtube_speaker_is_missing(
+        segments: dict, edl_doc: dict) -> None:
+    youtube_segments = {**segments, "source_title": "Sam Altman interview"}
+    with_speaker = {
+        **edl_doc,
+        "speaker": {"name": "샘 알트만", "role": "CEO of OpenAI"},
+    }
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(edl_doc if len(calls) == 1 else with_speaker, ensure_ascii=False)
+
+    out = storyteller.generate_script(youtube_segments, runner=runner)
+
+    assert len(calls) == 2
+    assert "speaker는 name과 role" in calls[1]
+    assert out["speaker"]["name"] == "샘 알트만"
+
+
+def test_generate_script_accepts_long_reel_within_five_second_grace(segments: dict, edl_doc: dict) -> None:
+    grace_segments = {
+        **segments,
+        "segments": [
+            {
+                **segments["segments"][0],
+                "source_start_us": 0,
+                "source_end_us": 74_160_000,
+            }
+        ],
+    }
+    within_grace = {
+        **edl_doc,
+        "cuts": [{"beat": "훅", "seg_ids": [grace_segments["segments"][0]["id"]]}],
+    }
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(within_grace, ensure_ascii=False)
+
+    result = storyteller.generate_script(grace_segments, duration_s=60, runner=runner)
+
+    assert result["cuts"] == within_grace["cuts"]
+    assert len(calls) == 1
+
+
+def test_generate_script_duration_validation_uses_selected_playback_speed(segments: dict, edl_doc: dict) -> None:
+    speed_sensitive_segments = {
+        **segments,
+        "segments": [
+            {
+                **segments["segments"][0],
+                "source_start_us": 0,
+                "source_end_us": 66_000_000,
+            }
+        ],
+    }
+    doc = {
+        **edl_doc,
+        "cuts": [{"beat": "훅", "seg_ids": [speed_sensitive_segments["segments"][0]["id"]]}],
+    }
+    def runner(_prompt: str) -> str:
+        return json.dumps(doc, ensure_ascii=False)
+
+    assert storyteller.generate_script(
+        speed_sensitive_segments,
+        duration_s=60,
+        runner=runner,
+        speed=1.2,
+    )["cuts"] == doc["cuts"]
+    with pytest.raises(RuntimeError, match="완성 길이 66.0초가 최대 65초"):
+        storyteller.generate_script(
+            speed_sensitive_segments,
+            duration_s=60,
+            runner=runner,
+            speed=1.0,
+        )
+
+
+def test_generate_script_retries_when_clip_exceeds_relaxed_maximum(segments: dict, edl_doc: dict) -> None:
     calls: list[str] = []
     long_segments = {
         **segments,
@@ -200,7 +348,7 @@ def test_generate_script_retries_when_clip_exceeds_requested_maximum(segments: d
             {
                 **segments["segments"][0],
                 "source_start_us": 0,
-                "source_end_us": 90_000_000,
+                "source_end_us": 78_120_000,
             }
         ],
     }
@@ -217,7 +365,8 @@ def test_generate_script_retries_when_clip_exceeds_requested_maximum(segments: d
         storyteller.generate_script(long_segments, duration_s=60, runner=runner)
 
     assert len(calls) == 3
-    assert "최대 60초를 초과" in calls[1]
+    assert "완성 길이 65.1초" in calls[1]
+    assert "최대 65초를 초과" in calls[1]
 
 
 def test_generate_many_runs_in_parallel(segments: dict) -> None:

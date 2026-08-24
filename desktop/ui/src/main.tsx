@@ -37,6 +37,10 @@ type VoiceIsolationSettings = {
   masked_key: string | null;
 };
 
+type PlaybackSpeedSettings = {
+  speed: number;
+};
+
 type MediaItem = {
   name: string;
   url: string;
@@ -213,13 +217,17 @@ const EMPTY_SUMMARY = "YouTube 인터뷰 링크를 넣으면 클립 후보와 �
 const ACTIVE_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay", "exporting"]);
 const GENERATION_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay"]);
 const GENERATION_STAGES = [
-  { label: "영상 다운로드", description: "YouTube 인터뷰 원본을 이 Mac에 저장합니다." },
+  { label: "소스 확인", description: "저장된 영상·자막은 재사용하고, 없을 때만 다운로드합니다." },
   { label: "영어 자막 추출", description: "영어 원문 자막과 타임코드를 정리합니다." },
   { label: "클립 선정·번역", description: "AI가 영어 원문에서 구간을 고르고 한국어 자막으로 번역합니다." },
   { label: "릴스 제작", description: "9:16 영상에 한국어 자막과 주황색 후킹 제목을 합성합니다." },
 ] as const;
 const VIDEO_DURATIONS: VideoDuration[] = [15, 30, 60];
 const STORYLINE_COUNTS: StorylineCount[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const MIN_PLAYBACK_SPEED = 1;
+const MAX_PLAYBACK_SPEED = 1.5;
+const PLAYBACK_SPEED_STEP = 0.05;
+const DEFAULT_PLAYBACK_SPEED = 1.2;
 const PROVIDER_OPTIONS: Array<{ value: ModelProvider; label: string; description: string }> = [
   { value: "codex-cli", label: "Codex CLI", description: "로컬 Codex 인증과 설치된 기본 모델을 사용합니다." },
   { value: "claude-cli", label: "Claude CLI", description: "설치된 Claude Code CLI를 사용합니다." },
@@ -243,6 +251,15 @@ function progressPercent(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return 0;
   const percent = value <= 1 ? value * 100 : value;
   return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function normalizePlaybackSpeed(value: number): number {
+  const stepped = Math.round(value / PLAYBACK_SPEED_STEP) * PLAYBACK_SPEED_STEP;
+  return Number(Math.min(MAX_PLAYBACK_SPEED, Math.max(MIN_PLAYBACK_SPEED, stepped)).toFixed(2));
+}
+
+function playbackSpeedLabel(value: number): string {
+  return value.toFixed(value * 10 === Math.round(value * 10) ? 1 : 2);
 }
 
 function generationStageIndex(phase: string | null | undefined, status: JobStatus): number {
@@ -510,6 +527,8 @@ function App() {
   const [voiceIsolationMaskedKey, setVoiceIsolationMaskedKey] = useState<string | null>(null);
   const [voiceIsolationApiKey, setVoiceIsolationApiKey] = useState("");
   const [voiceSettingsSaveState, setVoiceSettingsSaveState] = useState<SettingsSaveState>("idle");
+  const [playbackSpeed, setPlaybackSpeed] = useState(DEFAULT_PLAYBACK_SPEED);
+  const [speedSettingsSaveState, setSpeedSettingsSaveState] = useState<SettingsSaveState>("idle");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
@@ -519,6 +538,7 @@ function App() {
   const eventSeqRef = useRef(0);
   const activeJobIdRef = useRef<string | null>(null);
   const exportSelectionSeededRef = useRef(false);
+  const speedSaveTimerRef = useRef<number | undefined>(undefined);
 
   const applySnapshot = useCallback((next: Snapshot) => {
     const jobChanged = activeJobIdRef.current !== next.jobId;
@@ -586,6 +606,25 @@ function App() {
         if (!cancelled) setVoiceSettingsSaveState("error");
       });
     return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (isDemoMode()) return;
+    let cancelled = false;
+    void apiFetch("/api/settings/playback-speed")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("재생 배속 설정을 불러오지 못했습니다.");
+        const settings = (await response.json()) as PlaybackSpeedSettings;
+        if (!cancelled) setPlaybackSpeed(normalizePlaybackSpeed(settings.speed));
+      })
+      .catch(() => {
+        if (!cancelled) setSpeedSettingsSaveState("error");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => () => {
+    if (speedSaveTimerRef.current !== undefined) window.clearTimeout(speedSaveTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -927,6 +966,39 @@ function App() {
     }
   }
 
+  async function savePlaybackSpeed(speed: number) {
+    if (isDemoMode()) {
+      setSpeedSettingsSaveState("saved");
+      return;
+    }
+    try {
+      const response = await apiMutation("/api/settings/playback-speed", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speed }),
+      });
+      const settings = (await response.json()) as PlaybackSpeedSettings;
+      setPlaybackSpeed(normalizePlaybackSpeed(settings.speed));
+      setSpeedSettingsSaveState("saved");
+      setLiveMessage(`재생 배속을 ${playbackSpeedLabel(settings.speed)}배로 저장했습니다.`);
+    } catch (error) {
+      setSpeedSettingsSaveState("error");
+      setLiveMessage(error instanceof Error ? error.message : "재생 배속 저장에 실패했습니다.");
+    }
+  }
+
+  function updatePlaybackSpeed(value: number) {
+    if (jobBusy) return;
+    const next = normalizePlaybackSpeed(value);
+    setPlaybackSpeed(next);
+    setSpeedSettingsSaveState("saving");
+    if (speedSaveTimerRef.current !== undefined) window.clearTimeout(speedSaveTimerRef.current);
+    speedSaveTimerRef.current = window.setTimeout(() => {
+      speedSaveTimerRef.current = undefined;
+      void savePlaybackSpeed(next);
+    }, 240);
+  }
+
   function cancelJob() {
     if (!snapshot || isDemoMode() || !jobBusy) return;
     setLiveMessage("작업 취소를 요청했습니다.");
@@ -1108,7 +1180,7 @@ function App() {
           </button>
         </div>
         <p id="youtube-source-help" className={youtubeError ? "youtube-source-help error" : "youtube-source-help"}>
-          {youtubeError ?? "영어 인터뷰와 영어 원문 자막을 저장하고, 선택한 구간을 한국어 자막의 1분 이하 릴스로 만듭니다."}
+          {youtubeError ?? "같은 영상은 저장된 원본과 영어 자막을 재사용하고, 선택한 구간만 한국어 자막의 약 1분 릴스(최대 65초)로 만듭니다."}
         </p>
       </form>
 
@@ -1214,6 +1286,50 @@ function App() {
             </fieldset>
           </div>
 
+          <div className="settings-row playback-speed-row">
+            <div>
+              <h3>재생 배속</h3>
+              <p>영상과 음성을 함께 빠르게 재생합니다. 슬라이더를 드래그하거나 위에서 스크롤해 0.05배 단위로 조절하세요.</p>
+            </div>
+            <div className="playback-speed-control">
+              <div className="playback-speed-heading">
+                <strong>{playbackSpeedLabel(playbackSpeed)}×</strong>
+                <span className={speedSettingsSaveState === "error" ? "settings-error" : ""}>
+                  {speedSettingsSaveState === "saving"
+                    ? "저장 중"
+                    : speedSettingsSaveState === "saved"
+                      ? "저장됨"
+                      : speedSettingsSaveState === "error"
+                        ? "저장 실패"
+                        : "다음 생성부터 적용"}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={MIN_PLAYBACK_SPEED}
+                max={MAX_PLAYBACK_SPEED}
+                step={PLAYBACK_SPEED_STEP}
+                value={playbackSpeed}
+                disabled={jobBusy}
+                aria-label="재생 배속"
+                aria-valuetext={`${playbackSpeedLabel(playbackSpeed)}배`}
+                style={{
+                  "--range-progress": `${((playbackSpeed - MIN_PLAYBACK_SPEED) / (MAX_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)) * 100}%`,
+                } as React.CSSProperties}
+                onChange={(event) => updatePlaybackSpeed(Number(event.target.value))}
+                onWheel={(event) => {
+                  if (jobBusy) return;
+                  event.preventDefault();
+                  updatePlaybackSpeed(playbackSpeed + (event.deltaY < 0 ? PLAYBACK_SPEED_STEP : -PLAYBACK_SPEED_STEP));
+                }}
+              />
+              <div className="playback-speed-scale" aria-hidden="true">
+                <span>1.0×</span>
+                <span>1.5×</span>
+              </div>
+            </div>
+          </div>
+
           <div className="settings-row provider-row">
             <div>
               <h3>모델 프로바이더</h3>
@@ -1238,7 +1354,7 @@ function App() {
           <div className="settings-row voice-isolation-row">
             <div>
               <h3>Voice Isolation + Speech Enhancement</h3>
-              <p>ElevenLabs로 목소리를 분리한 뒤 노이즈 억제·음량 정규화·명료도 보정을 적용합니다. 저장한 ON/OFF는 다음 생성의 기본값입니다.</p>
+              <p>ElevenLabs로 목소리를 분리한 뒤 노이즈 억제·음량 정규화·명료도 보정을 적용합니다. 앱을 열 때는 항상 OFF로 시작합니다.</p>
             </div>
             <div className="voice-isolation-control">
               <label className="switch voice-isolation-switch">
@@ -1253,7 +1369,7 @@ function App() {
                   aria-checked={voiceIsolationEnabled}
                 />
                 <span className="switch-track" aria-hidden="true"><Check size={15} /></span>
-                <span>기본 음성 개선 {voiceIsolationEnabled ? "ON" : "OFF"}</span>
+                <span>음성 개선 {voiceIsolationEnabled ? "ON" : "OFF"}</span>
               </label>
               <div className="api-key-entry">
                 <input

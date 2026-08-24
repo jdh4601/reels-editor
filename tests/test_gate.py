@@ -7,7 +7,7 @@ import urllib.request
 from reels_editor import gate
 from reels_editor.config import AppConfig
 from reels_editor.gate import (
-    MultiGateDecision, parse_combo_selection, parse_decision,
+    parse_combo_selection, parse_decision,
     run_gate_terminal_v2, run_gate_v2,
 )
 from reels_editor.storyteller import StorylineResult

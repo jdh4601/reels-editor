@@ -45,7 +45,6 @@ class JobServiceDeps:
     render_overlay_variant: Callable[..., Path] = render.render_overlay_variant
     write_outputs: Callable[[Path, dict[str, Any], dict[str, Any]], None] = export.write_outputs
     write_srt: Callable[[list[list], Path], Path] = export.write_srt
-    export_cuts: Callable[[Path, dict[str, Any], dict[str, Any], Path, float], list[Path]] = export.export_cuts
     enhance_export_video: Callable[..., voice_isolation.IsolationResult] = voice_isolation.enhance_video
     resolve_voice_isolation_key: Callable[[], str | None] = lambda: resolve_api_key("elevenlabs")
     download_youtube_source: Callable[..., youtube.YouTubeSource] = youtube.download_youtube_source
@@ -336,19 +335,21 @@ class JobService:
         storyline = self._find_storyline(job, storyline_id)
         work = self.store.job_dir(job_id)
         raw_path = work / f"llm_raw_s{storyline.index + 1}.txt"
-        segments_path = work / "source" / "segments.json"
+        segments_path = self._recovery_segments_path(job, work)
         if not raw_path.is_file() or not segments_path.is_file():
             raise JobServiceError(
                 "실패한 AI 응답 또는 원본 자막을 찾지 못했습니다. 전체 작업을 다시 생성하세요."
             )
         segments = json.loads(segments_path.read_text(encoding="utf-8"))
         raw = raw_path.read_text(encoding="utf-8")
+        style = merged_style(self.deps.load_style(self.style_path), self.config.style)
         try:
             doc = self.deps.generate_script(
                 segments,
                 job.duration_s,
                 runner=lambda _prompt: raw,
                 raw_dump=raw_path,
+                speed=style.speed,
             )
         except RuntimeError as exc:
             with self._lock:
@@ -372,7 +373,6 @@ class JobService:
             recovered.error = None
             self._save(current)
 
-        style = merged_style(self.deps.load_style(self.style_path), self.config.style)
         result = StorylineResult(storyline.index, storyline.angle_name, doc)
         self._render_storyline_from_result(
             job_id,
@@ -661,7 +661,8 @@ class JobService:
         if job.source_type == "youtube":
             source = self._prepare_youtube_source(job_id, job)
             project_name = source.title
-            segments = source.segments
+            segments = dict(source.segments)
+            segments.setdefault("source_title", source.title)
             video = source.video_path
         else:
             project_dir = self.deps.find_project(str(job.project_path))
@@ -712,6 +713,7 @@ class JobService:
             job.duration_s,
             runner=managed_runner,
             raw_dump_dir=work,
+            speed=speed,
         )
         with self._lock:
             job = self.store.load(job_id)
@@ -779,6 +781,19 @@ class JobService:
         source_url = job.source_url
         if not source_url:
             raise JobServiceError("YouTube URL이 비어 있습니다.")
+        cached = self._find_cached_youtube_source(job_id, source_url)
+        if cached is not None:
+            self._set_job_progress(
+                job_id,
+                phase="transcript",
+                progress=0.17,
+                message=(
+                    "기존에 저장된 YouTube 영상과 원문 자막을 재사용합니다. "
+                    f"다운로드를 건너뛰었습니다. · {cached.transcript_language} {cached.transcript_kind}"
+                ),
+            )
+            self._save_youtube_transcript_metadata(job_id, cached)
+            return cached
         self._set_job_progress(
             job_id,
             phase="downloading",
@@ -815,12 +830,45 @@ class JobService:
                 f"· {source.transcript_language} {source.transcript_kind}"
             ),
         )
+        self._save_youtube_transcript_metadata(job_id, source)
+        return source
+
+    def _find_cached_youtube_source(self, job_id: str, source_url: str) -> youtube.YouTubeSource | None:
+        requested_video_id = youtube.video_id_from_url(source_url)
+        for candidate in self.store.list_recent(limit=1000):
+            if candidate.id == job_id or candidate.source_type != "youtube" or not candidate.source_url:
+                continue
+            candidate_video_id = youtube.video_id_from_url(candidate.source_url)
+            same_source = (
+                requested_video_id is not None
+                and candidate_video_id == requested_video_id
+            ) or candidate.source_url == source_url
+            if not same_source:
+                continue
+            cached = youtube.load_cached_youtube_source(
+                self.store.job_dir(candidate.id) / "source",
+                source_url,
+                expected_video_id=requested_video_id or candidate_video_id,
+                fallback_title=candidate.project_name or "YouTube 인터뷰",
+            )
+            if cached is not None:
+                return cached
+        return None
+
+    @staticmethod
+    def _recovery_segments_path(job: Job, work: Path) -> Path:
+        candidates = [work / "source" / "segments.json"]
+        if job.input_path:
+            candidates.append(Path(job.input_path).parent / "segments.json")
+        candidates.extend(sorted(work.glob("s*/segments.json")))
+        return next((path for path in candidates if path.is_file()), candidates[0])
+
+    def _save_youtube_transcript_metadata(self, job_id: str, source: youtube.YouTubeSource) -> None:
         with self._lock:
             current = self.store.load(job_id)
             current.transcript_language = source.transcript_language
             current.transcript_kind = source.transcript_kind
             self._save(current)
-        return source
 
     def _storyline_from_result(self, result: StorylineResult) -> Storyline:
         storyline = Storyline(
@@ -873,7 +921,7 @@ class JobService:
         try:
             self._raise_if_cancelled(job_id)
             sdir = self.store.job_dir(job_id) / story_id
-            self._write_storyline_outputs_once(sdir, result.doc, segments, video, style, speed)
+            self._write_storyline_outputs_once(sdir, result.doc, segments, speed)
             self._raise_if_cancelled(job_id)
             self._set_storyline_render_progress(
                 job_id,
@@ -893,11 +941,13 @@ class JobService:
             )
             assets_path = assets.write_manifest(sdir / ".render" / "assets.json")
             title = result.doc["title_candidates"][0]
+            speaker_text = render.speaker_label(result.doc)
             key = render.variant_cache_key(
                 storyline_id=story_id,
                 title_text=title["text"],
                 subtitles_enabled=True,
                 style_hash_value=f"{render.style_hash(style)}-{_assets_fingerprint(assets_path, assets)}",
+                speaker_text=speaker_text,
             )
             out = sdir / f"{key}.mp4"
             self.deps.render_overlay_variant(
@@ -907,6 +957,7 @@ class JobService:
                 style=style,
                 out_path=out,
                 subtitles_enabled=True,
+                speaker_text=speaker_text,
             )
             with self._lock:
                 job = self.store.load(job_id)
@@ -1033,11 +1084,13 @@ class JobService:
         title_text = story.title_candidates[title_index]
         doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8")) if story.edl_path else {"title_candidates": []}
         title_doc = doc.get("title_candidates", [{}])[title_index] if title_index < len(doc.get("title_candidates", [])) else {}
+        speaker_text = render.speaker_label(doc)
         key = render.variant_cache_key(
             storyline_id=storyline_id,
             title_text=title_text,
             subtitles_enabled=story.subtitles_on,
             style_hash_value=f"{render.style_hash(style)}-{_assets_fingerprint(Path(story.assets_path), assets)}",
+            speaker_text=speaker_text,
         )
         out = Path(story.assets_path).parent.parent / f"{key}.mp4"
         if not out.is_file():
@@ -1048,6 +1101,7 @@ class JobService:
                 style=style,
                 out_path=out,
                 subtitles_enabled=story.subtitles_on,
+                speaker_text=speaker_text,
             )
         with self._lock:
             job = self.store.load(job_id)
@@ -1089,8 +1143,6 @@ class JobService:
         sdir: Path,
         doc: dict[str, Any],
         segments: dict[str, Any],
-        video: Path,
-        style: StylePreset,
         speed: float,
     ) -> None:
         if not (sdir / "edl.json").is_file():
@@ -1104,9 +1156,9 @@ class JobService:
                 ]
             )
             self.deps.write_srt(groups, sdir / "reel.srt")
-        cuts_dir = sdir / "cuts"
-        if not cuts_dir.is_dir() or not any(cuts_dir.glob("*.mp4")):
-            self.deps.export_cuts(video, doc, segments, cuts_dir, speed)
+        # The desktop workflow renders straight from the source timeline. Encoding
+        # every beat as a separate full-resolution MP4 only duplicates work; the
+        # CLI keeps that optional editable-material export for users who need it.
 
     def _require_job(self, job_id: str | None) -> Job:
         target = job_id or self._active_job_id

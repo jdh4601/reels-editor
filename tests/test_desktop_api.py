@@ -8,8 +8,8 @@ import pytest
 
 from reels_editor.desktop.dialogs import FakeDialogProvider
 from reels_editor.desktop.server import create_app
-from reels_editor.jobs import Artifact, Job, JobStore, Status, Storyline, Variant
-from reels_editor.config import AppConfig
+from reels_editor.jobs import Job, JobStore, Status, Storyline, Variant
+from reels_editor.config import AppConfig, load_config
 
 
 class FakeService:
@@ -478,6 +478,48 @@ def test_voice_isolation_settings_reject_enable_without_key(tmp_path: Path, monk
 
     assert response.status_code == 400
     assert "API key" in response.json()["detail"]
+
+
+def test_playback_speed_settings_persist_and_update_service(tmp_path: Path) -> None:
+    service = FakeService(JobStore(tmp_path / "jobs"))
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+        config_path=tmp_path / "config.yaml",
+    )
+    client = TestClient(app)
+
+    initial = client.get("/api/settings/playback-speed?token=secret")
+    saved = client.put(
+        "/api/settings/playback-speed?token=secret",
+        json={"speed": 1.35},
+    )
+
+    assert initial.json() == {"speed": 1.2}
+    assert saved.status_code == 200
+    assert saved.json() == {"speed": 1.35}
+    assert service.config.style["speed"] == 1.35
+    assert load_config(tmp_path / "config.yaml").style["speed"] == 1.35
+
+
+@pytest.mark.parametrize("speed", [0.95, 1.55])
+def test_playback_speed_settings_reject_out_of_range(tmp_path: Path, speed: float) -> None:
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=FakeService(JobStore(tmp_path / "jobs")),
+        session_token="secret",
+        config_path=tmp_path / "config.yaml",
+    )
+
+    response = TestClient(app).put(
+        "/api/settings/playback-speed?token=secret",
+        json={"speed": speed},
+    )
+
+    assert response.status_code == 422
 
 
 def test_events_websocket_requires_token_and_honors_after_seq(tmp_path: Path) -> None:

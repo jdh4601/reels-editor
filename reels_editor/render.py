@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageDraw, ImageFont
 
-from reels_editor import processes
+from reels_editor import captions, processes
 from reels_editor.capcut import US
 from reels_editor.style import StylePreset
 
@@ -28,6 +28,7 @@ DEFAULT_TEXT_FIXES = {
     "추준생": "취준생", "주중생": "취준생", "로션": "노션",
     "임플란서": "인플루언서", "바이러를": "바이럴을", "서법": "서버비",
 }
+_SUBTITLE_PUNCTUATION_TO_HIDE = str.maketrans("", "", ",.")
 
 
 def apply_text_fixes(text: str, fixes: dict[str, str]) -> str:
@@ -49,59 +50,32 @@ def timeline_items(ordered: list[dict], speed: float) -> list[list]:
 
 def group_captions(items: list[list], max_dur: float = 2.4,
                    max_chars: int = 20) -> list[list]:
-    """파편 자막을 읽기 좋은 덩어리로 병합. 빈 텍스트는 앞 그룹 시간에 흡수."""
-    groups: list[list] = []
-    buf: list | None = None
-    expanded: list[list] = []
-    for a, b, t in items:
-        chunks = _caption_chunks(str(t), max_chars)
-        if len(chunks) <= 1:
-            expanded.append([a, b, t])
-            continue
-        weights = [max(1, len(chunk.replace(" ", ""))) for chunk in chunks]
-        total_weight = sum(weights)
-        cursor = float(a)
-        for index, (chunk, weight) in enumerate(zip(chunks, weights)):
-            end = float(b) if index == len(chunks) - 1 else cursor + (float(b) - float(a)) * weight / total_weight
-            expanded.append([round(cursor, 3), round(end, 3), chunk])
-            cursor = end
+    """파편 cue를 길이 제한보다 문장 완결성을 우선해 자막으로 묶는다.
 
-    for a, b, t in expanded:
-        if not t:
-            if buf:
-                buf[1] = b
-            continue
-        if buf and (b - buf[0] <= max_dur) and (len(buf[2] + " " + t) <= max_chars):
-            buf[1] = b
-            buf[2] = (buf[2] + " " + t).strip()
-        else:
-            if buf:
-                groups.append(buf)
-            buf = [a, b, t]
-    if buf:
-        groups.append(buf)
-    return groups
+    ``max_dur``와 ``max_chars``는 이전 API와의 호환을 위해 유지한다. 완결되지
+    않은 문장은 이 제한을 넘어도 다음 cue와 합쳐 화면에서 중간에 끊지 않는다.
+    """
+    _ = max_dur, max_chars
+    groups = captions.group_complete_sentences(items)
+    errors = captions.completeness_errors(groups)
+    if errors:
+        raise ValueError(
+            "자막 완결성 검사 실패 — 다음 seg_id까지 포함해 문장과 큰따옴표를 "
+            "완성해야 합니다:\n" + "\n".join(errors)
+        )
+    display_groups: list[list] = []
+    for a, b, text in groups:
+        display_text = hide_subtitle_punctuation(str(text))
+        if display_text:
+            display_groups.append([a, b, display_text])
+        elif display_groups:
+            display_groups[-1][1] = b
+    return display_groups
 
 
-def _caption_chunks(text: str, max_chars: int) -> list[str]:
-    normalized = " ".join(text.split())
-    if not normalized or len(normalized) <= max_chars:
-        return [normalized]
-    words = normalized.split(" ")
-    chunks: list[str] = []
-    current = ""
-    for word in words:
-        pieces = [word[i:i + max_chars] for i in range(0, len(word), max_chars)] or [""]
-        for piece in pieces:
-            candidate = f"{current} {piece}".strip()
-            if current and len(candidate) > max_chars:
-                chunks.append(current)
-                current = piece
-            else:
-                current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
+def hide_subtitle_punctuation(text: str) -> str:
+    """Remove comma and period only from the final on-screen subtitle text."""
+    return " ".join(text.translate(_SUBTITLE_PUNCTUATION_TO_HIDE).split())
 
 
 def split_by_keywords(text: str, keywords: list[str]) -> list[tuple[str, bool]]:
@@ -241,6 +215,20 @@ def _wrap_lines(text: str, font: ImageFont.FreeTypeFont, max_w: int,
     lines: list[str] = []
     cur = ""
     for word in text.split():
+        if d.textlength(word, font=font) > max_w:
+            if cur:
+                lines.append(cur)
+                cur = ""
+            piece = ""
+            for char in word:
+                candidate_piece = piece + char
+                if piece and d.textlength(candidate_piece, font=font) > max_w:
+                    lines.append(piece)
+                    piece = char
+                else:
+                    piece = candidate_piece
+            cur = piece
+            continue
         cand = f"{cur} {word}".strip()
         if cur and d.textlength(cand, font=font) > max_w:
             lines.append(cur)
@@ -250,6 +238,30 @@ def _wrap_lines(text: str, font: ImageFont.FreeTypeFont, max_w: int,
     if cur:
         lines.append(cur)
     return lines
+
+
+def _fit_wrapped_caption(
+    text: str,
+    font_path: Path,
+    max_size: int,
+    max_width: int,
+    d: ImageDraw.ImageDraw,
+    max_lines: int = 2,
+) -> tuple[ImageFont.FreeTypeFont, list[str]]:
+    """완전한 문장을 동시에 표시할 수 있는 가장 큰 1~2줄 폰트를 고른다."""
+    low, high = 18, max(18, max_size)
+    best_font = ImageFont.truetype(str(font_path), low)
+    best_lines = _wrap_lines(text, best_font, max_width, d)
+    while low <= high:
+        size = (low + high) // 2
+        candidate = ImageFont.truetype(str(font_path), size)
+        lines = _wrap_lines(text, candidate, max_width, d)
+        if len(lines) <= max_lines:
+            best_font, best_lines = candidate, lines
+            low = size + 1
+        else:
+            high = size - 1
+    return best_font, best_lines
 
 
 def _editor_y_to_canvas(y: int, canvas_h: int) -> int:
@@ -269,75 +281,83 @@ def _centered_text_origin(d: ImageDraw.ImageDraw, text: str,
     return center[0] - (left + right) / 2, center[1] - (top + bottom) / 2
 
 
-def _split_title_lines(title: str, top_font: ImageFont.FreeTypeFont,
-                       bottom_font: ImageFont.FreeTypeFont,
-                       d: ImageDraw.ImageDraw, max_w: int) -> tuple[str, str]:
-    """서로 다른 글자 크기를 고려해 제목을 폭이 균형 잡힌 두 줄로 나눈다."""
-    explicit = [line.strip() for line in title.splitlines() if line.strip()]
-    if len(explicit) >= 2:
-        return explicit[0], " ".join(explicit[1:])
-
-    words = title.split()
-    if len(words) < 2:
-        chars = list(title.strip())
-        if len(chars) < 2:
-            return title.strip(), ""
-        candidates = [("".join(chars[:i]), "".join(chars[i:]))
-                      for i in range(1, len(chars))]
-    else:
-        candidates = [(" ".join(words[:i]), " ".join(words[i:]))
-                      for i in range(1, len(words))]
-
-    def score(lines: tuple[str, str]) -> float:
-        top_w = d.textlength(lines[0], font=top_font)
-        bottom_w = d.textlength(lines[1], font=bottom_font)
-        overflow = max(0, top_w - max_w) + max(0, bottom_w - max_w)
-        return overflow * 10 + abs(top_w - bottom_w)
-
-    return min(candidates, key=score)
+def _fit_single_line_font(
+    text: str,
+    font_path: Path,
+    max_size: int,
+    max_width: int,
+    d: ImageDraw.ImageDraw,
+) -> ImageFont.FreeTypeFont:
+    """Find the largest font that keeps one line inside the horizontal safe area."""
+    low, high = 1, max(1, max_size)
+    best = ImageFont.truetype(str(font_path), low)
+    while low <= high:
+        size = (low + high) // 2
+        candidate = ImageFont.truetype(str(font_path), size)
+        left, _top, right, _bottom = _ink_bbox(d, text, candidate)
+        if right - left <= max_width:
+            best = candidate
+            low = size + 1
+        else:
+            high = size - 1
+    return best
 
 
-def render_title_png(title: str, keyword: str, style: StylePreset, out: Path) -> Path:
+def render_title_png(
+    title: str,
+    keyword: str,
+    style: StylePreset,
+    out: Path,
+    speaker_text: str = "",
+) -> Path:
     W, H = style.canvas
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    font = ImageFont.truetype(str(style.title_font), style.title_size)
-    if style.title_emphasis_size is not None:
-        emphasis_font = ImageFont.truetype(
-            str(style.title_font), style.title_emphasis_size)
-        top, bottom = _split_title_lines(title, font, emphasis_font, d, W - 120)
-        rows = [(top, font, _hex_rgba(style.title_color))]
-        if bottom:
-            rows.append((bottom, emphasis_font,
-                         _hex_rgba(style.title_highlight)))
-        heights = []
-        for text, row_font, _color in rows:
-            _left, row_top, _right, row_bottom = _ink_bbox(d, text, row_font)
-            heights.append(row_bottom - row_top)
-        default_gap = round(style.title_size * 0.15)
-        gap = (style.title_line_gap
-               if style.title_line_gap is not None else default_gap) if len(rows) > 1 else 0
-        group_h = sum(heights) + gap * (len(rows) - 1)
-        if style.title_y is None:
-            group_center_y = style.top_bar / 2
-        else:
-            group_center_y = _editor_y_to_canvas(style.title_y, H)
-        top_y = group_center_y - group_h / 2
-        for (text, row_font, color), height in zip(rows, heights):
-            center = (W // 2, round(top_y + height / 2))
-            d.text(_centered_text_origin(d, text, row_font, center), text,
-                   font=row_font, fill=color)
-            top_y += height + gap
-    else:
-        lines = _wrap_lines(title, font, max_w=W - 120, d=d)[:style.title_max_lines]
-        line_h = int(style.title_size * 1.25)
-        y0 = (style.top_bar - line_h * len(lines)) // 2
-        for i, line in enumerate(lines):
-            lw = int(d.textlength(line, font=font))
-            _draw_highlighted_line(d, ((W - lw) // 2, y0 + i * line_h), line,
-                                   [keyword] if keyword else [], font,
-                                   _hex_rgba(style.title_color),
-                                   _hex_rgba(style.title_highlight))
+    title = " ".join(title.split())
+    speaker_text = " ".join(speaker_text.split())
+    safe_width = W - 120
+    font = _fit_single_line_font(
+        title,
+        style.title_font,
+        style.title_size,
+        safe_width,
+        d,
+    )
+    title_left, title_top, title_right, title_bottom = _ink_bbox(d, title, font)
+    title_height = title_bottom - title_top
+    speaker_font = ImageFont.truetype(str(style.title_font), style.title_speaker_size)
+    speaker_height = 0
+    if speaker_text:
+        _left, speaker_top, _right, speaker_bottom = _ink_bbox(d, speaker_text, speaker_font)
+        speaker_height = speaker_bottom - speaker_top
+    gap = style.title_speaker_gap if speaker_text else 0
+    group_height = title_height + gap + speaker_height
+    group_center_y = (
+        style.top_bar / 2
+        if style.title_y is None
+        else _editor_y_to_canvas(style.title_y, H)
+    )
+    title_center_y = round(group_center_y - group_height / 2 + title_height / 2)
+    title_origin = _centered_text_origin(d, title, font, (W // 2, title_center_y))
+    _draw_highlighted_line(
+        d,
+        (round(title_origin[0]), round(title_origin[1])),
+        title,
+        [keyword] if keyword else [],
+        font,
+        _hex_rgba(style.title_color),
+        _hex_rgba(style.title_highlight),
+    )
+    if speaker_text:
+        speaker_center_y = round(
+            group_center_y + group_height / 2 - speaker_height / 2
+        )
+        d.text(
+            _centered_text_origin(d, speaker_text, speaker_font, (W // 2, speaker_center_y)),
+            speaker_text,
+            font=speaker_font,
+            fill=_hex_rgba(style.title_speaker_color),
+        )
     img.save(out)
     return out
 
@@ -351,10 +371,41 @@ def render_watermark_png(style: StylePreset, out: Path) -> Path:
         center_y = H - style.bottom_bar + style.bottom_bar // 2
     else:
         center_y = _editor_y_to_canvas(style.watermark_y, H)
-    d.text(_centered_text_origin(d, style.watermark_text, font,
-                                 (W // 2, center_y)),
+    watermark_origin = _centered_text_origin(
+        d,
+        style.watermark_text,
+        font,
+        (W // 2, center_y),
+    )
+    d.text(watermark_origin,
            style.watermark_text, font=font,
            fill=(255, 255, 255, style.watermark_opacity))
+    if style.episode_text:
+        episode_font = ImageFont.truetype(str(style.watermark_font), style.episode_size)
+        _wl, watermark_top, _wr, _wb = _ink_bbox(d, style.watermark_text, font)
+        watermark_ink_top = watermark_origin[1] + watermark_top
+        _el, episode_top, _er, episode_bottom = _ink_bbox(
+            d,
+            style.episode_text,
+            episode_font,
+        )
+        episode_height = episode_bottom - episode_top
+        episode_center_y = (
+            round(watermark_ink_top - style.episode_gap - episode_height / 2)
+            if style.episode_y is None
+            else _editor_y_to_canvas(style.episode_y, H)
+        )
+        d.text(
+            _centered_text_origin(
+                d,
+                style.episode_text,
+                episode_font,
+                (W // 2, episode_center_y),
+            ),
+            style.episode_text,
+            font=episode_font,
+            fill=_hex_rgba(style.episode_color, style.episode_opacity),
+        )
     img.save(out)
     return out
 
@@ -362,29 +413,57 @@ def render_watermark_png(style: StylePreset, out: Path) -> Path:
 def render_subtitle_pngs(groups: list[list], keywords: list[str],
                          style: StylePreset, out_dir: Path) -> list[Path]:
     W, H = style.canvas
-    font = ImageFont.truetype(str(style.sub_font), style.sub_size)
     out_dir.mkdir(parents=True, exist_ok=True)
     pad_x, pad_y = 24, 12
     paths: list[Path] = []
     for i, (_a, _b, t) in enumerate(groups):
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        left, top, right, bottom = _ink_bbox(d, t, font)
+        font, lines = _fit_wrapped_caption(
+            t,
+            style.sub_font,
+            style.sub_size,
+            W - 120 - pad_x * 2,
+            d,
+        )
         if style.sub_y is None:
             _vw, vh = style.video_area()
             center_y = style.top_bar + int(vh * style.sub_y_frac) - style.sub_size // 2
         else:
             center_y = _editor_y_to_canvas(style.sub_y, H)
-        origin_x, origin_y = _centered_text_origin(d, t, font,
-                                                    (W // 2, center_y))
-        ink_box = (origin_x + left, origin_y + top,
-                   origin_x + right, origin_y + bottom)
+        metrics = [_ink_bbox(d, line, font) for line in lines]
+        heights = [bottom - top for _left, top, _right, bottom in metrics]
+        line_gap = max(4, round(font.size * 0.18))
+        group_height = sum(heights) + line_gap * max(0, len(lines) - 1)
+        cursor_y = center_y - group_height / 2
+        origins: list[tuple[float, float]] = []
+        ink_boxes: list[tuple[float, float, float, float]] = []
+        for line, (left, top, right, bottom), height in zip(lines, metrics, heights):
+            origin_x = W / 2 - (left + right) / 2
+            origin_y = cursor_y - top
+            origins.append((origin_x, origin_y))
+            ink_boxes.append((origin_x + left, origin_y + top,
+                              origin_x + right, origin_y + bottom))
+            cursor_y += height + line_gap
+        ink_box = (
+            min(box[0] for box in ink_boxes),
+            min(box[1] for box in ink_boxes),
+            max(box[2] for box in ink_boxes),
+            max(box[3] for box in ink_boxes),
+        )
         d.rectangle((ink_box[0] - pad_x, ink_box[1] - pad_y,
                      ink_box[2] + pad_x, ink_box[3] + pad_y),
                     fill=(0, 0, 0, style.sub_box_alpha))
-        _draw_highlighted_line(d, (origin_x, origin_y), t, keywords, font,
-                               _hex_rgba(style.sub_color, style.sub_opacity),
-                               _hex_rgba(style.sub_highlight, style.sub_opacity))
+        for origin, line in zip(origins, lines):
+            _draw_highlighted_line(
+                d,
+                (round(origin[0]), round(origin[1])),
+                line,
+                keywords,
+                font,
+                _hex_rgba(style.sub_color, style.sub_opacity),
+                _hex_rgba(style.sub_highlight, style.sub_opacity),
+            )
         p = out_dir / f"s{i:03d}.png"
         img.save(p)
         paths.append(p)
@@ -465,11 +544,13 @@ def variant_cache_key(
     title_text: str,
     subtitles_enabled: bool,
     style_hash_value: str,
+    speaker_text: str = "",
 ) -> str:
     payload = json.dumps(
         {
             "storyline_id": storyline_id,
             "title_text": title_text,
+            "speaker_text": speaker_text,
             "subtitles_enabled": subtitles_enabled,
             "style_hash": style_hash_value,
         },
@@ -477,6 +558,19 @@ def variant_cache_key(
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def speaker_label(edl_doc: dict[str, Any]) -> str:
+    speaker = edl_doc.get("speaker")
+    if isinstance(speaker, str):
+        return " ".join(speaker.split())
+    if not isinstance(speaker, dict):
+        return ""
+    name = " ".join(str(speaker.get("name") or "").split())
+    role = " ".join(str(speaker.get("role") or "").split())
+    if name and role:
+        return f"{name} ({role})"
+    return name or role
 
 
 def parse_progress_line(line: str) -> float | None:
@@ -561,7 +655,8 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
 
 
 def render_with_title(assets: RenderAssets, title_text: str, keyword: str,
-                      style: StylePreset, out_path: Path) -> Path:
+                      style: StylePreset, out_path: Path,
+                      *, speaker_text: str = "") -> Path:
     return render_overlay_variant(
         assets,
         title_text=title_text,
@@ -569,15 +664,22 @@ def render_with_title(assets: RenderAssets, title_text: str, keyword: str,
         style=style,
         out_path=out_path,
         subtitles_enabled=True,
+        speaker_text=speaker_text,
     )
 
 
 def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: str,
                            style: StylePreset, out_path: Path,
-                           subtitles_enabled: bool) -> Path:
+                           subtitles_enabled: bool,
+                           speaker_text: str = "") -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    title_png = render_title_png(title_text, keyword, style,
-                                 assets.work / f"title-{out_path.stem}.png")
+    title_png = render_title_png(
+        title_text,
+        keyword,
+        style,
+        assets.work / f"title-{out_path.stem}.png",
+        speaker_text=speaker_text,
+    )
     groups = assets.groups if subtitles_enabled else []
     sub_pngs = assets.sub_pngs if subtitles_enabled else []
     filt2, last = build_overlay_filter(n_static=2, groups=groups)
@@ -605,4 +707,5 @@ def render_reel(video_path: Path, segments: dict, edl_doc: dict, style: StylePre
     assets = render_base_and_assets(video_path, segments, edl_doc, style, work, speed)
     title = edl_doc["title_candidates"][edl_doc.get("selected_title", 0)]
     return render_with_title(assets, title["text"], title.get("keyword", ""),
-                             style, out_path)
+                             style, out_path,
+                             speaker_text=speaker_label(edl_doc))

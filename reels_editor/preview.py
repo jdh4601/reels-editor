@@ -33,7 +33,7 @@ def extract_frame(video_path: Path, at_s: float, out: Path) -> Path | None:
 
 def compose_preview(frame: Path | None, title_text: str, title_keyword: str,
                     sub_text: str, sub_keywords: list[str],
-                    style: StylePreset) -> bytes:
+                    style: StylePreset, speaker_text: str = "") -> bytes:
     """추출 프레임(또는 회색 placeholder) 위에 타이틀·자막·워터마크를 합성해 PNG 바이트를 반환한다."""
     W, H = style.canvas
     vw, vh = style.video_area()
@@ -52,8 +52,13 @@ def compose_preview(frame: Path | None, title_text: str, title_keyword: str,
         tdir = Path(td)
         overlays: list[Path] = []
         if title_text:
-            overlays.append(render_title_png(title_text, title_keyword, style,
-                                             tdir / "title.png"))
+            overlays.append(render_title_png(
+                title_text,
+                title_keyword,
+                style,
+                tdir / "title.png",
+                speaker_text=speaker_text,
+            ))
         overlays.append(render_watermark_png(style, tdir / "wm.png"))
         if sub_text:
             overlays += render_subtitle_pngs([[0.0, 1.0, sub_text]],

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from reels_editor.config import (
     AppConfig,
+    DEFAULT_PLAYBACK_SPEED,
     load_config,
     mask_key,
     resolve_api_key,
@@ -65,6 +66,10 @@ class BatchExportRequest(BaseModel):
 class VoiceIsolationSettingsRequest(BaseModel):
     enabled: bool
     api_key: str | None = Field(default=None, max_length=512)
+
+
+class PlaybackSpeedSettingsRequest(BaseModel):
+    speed: float = Field(ge=1.0, le=1.5)
 
 
 def create_app(
@@ -130,6 +135,28 @@ def create_app(
         current = getattr(service, "config", AppConfig(provider="codex-cli"))
         service.config = replace(current, voice_isolation=request.enabled)
         return voice_isolation_settings()
+
+    def playback_speed_settings() -> dict[str, float]:
+        config = getattr(service, "config", AppConfig(provider="codex-cli"))
+        speed = float(config.style.get("speed", DEFAULT_PLAYBACK_SPEED))
+        return {"speed": round(speed, 2)}
+
+    @app.get("/api/settings/playback-speed")
+    def get_playback_speed_settings(_auth: None = Depends(require_token)) -> dict[str, float]:
+        return playback_speed_settings()
+
+    @app.put("/api/settings/playback-speed")
+    def put_playback_speed_settings(
+        request: PlaybackSpeedSettingsRequest,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, float]:
+        # UI 눈금과 동일하게 0.05배 단위로 정규화해 직접 API 호출도 일관되게 처리한다.
+        speed = round(request.speed * 20) / 20
+        persisted = load_config(config_path)
+        save_config(replace(persisted, style={**persisted.style, "speed": speed}), config_path)
+        current = getattr(service, "config", AppConfig(provider="codex-cli"))
+        service.config = replace(current, style={**current.style, "speed": speed})
+        return playback_speed_settings()
 
     @app.post("/api/dialogs/open-folder")
     def open_folder(_auth: None = Depends(require_token)) -> dict[str, str | None]:

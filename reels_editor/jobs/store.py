@@ -5,7 +5,6 @@ import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from .models import ACTIVE_STATUSES, Artifact, Job, Status
 

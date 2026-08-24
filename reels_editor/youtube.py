@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from reels_editor.capcut import US
 
@@ -55,6 +55,79 @@ def validate_youtube_url(url: str) -> str:
     if not parsed.path or parsed.path == "/":
         raise YouTubeSourceError("영상이 포함된 YouTube 링크를 입력하세요.")
     return normalized
+
+
+def video_id_from_url(url: str) -> str | None:
+    """Return a stable video ID for the common YouTube URL variants."""
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return None
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    parts = [part for part in parsed.path.split("/") if part]
+    if hostname == "youtu.be":
+        return parts[0] if parts else None
+    if hostname not in YOUTUBE_HOSTS and not hostname.endswith(".youtube.com"):
+        return None
+    if parsed.path.rstrip("/") == "/watch":
+        return next(iter(parse_qs(parsed.query).get("v", [])), None) or None
+    if len(parts) >= 2 and parts[0] in {"embed", "live", "shorts"}:
+        return parts[1]
+    return None
+
+
+def load_cached_youtube_source(
+    source_dir: Path,
+    source_url: str,
+    *,
+    expected_video_id: str | None = None,
+    fallback_title: str = "YouTube 인터뷰",
+) -> YouTubeSource | None:
+    """Load a complete prior download, or return ``None`` for a partial cache."""
+    try:
+        segments_payload = json.loads((source_dir / "segments.json").read_text(encoding="utf-8"))
+        if not isinstance(segments_payload, dict) or not isinstance(segments_payload.get("segments"), list):
+            return None
+        if not segments_payload["segments"]:
+            return None
+        video_path = _find_downloaded_video(source_dir)
+        language = str(segments_payload.get("transcript_language") or "").strip()
+        kind = str(segments_payload.get("transcript_kind") or "").strip()
+        if not language or not kind:
+            return None
+        transcript_path = _find_transcript(source_dir, language)
+
+        info: dict[str, Any] = {}
+        info_path = source_dir / "source.info.json"
+        if info_path.is_file():
+            loaded_info = json.loads(info_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_info, dict):
+                info = loaded_info
+        cached_video_id = str(info.get("id") or expected_video_id or "").strip()
+        if not cached_video_id:
+            return None
+        if expected_video_id and cached_video_id != expected_video_id:
+            return None
+
+        segments = dict(segments_payload)
+        segments["video_path"] = str(video_path)
+        segments.setdefault("source_title", str(info.get("title") or fallback_title).strip())
+        segments.setdefault(
+            "source_channel",
+            str(info.get("channel") or info.get("uploader") or "").strip(),
+        )
+        return YouTubeSource(
+            video_path=video_path,
+            segments=segments,
+            title=str(info.get("title") or fallback_title).strip() or fallback_title,
+            video_id=cached_video_id,
+            source_url=source_url,
+            transcript_path=transcript_path,
+            transcript_language=language,
+            transcript_kind=kind,
+        )
+    except (OSError, ValueError, json.JSONDecodeError, YouTubeSourceError):
+        return None
 
 
 def select_caption_track(
@@ -227,6 +300,8 @@ def download_youtube_source(
     segments = parse_json3_transcript(transcript, video_path=video_path, duration_s=duration_s)
     segments["transcript_language"] = track.language
     segments["transcript_kind"] = track.kind
+    segments["source_title"] = title
+    segments["source_channel"] = str(info.get("channel") or info.get("uploader") or "").strip()
     (output_dir / "transcript.txt").write_text(
         "\n".join(_transcript_line(item) for item in segments["segments"]) + "\n",
         encoding="utf-8",

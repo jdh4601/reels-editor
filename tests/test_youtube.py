@@ -8,9 +8,11 @@ import pytest
 from reels_editor.youtube import (
     YouTubeSourceError,
     download_youtube_source,
+    load_cached_youtube_source,
     parse_json3_transcript,
     select_caption_track,
     validate_youtube_url,
+    video_id_from_url,
 )
 
 
@@ -20,6 +22,55 @@ def test_validate_youtube_url_accepts_video_hosts_and_rejects_other_sites() -> N
 
     with pytest.raises(YouTubeSourceError, match="youtube.com"):
         validate_youtube_url("https://example.com/watch?v=abc123")
+
+
+def test_video_id_from_url_normalizes_common_youtube_link_variants() -> None:
+    assert video_id_from_url("https://youtu.be/abc123?si=share") == "abc123"
+    assert video_id_from_url("https://www.youtube.com/watch?v=abc123&t=42") == "abc123"
+    assert video_id_from_url("https://youtube.com/shorts/abc123?feature=share") == "abc123"
+    assert video_id_from_url("https://youtube.com/live/abc123") == "abc123"
+    assert video_id_from_url("https://example.com/watch?v=abc123") is None
+
+
+def test_load_cached_youtube_source_requires_complete_video_and_transcript(tmp_path: Path) -> None:
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+    transcript = tmp_path / "source.en-orig.json3"
+    transcript.write_text("{}", encoding="utf-8")
+    (tmp_path / "segments.json").write_text(json.dumps({
+        "video_path": "/old/location/source.mp4",
+        "transcript_language": "en-orig",
+        "transcript_kind": "automatic",
+        "segments": [{"id": "yt-00001", "text": "Startups are hard"}],
+    }), encoding="utf-8")
+    (tmp_path / "source.info.json").write_text(json.dumps({
+        "id": "abc123",
+        "title": "Founder interview",
+    }), encoding="utf-8")
+
+    source = load_cached_youtube_source(
+        tmp_path,
+        "https://youtu.be/abc123",
+        expected_video_id="abc123",
+    )
+
+    assert source is not None
+    assert source.video_path == video
+    assert source.segments["video_path"] == str(video)
+    assert source.transcript_path == transcript
+    assert source.title == "Founder interview"
+    assert load_cached_youtube_source(
+        tmp_path,
+        "https://youtu.be/different",
+        expected_video_id="different",
+    ) is None
+
+    transcript.unlink()
+    assert load_cached_youtube_source(
+        tmp_path,
+        "https://youtu.be/abc123",
+        expected_video_id="abc123",
+    ) is None
 
 
 def test_select_caption_prefers_english_then_korean_fallback() -> None:
@@ -39,6 +90,7 @@ def test_select_caption_prefers_english_then_korean_fallback() -> None:
 def test_select_caption_prefers_reported_original_track_over_translation() -> None:
     track = select_caption_track({
         "language": "en",
+        "channel": "Y Combinator",
         "subtitles": {},
         "automatic_captions": {
             "ko": [{"ext": "json3"}],
@@ -125,6 +177,7 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
         "title": "창업가 인터뷰",
         "duration": 3600,
         "language": "en",
+        "channel": "Y Combinator",
         "subtitles": {"en": [{"ext": "json3"}]},
         "automatic_captions": {},
     }
@@ -147,6 +200,8 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
     assert source.transcript_language == "en"
     assert source.transcript_kind == "manual"
     assert source.segments["transcript_language"] == "en"
+    assert source.segments["source_title"] == "창업가 인터뷰"
+    assert source.segments["source_channel"] == "Y Combinator"
     assert source.segments["segments"][0]["text"] == "Startups are hard"
     assert (tmp_path / "transcript.txt").read_text(encoding="utf-8") == "[00:00] Startups are hard\n"
     assert json.loads((tmp_path / "segments.json").read_text(encoding="utf-8"))["video_path"] == str(tmp_path / "source.mp4")

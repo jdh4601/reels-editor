@@ -1,12 +1,9 @@
 """config 3단 병합: 파일 없음 기본값 / 부분 오버라이드 / 스타일 병합 / 저장 왕복."""
-import dataclasses
-import os
 import stat
 from pathlib import Path
 
 import pytest
 
-from reels_editor import config as config_mod
 from reels_editor.config import (
     AppConfig, load_config, merged_style, save_config,
     KEY_ENV_VARS, mask_key, resolve_api_key, save_credential,
@@ -36,6 +33,23 @@ def test_load_config_accepts_voice_isolation_setting(tmp_path: Path) -> None:
     p.write_text("voice_isolation: true\n", encoding="utf-8")
 
     assert load_config(p).voice_isolation is True
+
+
+@pytest.mark.parametrize("speed", [1.0, 1.5])
+def test_load_config_accepts_playback_speed_boundaries(tmp_path: Path, speed: float) -> None:
+    p = tmp_path / "config.yaml"
+    p.write_text(f"style:\n  speed: {speed}\n", encoding="utf-8")
+
+    assert load_config(p).style["speed"] == speed
+
+
+@pytest.mark.parametrize("speed", [0.95, 1.55, "fast", True])
+def test_load_config_rejects_invalid_playback_speed(tmp_path: Path, speed: object) -> None:
+    p = tmp_path / "config.yaml"
+    p.write_text(f"style:\n  speed: {str(speed).lower()}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="style.speed"):
+        load_config(p)
 
 
 def test_load_config_accepts_codex_cli_provider(tmp_path: Path) -> None:

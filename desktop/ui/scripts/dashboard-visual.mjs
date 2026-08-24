@@ -676,7 +676,7 @@ try {
     await assertVideosReady(page);
     await assertPortraitPreviewGeometry(page);
     await assertStoryStructureReadable(page);
-    await assertVerticalLaneLayout(page, 340, 430, 900);
+    await assertVerticalLaneLayout(page, 470, 630, 900);
     await assertSingleAudibleVideo(page);
     await page.keyboard.press("Digit2");
     const selectedAfterShortcuts = await page.locator("input[name='selected-video']:checked").count();
@@ -694,8 +694,15 @@ try {
     const selectedStorylineCount = await page.locator("input[name='storyline-count']:checked").getAttribute("value");
     const selectedProvider = await page.getByLabel("모델 프로바이더").inputValue();
     const voiceIsolationKeyInputs = await page.getByLabel("ElevenLabs API 키").count();
-    if (durationRadioCount !== 3 || storylineCountRadioCount !== 10 || selectedDuration !== "30" || selectedStorylineCount !== "3" || selectedProvider !== "codex-cli" || voiceIsolationKeyInputs !== 1) {
-      throw new Error(`Unexpected settings controls: ${JSON.stringify({ durationRadioCount, storylineCountRadioCount, selectedDuration, selectedStorylineCount, selectedProvider, voiceIsolationKeyInputs })}`);
+    const speedControl = page.getByLabel("재생 배속");
+    const speedAttributes = {
+      min: await speedControl.getAttribute("min"),
+      max: await speedControl.getAttribute("max"),
+      step: await speedControl.getAttribute("step"),
+      value: await speedControl.inputValue(),
+    };
+    if (durationRadioCount !== 3 || storylineCountRadioCount !== 10 || selectedDuration !== "30" || selectedStorylineCount !== "3" || selectedProvider !== "codex-cli" || voiceIsolationKeyInputs !== 1 || JSON.stringify(speedAttributes) !== JSON.stringify({ min: "1", max: "1.5", step: "0.05", value: "1.2" })) {
+      throw new Error(`Unexpected settings controls: ${JSON.stringify({ durationRadioCount, storylineCountRadioCount, selectedDuration, selectedStorylineCount, selectedProvider, voiceIsolationKeyInputs, speedAttributes })}`);
     }
     const storylineControlOverflows = await page.locator(".storyline-count-control").evaluate(
       (element) => element.scrollWidth > element.clientWidth + 1,
@@ -706,6 +713,12 @@ try {
       const settingsScreenshot = path.join(screenshotRoot, "settings-1280x800.png");
       await page.screenshot({ path: settingsScreenshot, fullPage: true });
       summary.push({ viewport: "settings-1280x800", screenshot: settingsScreenshot });
+    }
+    await speedControl.hover();
+    await page.mouse.wheel(0, -100);
+    await page.waitForTimeout(300);
+    if (await speedControl.inputValue() !== "1.25") {
+      throw new Error(`Expected mouse wheel to raise playback speed by 0.05, got ${await speedControl.inputValue()}`);
     }
     await page.close();
   }

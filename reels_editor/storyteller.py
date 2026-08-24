@@ -9,12 +9,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from reels_editor import captions
 from reels_editor import edl as edl_mod
 from reels_editor import processes
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "storytelling-30s.md"
 DEFAULT_SPEED = 1.2
 MAX_RETRIES = 2
+LONG_REEL_DURATION_S = 60
+LONG_REEL_GRACE_S = 5
 
 ANGLES: list[tuple[str, str]] = [
     ("정면승부형", "창업가가 즉시 공감할 현실적인 문제나 결정 한 가지를 훅부터 직진으로 전개한다."),
@@ -25,6 +28,7 @@ ANGLES: list[tuple[str, str]] = [
 _SCHEMA = json.dumps({
     "story": {"five_lines": {"situation": "…", "desire": "…", "conflict": "…",
                              "change": "…", "result": "…"}, "lens": "…"},
+    "speaker": {"name": "한국어 이름", "role": "영문 직함/소속"},
     "title_candidates": [{"text": "…", "keyword": "…"}],
     "subtitle_keywords": ["…"],
     "subtitle_translations": {"seg_id": "자연스러운 한국어 번역"},
@@ -32,8 +36,13 @@ _SCHEMA = json.dumps({
 }, ensure_ascii=False, indent=2)
 
 
+def maximum_duration_s(duration_s: int) -> int:
+    """60초 릴스는 문장 완결성을 위해 최대 5초의 여유를 허용한다."""
+    return duration_s + LONG_REEL_GRACE_S if duration_s == LONG_REEL_DURATION_S else duration_s
+
+
 def build_prompt(segments: dict, duration_s: int, feedback: str | None,
-                 angle: str | None = None) -> str:
+                 angle: str | None = None, *, speed: float = DEFAULT_SPEED) -> str:
     template = PROMPT_PATH.read_text(encoding="utf-8")
     listing = "\n".join(
         f"- [{_timestamp(s.get('source_start_us', 0))}] {s['id']}: {s['text']}"
@@ -56,13 +65,28 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             "- title_candidates 3개는 한국어로 쓴다.\n"
             "- 영어 원문이 아니면 subtitle_translations는 빈 객체로 둔다.\n"
         )
+    source_title = " ".join(str(segments.get("source_title") or "").split())
+    source_channel = " ".join(str(segments.get("source_channel") or "").split())
+    if source_title or source_channel:
+        source_context = (
+            "\n## YouTube 영상 맥락\n"
+            f"- 영상 제목: {source_title or '알 수 없음'}\n"
+            f"- 채널: {source_channel or '알 수 없음'}\n"
+            "- 선택한 클립에서 실제로 말하는 사람을 speaker에 적는다. 진행자보다 인터뷰 답변자를 우선한다.\n"
+            "- name은 자연스러운 한국어 표기, role은 영상 맥락에 맞는 짧은 영문 직함/소속으로 쓴다.\n"
+        )
+    else:
+        source_context = ""
+    maximum_s = maximum_duration_s(duration_s)
     return (template
-            .replace("{speed}", str(DEFAULT_SPEED))
+            .replace("{speed}", str(speed))
             .replace("{duration_s}", str(duration_s))
-            .replace("{source_budget_s}", str(round(duration_s * DEFAULT_SPEED)))
+            .replace("{maximum_duration_s}", str(maximum_s))
+            .replace("{source_budget_s}", str(round(maximum_s * speed)))
             .replace("{schema}", _SCHEMA)
             .replace("{segments_listing}", listing)
             .replace("{translation_block}", translation)
+            .replace("{source_context_block}", source_context)
             .replace("{feedback_block}", fb)
             .replace("{angle_block}", ab))
 
@@ -99,7 +123,7 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
         if not isinstance(candidate, dict):
             errors.append(f"title_candidates[{i}]: 객체여야 함")
             continue
-        text = str(candidate.get("text", "")).strip()
+        text = " ".join(str(candidate.get("text", "")).split())
         if not text:
             errors.append(f"title_candidates[{i}].text 비어있음")
             continue
@@ -107,6 +131,24 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
         candidate["text"] = text
         candidate["keyword"] = keyword if keyword and keyword in text else ""
     return errors
+
+
+def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]) -> list[str]:
+    speaker = doc.get("speaker")
+    source_context_available = bool(segments.get("source_title") or segments.get("source_channel"))
+    if not isinstance(speaker, dict):
+        if source_context_available:
+            return ["speaker는 name과 role을 가진 객체여야 함"]
+        doc["speaker"] = {"name": "인터뷰 화자", "role": ""}
+        return []
+    name = " ".join(str(speaker.get("name") or "").split())
+    role = " ".join(str(speaker.get("role") or "").split())
+    if not name:
+        if source_context_available:
+            return ["speaker.name이 비어있음"]
+        name = "인터뷰 화자"
+    doc["speaker"] = {"name": name, "role": role}
+    return []
 
 
 def _run_claude(prompt: str) -> str:
@@ -124,12 +166,13 @@ def generate_script(segments: dict, duration_s: int = 30,
                     feedback: str | None = None, *,
                     runner: Callable[[str], str] | None = None,
                     raw_dump: Path | None = None,
-                    angle: str | None = None) -> dict:
+                    angle: str | None = None,
+                    speed: float = DEFAULT_SPEED) -> dict:
     run = runner or _run_claude
     last_raw = ""
     last_problem = "알 수 없는 생성 오류"
     for _attempt in range(1 + MAX_RETRIES):
-        last_raw = run(build_prompt(segments, duration_s, feedback, angle))
+        last_raw = run(build_prompt(segments, duration_s, feedback, angle, speed=speed))
         try:
             doc = extract_json(last_raw)
         except (ValueError, json.JSONDecodeError) as e:
@@ -141,12 +184,21 @@ def generate_script(segments: dict, duration_s: int = 30,
             )
             continue
         title_errs = validate_and_normalize_title_candidates(doc)
-        errs = title_errs + validate_subtitle_translations(doc, segments) + edl_mod.validate_edl(doc, segments)
+        speaker_errs = validate_and_normalize_speaker(doc, segments)
+        translation_errs = validate_subtitle_translations(doc, segments)
+        edl_errs = edl_mod.validate_edl(doc, segments)
+        caption_errs = (
+            validate_caption_completeness(doc, segments)
+            if not translation_errs and not edl_errs
+            else []
+        )
+        errs = title_errs + speaker_errs + translation_errs + edl_errs + caption_errs
         if not errs:
-            actual_duration = edl_mod.estimate_duration_s(doc, segments, DEFAULT_SPEED)
-            if actual_duration > duration_s:
+            actual_duration = edl_mod.estimate_duration_s(doc, segments, speed)
+            maximum_s = maximum_duration_s(duration_s)
+            if actual_duration > maximum_s:
                 errs.append(
-                    f"완성 길이 {actual_duration:.1f}초가 최대 {duration_s}초를 초과함 — seg_ids를 줄일 것"
+                    f"완성 길이 {actual_duration:.1f}초가 최대 {maximum_s}초를 초과함 — seg_ids를 줄일 것"
                 )
         if not errs:
             doc.setdefault("selected_title", 0)
@@ -155,6 +207,7 @@ def generate_script(segments: dict, duration_s: int = 30,
         feedback = ("이전 EDL이 검증에 실패했다. 다음 오류를 고쳐라 "
                     "(title_candidates는 정확히 3개, seg_ids는 SEGMENTS의 id만, "
                     "영어 원문이면 선택한 모든 seg_id의 한국어 subtitle_translations 포함, "
+                    "자막은 큰따옴표를 닫은 완전한 문장 단위, "
                     "verbatim 유지):\n" + "\n".join(errs))
     hint = ""
     if raw_dump is not None:
@@ -199,6 +252,33 @@ def validate_subtitle_translations(doc: dict[str, Any], segments: dict[str, Any]
     return []
 
 
+def validate_caption_completeness(doc: dict[str, Any], segments: dict[str, Any]) -> list[str]:
+    """영어 인터뷰의 한국어 자막이 완결 문장으로 끝나는지 렌더 전에 검사한다."""
+    language = str(segments.get("transcript_language", "")).lower()
+    if not language.startswith("en"):
+        return []
+    translations = doc.get("subtitle_translations", {})
+    if not isinstance(translations, dict):
+        return []
+    selected_texts = [
+        str(translations.get(segment_id, "")).strip()
+        for cut in doc.get("cuts", [])
+        if isinstance(cut, dict)
+        for segment_id in cut.get("seg_ids", [])
+        if str(translations.get(segment_id, "")).strip()
+    ]
+    items = [[float(index), float(index + 1), text]
+             for index, text in enumerate(selected_texts)]
+    groups = captions.group_complete_sentences(items)
+    errors = captions.completeness_errors(groups)
+    if not errors:
+        return []
+    return [
+        "선택 자막이 완결되지 않음 — 마지막 문장과 큰따옴표가 닫힐 때까지 "
+        "인접한 다음 seg_id를 포함할 것 (" + "; ".join(errors) + ")"
+    ]
+
+
 @dataclass(frozen=True)
 class StorylineResult:
     """병렬 생성 결과 하나."""
@@ -212,7 +292,8 @@ def generate_many(segments: dict, n: int, duration_s: int = 30, *,
                   runner: Callable[[str], str] | None = None,
                   raw_dump_dir: Path | None = None,
                   feedback: str | None = None,
-                  only_indices: list[int] | None = None) -> list[StorylineResult]:
+                  only_indices: list[int] | None = None,
+                  speed: float = DEFAULT_SPEED) -> list[StorylineResult]:
     """스토리라인 n개를 병렬 생성. 개별 실패는 error로 담고 나머지는 살린다.
 
     러너(claude 바이너리 실행 등) 수준에서 터지는 환경/실행 오류
@@ -228,7 +309,7 @@ def generate_many(segments: dict, n: int, duration_s: int = 30, *,
         dump = (raw_dump_dir / f"llm_raw_s{i + 1}.txt") if raw_dump_dir else None
         try:
             doc = generate_script(segments, duration_s, feedback,
-                                  runner=runner, raw_dump=dump, angle=hint)
+                                  runner=runner, raw_dump=dump, angle=hint, speed=speed)
             return StorylineResult(i, name, doc)
         except (RuntimeError, ValueError, OSError,
                 subprocess.SubprocessError) as e:

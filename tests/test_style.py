@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from reels_editor.style import StylePreset, load_style
+from reels_editor.style import load_style
 
 STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
 
@@ -17,16 +17,26 @@ def test_load_done_preset() -> None:
     assert s.title_font.name == "Pretendard-Bold.otf"
     assert s.sub_font.name == "Pretendard-Bold.otf"
     assert s.watermark_font.name == "Pretendard-Bold.otf"
-    assert s.title_size == 65
-    assert s.title_emphasis_size == 85
-    assert s.title_line_gap == 18
+    assert s.title_size == 105
+    assert s.title_emphasis_size is None
+    assert s.title_line_gap is None
+    assert s.title_max_lines == 1
+    assert s.title_speaker_size == 40
+    assert s.title_speaker_color == "#FFFFFF"
+    assert s.title_speaker_gap == 10
     assert s.sub_size == 40
     assert s.sub_opacity == 255
     assert s.sub_y == -400
     assert s.watermark_size == 75
     assert s.watermark_opacity == 128
-    assert s.watermark_y == -1000
-    assert s.title_y == 1027
+    assert s.watermark_y == -1560
+    assert s.episode_text == "[Ep 1 / 1000]"
+    assert s.episode_size == 40
+    assert s.episode_color == "#FFFFFF"
+    assert s.episode_opacity == 255
+    assert s.episode_gap == 18
+    assert s.episode_y == -900
+    assert s.title_y == 1120
     assert s.video_aspect == (9, 16)
     assert s.video_zoom == 1.0
     assert s.speed == 1.2

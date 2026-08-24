@@ -53,6 +53,8 @@ def load_desktop_config() -> AppConfig:
         provider="codex-cli",
         model=cfg.model if cfg.provider == "codex-cli" else "",
         n_storylines=3,
+        # 음성 개선은 비용과 처리 시간이 큰 선택 기능이므로 앱을 열 때마다 OFF로 시작한다.
+        voice_isolation=False,
         style=dict(cfg.style),
     )
 

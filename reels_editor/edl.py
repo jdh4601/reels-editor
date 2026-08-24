@@ -31,11 +31,14 @@ def validate_edl(edl_doc: dict, segments: dict) -> list[str]:
 
 
 def ordered_segments(edl_doc: dict, segments: dict) -> list[dict]:
-    """EDL 순서대로 세그먼트를 펼친다. 검증 실패 시 ValueError."""
+    """EDL 순서대로 세그먼트를 펼친다. 영어 원문은 한국어 번역을 자막으로 쓴다."""
     errs = validate_edl(edl_doc, segments)
     if errs:
         raise ValueError("EDL 검증 실패:\n" + "\n".join(errs))
     idx = _seg_index(segments)
+    translations = edl_doc.get("subtitle_translations", {})
+    if not isinstance(translations, dict):
+        translations = {}
     out: list[dict] = []
     for cut in edl_doc["cuts"]:
         for sid in cut["seg_ids"]:
@@ -44,7 +47,7 @@ def ordered_segments(edl_doc: dict, segments: dict) -> list[dict]:
                 "source_start_us": s["source_start_us"],
                 "source_end_us": s["source_end_us"],
                 "speed": s.get("speed", 1.0),
-                "text": s.get("text", ""),
+                "text": str(translations.get(sid) or s.get("text", "")),
             })
     return out
 

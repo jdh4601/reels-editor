@@ -98,7 +98,9 @@ async function assertNoCriticalOverlap(page) {
   const result = await page.evaluate(() => {
     const selectors = [
       ".topbar",
+      ".generation-option",
       ".status-row",
+      ".generation-progress",
       ".lane",
       ".phone-frame",
       ".title-options",
@@ -182,6 +184,42 @@ async function assertPortraitPreviewGeometry(page) {
   }
 }
 
+async function assertStoryStructureReadable(page) {
+  const result = await page.locator(".story-beat").evaluateAll((elements) => ({
+    count: elements.length,
+    clipped: elements.some((element) => {
+      const paragraph = element.querySelector("p");
+      return paragraph && (paragraph.scrollHeight > paragraph.clientHeight + 1 || paragraph.scrollWidth > paragraph.clientWidth + 1);
+    }),
+    missingLabels: elements.some((element) =>
+      !element.querySelector(".story-beat-heading strong")?.textContent?.trim()
+      || !element.querySelector(".story-beat-heading span")?.textContent?.trim(),
+    ),
+  }));
+  if (result.count !== 18 || result.clipped || result.missingLabels) {
+    throw new Error(`Expected 18 complete role-labeled story sections, got ${JSON.stringify(result)}`);
+  }
+}
+
+async function assertVerticalLaneLayout(page, minPreviewHeight, maxPreviewHeight, maxLaneHeight) {
+  const geometry = await page.evaluate(() => ({
+    lanes: Array.from(document.querySelectorAll(".lane")).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, height: rect.height };
+    }),
+    frames: Array.from(document.querySelectorAll(".phone-frame")).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }),
+  }));
+  const lanesStacked = geometry.lanes.every((lane, index) => index === 0 || lane.top >= geometry.lanes[index - 1].bottom + 8);
+  const previewsCompact = geometry.frames.every((frame) => frame.height >= minPreviewHeight && frame.height <= maxPreviewHeight);
+  const lanesCompact = geometry.lanes.every((lane) => lane.height <= maxLaneHeight);
+  if (geometry.lanes.length !== 3 || !lanesStacked || !previewsCompact || !lanesCompact) {
+    throw new Error(`Expected vertically stacked compact lanes, got ${JSON.stringify(geometry, null, 2)}`);
+  }
+}
+
 async function assertSingleAudibleVideo(page) {
   const initial = await page.locator("video").evaluateAll((videos) => videos.map((video) => video.muted));
   if (initial.filter((muted) => !muted).length !== 1) {
@@ -215,7 +253,7 @@ async function assertProductionFailureDoesNotLeakDemo(browser) {
 
   await page.goto("http://127.0.0.1:5179/#token=hash-secret", { waitUntil: "networkidle" });
   await page.waitForSelector(".lane", { state: "visible" });
-  await page.waitForFunction(() => document.body.innerText.includes("프로젝트 없음"));
+  await page.waitForFunction(() => document.body.innerText.includes("YouTube 링크 없음"));
 
   const bodyText = await page.locator("body").innerText();
   const laneCount = await page.locator(".lane").count();
@@ -241,7 +279,23 @@ async function assertProductionFailureDoesNotLeakDemo(browser) {
 
 async function assertEmptySnapshotPadsToThree(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  let clearCalled = false;
   await page.route("**/api/snapshot", async (route) => {
+    if (route.request().method() === "DELETE") {
+      clearCalled = true;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: "",
+          project_name: "Reels Editor",
+          project_path: null,
+          source_label: "프로젝트 없음",
+          storylines: [],
+          subtitles_on: true,
+        }),
+      });
+      return;
+    }
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
@@ -260,9 +314,12 @@ async function assertEmptySnapshotPadsToThree(browser) {
   const laneCount = await page.locator(".lane").count();
   const videoCount = await page.locator("video").count();
   const bodyText = await page.locator("body").innerText();
-  if (laneCount !== 3 || videoCount !== 0 || !bodyText.includes("프로젝트를 선택하면")) {
+  if (laneCount !== 3 || videoCount !== 0 || !bodyText.includes("YouTube 인터뷰 링크를 넣으면")) {
     throw new Error(`Expected successful empty snapshot to pad to 3 placeholder lanes, got ${JSON.stringify({ laneCount, videoCount })}`);
   }
+  await page.getByRole("button", { name: "비우기" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("프로젝트 없음"));
+  if (!clearCalled) throw new Error("Expected clear project button to call DELETE /api/snapshot");
   await page.close();
 }
 
@@ -270,7 +327,7 @@ async function assertMediaTokenAndMutationFailures(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const mediaTokens = [];
   const selectionBodies = [];
-  let exportCalled = false;
+  let batchExportBody = null;
 
   await page.route("**/api/snapshot", async (route) => {
     await route.fulfill({
@@ -306,8 +363,8 @@ async function assertMediaTokenAndMutationFailures(browser) {
     selectionBodies.push(JSON.parse(route.request().postData() ?? "{}"));
     await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "conflict" }) });
   });
-  await page.route("**/api/jobs/job-42/export", async (route) => {
-    exportCalled = true;
+  await page.route("**/api/jobs/job-42/export-batch", async (route) => {
+    batchExportBody = JSON.parse(route.request().postData() ?? "{}");
     await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "conflict" }) });
   });
 
@@ -320,19 +377,22 @@ async function assertMediaTokenAndMutationFailures(browser) {
 
   await page.locator(".lane").nth(0).locator("fieldset.title-options label").nth(1).click();
   await page.waitForFunction(() => document.body.innerText.includes("제목 변경 요청이 실패했습니다."));
-  await page.locator(".switch").click();
+  await page.locator(".export-bar .switch").click();
   await page.waitForFunction(() => document.body.innerText.includes("자막 변경 요청이 실패했습니다."));
   await page.locator(".lane").nth(1).locator("fieldset.title-options label").nth(1).click();
-  await page.getByRole("button", { name: "선택 영상 내보내기" }).click();
-  await page.waitForFunction(() => document.body.innerText.includes("내보내기에 실패했습니다."));
+  await page.locator(".lane").nth(1).locator("input[name='selected-video']").check();
+  await Promise.all([
+    page.waitForRequest((request) => request.url().includes("/api/jobs/job-42/export-batch")),
+    page.getByRole("button", { name: /선택 영상.*내보내기/ }).click(),
+  ]);
 
-  if (!exportCalled) throw new Error("Expected export mutation to be called");
-  if (selectionBodies.length < 3) throw new Error(`Expected selection mutations, got ${JSON.stringify(selectionBodies)}`);
-  if (selectionBodies[0].selected_for_export !== true || selectionBodies[1].selected_for_export !== true) {
-    throw new Error(`Selected lane title/subtitle mutations must preserve selected_for_export=true: ${JSON.stringify(selectionBodies)}`);
+  if (!batchExportBody) throw new Error("Expected batch export mutation to be called");
+  if (JSON.stringify(batchExportBody.storyline_ids) !== JSON.stringify(["s1", "s2"])) {
+    throw new Error(`Expected two selected storylines in batch export: ${JSON.stringify(batchExportBody)}`);
   }
-  if ("selected_for_export" in selectionBodies[2]) {
-    throw new Error(`Non-selected title mutation should not move export selection: ${JSON.stringify(selectionBodies[2])}`);
+  if (selectionBodies.length < 3) throw new Error(`Expected selection mutations, got ${JSON.stringify(selectionBodies)}`);
+  if (selectionBodies.some((body) => "selected_for_export" in body)) {
+    throw new Error(`Title/subtitle mutations should not control multi-selection: ${JSON.stringify(selectionBodies)}`);
   }
   await page.close();
 }
@@ -431,7 +491,7 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
     if (!bodyText.includes("하트비트 훅 1") || !bodyText.includes("하트비트 제목 1-1")) {
       throw new Error("Populated lanes did not survive heartbeat event");
     }
-    if (bodyText.includes("프로젝트를 선택하면")) {
+    if (bodyText.includes("YouTube 인터뷰 링크를 넣으면")) {
       throw new Error("Heartbeat was incorrectly normalized as an empty snapshot");
     }
     if (!exportDisabled) {
@@ -455,6 +515,140 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
   }
 }
 
+async function assertRegenerateAppliesNewJobAndReconnects(browser) {
+  const sockets = new Set();
+  const websocketUrls = [];
+  let createCalls = 0;
+  let createBody = null;
+  const regenerationServer = http.createServer(async (request, response) => {
+    if (request.url?.startsWith("/api/jobs") && request.method === "POST") {
+      createCalls += 1;
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      createBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          job_id: "new-job",
+          project_name: "새 작업 프로젝트",
+          project_path: "/real/project",
+          source_label: "/real/project",
+          status: "loading",
+          phase: "loading",
+          progress: 0.02,
+          event_seq: 2,
+          storylines: [],
+          subtitles_on: true,
+          duration_s: createBody.duration_s,
+          n_storylines: createBody.n_storylines,
+          provider: createBody.provider,
+          voice_isolation: createBody.voice_isolation,
+        }),
+      );
+      return;
+    }
+    if (request.url?.startsWith("/api/settings/voice-isolation")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ enabled: false, configured: true, masked_key: "xi_••••" }));
+      return;
+    }
+    if (request.url?.startsWith("/api/snapshot")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          job_id: "old-job",
+          project_name: "이전 프로젝트",
+          project_path: "/real/project",
+          source_label: "/real/project",
+          status: "failed",
+          event_seq: 7,
+          storylines: [],
+          subtitles_on: true,
+          duration_s: 30,
+          n_storylines: 3,
+          provider: "codex-cli",
+        }),
+      );
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(
+      '<!doctype html><html lang="ko"><body><div id="root"></div><script type="module" src="http://127.0.0.1:5179/src/main.tsx"></script></body></html>',
+    );
+  });
+
+  regenerationServer.on("upgrade", (request, socket) => {
+    if (!request.url?.startsWith("/api/events")) {
+      socket.destroy();
+      return;
+    }
+    websocketUrls.push(request.url);
+    const key = request.headers["sec-websocket-key"];
+    if (!key || Array.isArray(key)) {
+      socket.destroy();
+      return;
+    }
+    socket.write(
+      [
+        "HTTP/1.1 101 Switching Protocols",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Accept: ${websocketAccept(key)}`,
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    socket.write(websocketFrame(JSON.stringify({ event: "heartbeat", seq: 9 })));
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+
+  await new Promise((resolve) => regenerationServer.listen(5182, "127.0.0.1", resolve));
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await page.goto("http://127.0.0.1:5182/#token=regenerate-secret", { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.body.innerText.includes("이전 프로젝트"));
+    await page.waitForTimeout(200);
+    const voiceProcessingSwitch = page.getByRole("switch", { name: "다음 생성에 Voice Isolation과 Speech Enhancement 적용" });
+    await page.locator(".generation-option .switch").click();
+    if (!(await voiceProcessingSwitch.isChecked())) {
+      throw new Error("Voice processing choice did not turn on before regeneration");
+    }
+    await page.getByRole("tab", { name: "설정" }).click();
+    await page.getByText("60초", { exact: true }).click();
+    await page.getByText("10개", { exact: true }).click();
+    await page.getByLabel("모델 프로바이더").selectOption("claude-cli");
+    await page.getByRole("button", { name: "다시 생성" }).click();
+    await page.waitForFunction(() => document.body.innerText.includes("새 작업 프로젝트"));
+    await page.getByRole("tab", { name: "대시보드" }).click();
+    const requestedLaneCount = await page.locator(".lane").count();
+    if (requestedLaneCount !== 10) {
+      throw new Error(`Expected selected 10-storyline layout after regeneration, got ${requestedLaneCount}`);
+    }
+    const generateButton = page.getByRole("button", { name: "생성 중" });
+    if (!(await generateButton.isDisabled())) {
+      throw new Error("Generate should be disabled immediately after a new job starts");
+    }
+    const deadline = Date.now() + 2_000;
+    while (websocketUrls.length < 2 && Date.now() < deadline) {
+      await page.waitForTimeout(25);
+    }
+    if (createCalls !== 1) {
+      throw new Error(`Expected one regenerate request, got ${createCalls}`);
+    }
+    if (createBody?.duration_s !== 60 || createBody?.n_storylines !== 10 || createBody?.provider !== "claude-cli" || createBody?.voice_isolation !== true) {
+      throw new Error(`Expected selected generation settings in regenerate request, got ${JSON.stringify(createBody)}`);
+    }
+    if (!websocketUrls.some((url) => new URL(url, "http://127.0.0.1").searchParams.get("after") === "2")) {
+      throw new Error(`Expected event reconnect at new job seq 2, got ${JSON.stringify(websocketUrls)}`);
+    }
+  } finally {
+    await page.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => regenerationServer.close(resolve));
+  }
+}
+
 const server = startVite();
 try {
   await waitForServer("http://127.0.0.1:5179", server.getLog);
@@ -472,7 +666,7 @@ try {
     const selectedVideoCount = await page.locator("input[name='selected-video']:checked").count();
     const switchCount = await page.locator("input[role='switch']").count();
 
-    if (laneCount !== 3 || videoCount !== 3 || titleRadioCount !== 9 || selectedVideoCount !== 1 || switchCount !== 1) {
+    if (laneCount !== 3 || videoCount !== 3 || titleRadioCount !== 9 || selectedVideoCount !== 1 || switchCount !== 3) {
       throw new Error(
         `Unexpected dashboard counts at ${viewport.width}x${viewport.height}: ` +
           JSON.stringify({ laneCount, videoCount, titleRadioCount, selectedVideoCount, switchCount }),
@@ -481,21 +675,72 @@ try {
 
     await assertVideosReady(page);
     await assertPortraitPreviewGeometry(page);
+    await assertStoryStructureReadable(page);
+    await assertVerticalLaneLayout(page, 470, 630, 900);
     await assertSingleAudibleVideo(page);
     await page.keyboard.press("Digit2");
-    const secondSelected = await page.locator(".lane").nth(1).locator("input[name='selected-video']").isChecked();
-    if (!secondSelected) throw new Error("Keyboard shortcut 2 did not select the second ready video");
+    const selectedAfterShortcuts = await page.locator("input[name='selected-video']:checked").count();
+    if (selectedAfterShortcuts !== 3) throw new Error(`Expected keyboard shortcuts to add multiple selections, got ${selectedAfterShortcuts}`);
 
     await assertNoCriticalOverlap(page);
     const screenshot = path.join(screenshotRoot, viewport.name);
     await page.screenshot({ path: screenshot, fullPage: true });
     summary.push({ viewport: `${viewport.width}x${viewport.height}`, screenshot });
+
+    await page.getByRole("tab", { name: "설정" }).click();
+    const durationRadioCount = await page.locator("input[name='video-duration']").count();
+    const storylineCountRadioCount = await page.locator("input[name='storyline-count']").count();
+    const selectedDuration = await page.locator("input[name='video-duration']:checked").getAttribute("value");
+    const selectedStorylineCount = await page.locator("input[name='storyline-count']:checked").getAttribute("value");
+    const selectedProvider = await page.getByLabel("모델 프로바이더").inputValue();
+    const voiceIsolationKeyInputs = await page.getByLabel("ElevenLabs API 키").count();
+    const speedControl = page.getByLabel("재생 배속");
+    const speedAttributes = {
+      min: await speedControl.getAttribute("min"),
+      max: await speedControl.getAttribute("max"),
+      step: await speedControl.getAttribute("step"),
+      value: await speedControl.inputValue(),
+    };
+    if (durationRadioCount !== 3 || storylineCountRadioCount !== 10 || selectedDuration !== "30" || selectedStorylineCount !== "3" || selectedProvider !== "codex-cli" || voiceIsolationKeyInputs !== 1 || JSON.stringify(speedAttributes) !== JSON.stringify({ min: "1", max: "1.5", step: "0.05", value: "1.2" })) {
+      throw new Error(`Unexpected settings controls: ${JSON.stringify({ durationRadioCount, storylineCountRadioCount, selectedDuration, selectedStorylineCount, selectedProvider, voiceIsolationKeyInputs, speedAttributes })}`);
+    }
+    const storylineControlOverflows = await page.locator(".storyline-count-control").evaluate(
+      (element) => element.scrollWidth > element.clientWidth + 1,
+    );
+    if (storylineControlOverflows) throw new Error(`Storyline count control overflows at ${viewport.width}px`);
+    if (viewport.width === 1280) {
+      await page.waitForTimeout(250);
+      const settingsScreenshot = path.join(screenshotRoot, "settings-1280x800.png");
+      await page.screenshot({ path: settingsScreenshot, fullPage: true });
+      summary.push({ viewport: "settings-1280x800", screenshot: settingsScreenshot });
+    }
+    await speedControl.hover();
+    await page.mouse.wheel(0, -100);
+    await page.waitForTimeout(300);
+    if (await speedControl.inputValue() !== "1.25") {
+      throw new Error(`Expected mouse wheel to raise playback speed by 0.05, got ${await speedControl.inputValue()}`);
+    }
     await page.close();
   }
+  const progressPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await routeSampleMedia(progressPage);
+  await progressPage.goto("http://127.0.0.1:5179/?demo=1&generation-progress=1", { waitUntil: "networkidle" });
+  await progressPage.waitForSelector(".generation-progress", { state: "visible" });
+  const progressText = await progressPage.locator(".generation-progress").innerText();
+  const progressValue = await progressPage.locator(".generation-progress-track").getAttribute("aria-valuenow");
+  if (!progressText.includes("생성 진행 · 4/4단계") || !progressText.includes("제목·자막 오버레이") || progressValue !== "64") {
+    throw new Error(`Unexpected generation progress panel: ${JSON.stringify({ progressText, progressValue })}`);
+  }
+  await assertNoCriticalOverlap(progressPage);
+  const progressScreenshot = path.join(screenshotRoot, "generation-progress-1280x800.png");
+  await progressPage.screenshot({ path: progressScreenshot, fullPage: true });
+  summary.push({ viewport: "generation-progress-1280x800", screenshot: progressScreenshot });
+  await progressPage.close();
   await assertProductionFailureDoesNotLeakDemo(browser);
   await assertEmptySnapshotPadsToThree(browser);
   await assertMediaTokenAndMutationFailures(browser);
   await assertHeartbeatDoesNotReplaceSnapshot(browser);
+  await assertRegenerateAppliesNewJobAndReconnects(browser);
   await browser.close();
   console.log(JSON.stringify({ ok: true, summary }, null, 2));
 } finally {

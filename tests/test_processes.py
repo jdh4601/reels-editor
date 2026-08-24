@@ -26,6 +26,21 @@ def test_managed_run_honors_check_true() -> None:
     assert exc.value.output.strip() == "bad"
 
 
+def test_managed_run_forwards_input_to_stdin() -> None:
+    registry = processes.ProcessRegistry()
+
+    with processes.use_process_registry(registry):
+        completed = processes.run(
+            [sys.executable, "-c", "import sys; print(sys.stdin.read())"],
+            input="프롬프트",
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    assert completed.stdout.strip() == "프롬프트"
+
+
 def test_terminate_all_stops_registered_process_quickly(tmp_path: Path) -> None:
     registry = processes.ProcessRegistry()
     pid_file = tmp_path / "sleep.pid"

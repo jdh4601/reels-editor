@@ -18,7 +18,10 @@ PROVIDERS = ("claude-cli", "codex-cli", "openai", "kimi", "custom")
 # StylePreset 필드 중 게이트 설정으로 조절 가능한 키
 STYLE_OVERRIDE_KEYS = ("sub_size", "title_size", "sub_highlight",
                        "title_highlight", "sub_y_frac", "sub_box_alpha", "speed")
-MAX_STORYLINES = 3
+MAX_STORYLINES = 10
+MIN_PLAYBACK_SPEED = 1.0
+MAX_PLAYBACK_SPEED = 1.5
+DEFAULT_PLAYBACK_SPEED = 1.2
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class AppConfig:
     model: str = ""            # 빈 문자열 = 프로바이더 기본 모델
     base_url: str = ""         # custom 프로바이더 전용
     n_storylines: int = 3
+    voice_isolation: bool = False
     style: dict[str, Any] = field(default_factory=dict)
 
 
@@ -43,6 +47,16 @@ def _validate(cfg: AppConfig) -> AppConfig:
     unknown = set(cfg.style) - set(STYLE_OVERRIDE_KEYS)
     if unknown:
         raise ValueError(f"알 수 없는 style 키: {sorted(unknown)}")
+    if "speed" in cfg.style:
+        speed = cfg.style["speed"]
+        if (
+            isinstance(speed, bool)
+            or not isinstance(speed, (int, float))
+            or not MIN_PLAYBACK_SPEED <= float(speed) <= MAX_PLAYBACK_SPEED
+        ):
+            raise ValueError(
+                f"style.speed는 {MIN_PLAYBACK_SPEED:.1f}~{MAX_PLAYBACK_SPEED:.1f} 사이의 숫자여야 함: {speed!r}"
+            )
     return cfg
 
 
@@ -67,6 +81,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         model=raw.get("model", defaults.model),
         base_url=raw.get("base_url", defaults.base_url),
         n_storylines=n_storylines,
+        voice_isolation=bool(raw.get("voice_isolation", defaults.voice_isolation)),
         style={k: v for k, v in (raw.get("style") or {}).items()},
     ))
 
@@ -85,8 +100,12 @@ def merged_style(preset: StylePreset, overrides: dict[str, Any]) -> StylePreset:
     return dataclasses.replace(preset, **known) if known else preset
 
 
-KEY_ENV_VARS = {"openai": "OPENAI_API_KEY", "kimi": "MOONSHOT_API_KEY",
-                "custom": "REELS_LLM_API_KEY"}
+KEY_ENV_VARS = {
+    "openai": "OPENAI_API_KEY",
+    "kimi": "MOONSHOT_API_KEY",
+    "custom": "REELS_LLM_API_KEY",
+    "elevenlabs": "ELEVENLABS_API_KEY",
+}
 
 
 def credentials_path() -> Path:

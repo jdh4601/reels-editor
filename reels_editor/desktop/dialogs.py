@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -12,11 +13,15 @@ class DialogProvider(Protocol):
     def choose_save_file(self, suggested_name: str) -> str | None:
         ...
 
+    def show_in_file_manager(self, directory: Path) -> bool:
+        ...
+
 
 @dataclass
 class FakeDialogProvider:
     folder: str = "/tmp/reels-editor/input"
     save_file: str = "/tmp/reels-editor/export.mp4"
+    opened_directories: list[Path] = field(default_factory=list, init=False)
 
     def choose_folder(self) -> str:
         return self.folder
@@ -24,6 +29,10 @@ class FakeDialogProvider:
     def choose_save_file(self, suggested_name: str) -> str:
         path = Path(self.save_file)
         return str(path.with_name(suggested_name)) if suggested_name else str(path)
+
+    def show_in_file_manager(self, directory: Path) -> bool:
+        self.opened_directories.append(directory)
+        return True
 
 
 class MutableDialogProvider:
@@ -38,6 +47,9 @@ class MutableDialogProvider:
 
     def choose_save_file(self, suggested_name: str) -> str | None:
         return self.provider.choose_save_file(suggested_name)
+
+    def show_in_file_manager(self, directory: Path) -> bool:
+        return self.provider.show_in_file_manager(directory)
 
 
 class WebviewDialogProvider:
@@ -61,3 +73,14 @@ class WebviewDialogProvider:
         if isinstance(result, tuple):
             return result[0] if result else None
         return result
+
+    def show_in_file_manager(self, directory: Path) -> bool:
+        try:
+            subprocess.Popen(
+                ["open", str(directory.expanduser())],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            return False
+        return True

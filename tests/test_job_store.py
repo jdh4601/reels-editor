@@ -15,7 +15,12 @@ from reels_editor.jobs import (
 
 def test_job_store_persists_and_lists_recent_jobs(tmp_path: Path) -> None:
     store = JobStore(root=tmp_path)
-    job = store.create_job(input_path="/clips/interview.mp4")
+    job = store.create_job(
+        input_path="/clips/interview.mp4",
+        source_type="youtube",
+        source_url="https://youtu.be/abc123",
+        voice_isolation=True,
+    )
     job.status = Status.GENERATING
     job.storylines.append(
         Storyline(
@@ -44,7 +49,34 @@ def test_job_store_persists_and_lists_recent_jobs(tmp_path: Path) -> None:
     assert loaded.id == job.id
     assert loaded.storylines[0].title_candidates == ["첫 번째 제목", "두 번째 제목", "세 번째 제목"]
     assert loaded.storylines[0].variants[0].subtitles_enabled is True
+    assert loaded.voice_isolation is True
+    assert loaded.source_type == "youtube"
+    assert loaded.source_url == "https://youtu.be/abc123"
     assert [item.id for item in store.list_recent(limit=5)] == [job.id]
+
+
+def test_current_job_can_be_cleared_without_deleting_history(tmp_path: Path) -> None:
+    store = JobStore(root=tmp_path)
+    first = store.create_job(project_path="/projects/first")
+
+    assert store.current_job().id == first.id
+
+    store.clear_current()
+
+    assert store.current_job() is None
+    assert store.load(first.id).project_path == "/projects/first"
+    assert JobStore(root=tmp_path).current_job() is None
+
+    second = store.create_job(project_path="/projects/second")
+    assert store.current_job().id == second.id
+
+
+def test_current_job_falls_back_to_recent_for_legacy_store(tmp_path: Path) -> None:
+    store = JobStore(root=tmp_path)
+    job = store.create_job(project_path="/projects/legacy")
+    store.current_path.unlink()
+
+    assert JobStore(root=tmp_path).current_job().id == job.id
 
 
 def test_job_decode_is_backward_tolerant(tmp_path: Path) -> None:
@@ -70,6 +102,8 @@ def test_job_decode_is_backward_tolerant(tmp_path: Path) -> None:
     assert loaded.status is Status.READY
     assert loaded.storylines[0].status is Status.IDLE
     assert loaded.export.selected_variant_id is None
+    assert loaded.voice_isolation is False
+    assert loaded.source_type == "capcut"
 
 
 def test_job_snapshot_keeps_dashboard_snake_case_fields(tmp_path: Path) -> None:

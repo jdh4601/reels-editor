@@ -20,11 +20,105 @@ def test_timeline_items_speed_compresses(edl_doc: dict, segments: dict) -> None:
 
 
 def test_group_captions_merges_short_fragments() -> None:
-    items = [[0.0, 0.5, "결국은"], [0.5, 1.5, "제가 시장을"], [1.5, 2.2, "설득하는 방법은"]]
+    items = [[0.0, 0.5, "결국은"], [0.5, 1.5, "제가 시장을"], [1.5, 2.2, "설득하는 것입니다."]]
     groups = render.group_captions(items, max_dur=2.4, max_chars=20)
-    assert groups[0][2] == "결국은 제가 시장을 설득하는 방법은"[:20] or len(groups) >= 1
-    # 20자 제한: "결국은 제가 시장을" 까지만 병합되고 나머지는 새 그룹
-    assert all(len(g[2]) <= 20 for g in groups)
+    assert [group[2] for group in groups] == ["결국은 제가 시장을 설득하는 것입니다"]
+
+
+def test_group_captions_keeps_long_sentence_complete() -> None:
+    groups = render.group_captions(
+        [[0.0, 4.0, "고객이 원하는 것을 모르고 제품부터 만들면 정말 오래 헤매게 됩니다"]],
+        max_chars=20,
+    )
+
+    assert groups == [[0.0, 4.0, "고객이 원하는 것을 모르고 제품부터 만들면 정말 오래 헤매게 됩니다"]]
+
+
+def test_group_captions_never_mixes_start_of_next_sentence() -> None:
+    groups = render.group_captions([
+        [0.0, 1.0, "이 일을 형편없이 합니다."],
+        [1.0, 1.4, "저도"],
+        [1.4, 2.2, "처음에는 그랬습니다."],
+    ])
+
+    assert [group[2] for group in groups] == [
+        "이 일을 형편없이 합니다",
+        "저도 처음에는 그랬습니다",
+    ]
+    assert all("합니다 저도" not in group[2] for group in groups)
+
+
+def test_group_captions_merges_semantic_fragment_even_with_period() -> None:
+    groups = render.group_captions([
+        [0.0, 0.4, "저도."],
+        [0.4, 1.5, "처음에는 그랬습니다."],
+    ])
+
+    assert groups == [[0.0, 1.5, "저도 처음에는 그랬습니다"]]
+
+
+def test_group_captions_splits_two_sentences_inside_one_youtube_cue() -> None:
+    groups = render.group_captions([
+        [0.0, 3.0, "형편없이 합니다. 저도 처음에는 그랬습니다."],
+    ])
+
+    assert [group[2] for group in groups] == [
+        "형편없이 합니다",
+        "저도 처음에는 그랬습니다",
+    ]
+    assert groups[0][0] == 0.0
+    assert groups[-1][1] == 3.0
+
+
+def test_group_captions_hides_commas_and_periods_only_in_final_text() -> None:
+    groups = render.group_captions([
+        [0.0, 1.2, "네, 맞습니다."],
+        [1.2, 2.4, "정말일까요?"],
+    ])
+
+    assert [group[2] for group in groups] == ["네 맞습니다", "정말일까요?"]
+    assert all("," not in group[2] and "." not in group[2] for group in groups)
+
+
+def test_group_captions_keeps_ascii_quoted_sentence_together() -> None:
+    groups = render.group_captions([
+        [0.0, 0.8, '그는 "좋은 아이디어도'],
+        [0.8, 1.7, '포기해야 합니다."'],
+        [1.7, 2.5, "그래야 성장합니다."],
+    ])
+
+    assert [group[2] for group in groups] == [
+        '그는 "좋은 아이디어도 포기해야 합니다"',
+        "그래야 성장합니다",
+    ]
+
+
+def test_group_captions_does_not_split_inside_open_quote() -> None:
+    groups = render.group_captions([[
+        0.0,
+        3.0,
+        '그는 "실패했습니다. 다시 시작했습니다."라고 말했습니다.',
+    ]])
+
+    assert groups == [[
+        0.0,
+        3.0,
+        '그는 "실패했습니다 다시 시작했습니다"라고 말했습니다',
+    ]]
+
+
+def test_group_captions_keeps_curly_quoted_sentence_together() -> None:
+    groups = render.group_captions([
+        [0.0, 0.8, "그는 “아무도 답을"],
+        [0.8, 1.8, "몰랐습니다.”라고 말했습니다."],
+    ])
+
+    assert groups == [[0.0, 1.8, "그는 “아무도 답을 몰랐습니다”라고 말했습니다"]]
+
+
+def test_group_captions_rejects_unfinished_sentence_and_open_quote() -> None:
+    with pytest.raises(ValueError, match="큰따옴표가 닫히지 않음"):
+        render.group_captions([[0.0, 1.0, '그는 "좋은 아이디어도']])
 
 
 def test_split_by_keywords_marks_highlight() -> None:
@@ -52,9 +146,18 @@ def test_build_base_filter_content_crop_first(edl_doc: dict, segments: dict) -> 
     ordered = edl.ordered_segments(edl_doc, segments)
     f = render.build_base_filter(ordered, 1.2, style, in_size=(1920, 1080),
                                  content_crop=(608, 1080, 656, 0))
-    vw, vh = style.video_area()
-    aspect = render._crop_expr(608, 1080, vw, vh)
-    assert f"crop=608:1080:656:0,{aspect}" in f
+    crop = render.video_crop_box((608, 1080), style)
+    assert f"crop=608:1080:656:0,crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}" in f
+
+
+def test_video_crop_box_fits_source_to_nine_sixteen_canvas_without_extra_zoom() -> None:
+    style = load_style(STYLE)
+
+    crop = render.video_crop_box((1920, 1080), style)
+
+    # 전체 출력은 9:16이고, 중앙 영상창은 원본을 추가 확대 없이 채운다.
+    assert crop == render._center_crop_box(
+        1920, 1080, *style.video_area())
 
 
 def test_parse_cropdetect_picks_most_common() -> None:
@@ -236,3 +339,17 @@ def test_variant_cache_key_changes_by_title_subtitle_and_style() -> None:
         subtitles_enabled=True,
         style_hash_value="other",
     )
+    assert base != render.variant_cache_key(
+        storyline_id="s1",
+        title_text="A",
+        subtitles_enabled=True,
+        style_hash_value="style",
+        speaker_text="샘 알트만 (CEO of OpenAI)",
+    )
+
+
+def test_speaker_label_formats_name_and_role() -> None:
+    assert render.speaker_label({
+        "speaker": {"name": "샘 알트만", "role": "CEO of OpenAI"},
+    }) == "샘 알트만 (CEO of OpenAI)"
+    assert render.speaker_label({}) == ""

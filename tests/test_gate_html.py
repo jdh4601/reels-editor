@@ -44,6 +44,8 @@ def test_html_settings_fields_reflect_config() -> None:
     assert 'id="set-provider"' in html and 'id="set-sub_size"' in html
     assert "✓ 환경변수" in html
     assert 'id="preview-img"' in html
+    assert 'id="set-n_storylines"' in html
+    assert 'max="10"' in html
 
 
 def test_html_duration_warning_badge() -> None:

@@ -5,7 +5,6 @@ import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from .models import ACTIVE_STATUSES, Artifact, Job, Status
 
@@ -13,6 +12,7 @@ from .models import ACTIVE_STATUSES, Artifact, Job, Status
 class JobStore:
     def __init__(self, root: Path | None = None) -> None:
         self.root = (root or self.default_root()).expanduser()
+        self.current_path = self.root / "current.json"
 
     @staticmethod
     def default_root() -> Path:
@@ -28,9 +28,14 @@ class JobStore:
         output_dir: str | None = None,
         project_path: str | None = None,
         project_name: str | None = None,
+        source_type: str = "capcut",
+        source_url: str | None = None,
         work_dir: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        duration_s: int = 30,
+        n_storylines: int = 3,
+        voice_isolation: bool = False,
         job_id: str | None = None,
     ) -> Job:
         now = _now()
@@ -42,11 +47,38 @@ class JobStore:
             output_dir=output_dir,
             project_path=project_path,
             project_name=project_name,
+            source_type=source_type,
+            source_url=source_url,
             work_dir=work_dir,
             provider=provider,
             model=model,
+            duration_s=duration_s,
+            n_storylines=n_storylines,
+            voice_isolation=voice_isolation,
         )
-        return self.save(job)
+        saved = self.save(job)
+        self._write_current(saved.id)
+        return saved
+
+    def current_job(self) -> Job | None:
+        if not self.current_path.is_file():
+            recent = self.list_recent(limit=1)
+            return recent[0] if recent else None
+        try:
+            payload = json.loads(self.current_path.read_text(encoding="utf-8"))
+            job_id = payload.get("job_id") if isinstance(payload, dict) else None
+        except (OSError, json.JSONDecodeError):
+            recent = self.list_recent(limit=1)
+            return recent[0] if recent else None
+        if not job_id:
+            return None
+        try:
+            return self.load(str(job_id))
+        except FileNotFoundError:
+            return None
+
+    def clear_current(self) -> None:
+        self._write_current(None)
 
     def save(self, job: Job, *, bump_revision: bool = True) -> Job:
         if bump_revision:
@@ -159,6 +191,13 @@ class JobStore:
             os.fsync(file.fileno())
         os.replace(tmp, final)
         _fsync_dir(job_dir)
+
+    def _write_current(self, job_id: str | None) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        tmp = self.root / f".current.{uuid.uuid4().hex}.tmp"
+        tmp.write_text(json.dumps({"job_id": job_id}) + "\n", encoding="utf-8")
+        os.replace(tmp, self.current_path)
+        _fsync_dir(self.root)
 
 
 def _now() -> str:

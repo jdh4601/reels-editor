@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Status(StrEnum):
@@ -218,9 +218,16 @@ class Job:
     output_dir: str | None = None
     project_path: str | None = None
     project_name: str | None = None
+    source_type: str = "capcut"
+    source_url: str | None = None
+    transcript_language: str | None = None
+    transcript_kind: str | None = None
     work_dir: str | None = None
     provider: str | None = None
     model: str | None = None
+    duration_s: int = 30
+    n_storylines: int = 3
+    voice_isolation: bool = False
     phase: str | None = None
     progress: float = 0.0
     message: str | None = None
@@ -245,9 +252,16 @@ class Job:
             "output_dir": self.output_dir,
             "project_path": self.project_path,
             "project_name": self.project_name,
+            "source_type": self.source_type,
+            "source_url": self.source_url,
+            "transcript_language": self.transcript_language,
+            "transcript_kind": self.transcript_kind,
             "work_dir": self.work_dir,
             "provider": self.provider,
             "model": self.model,
+            "duration_s": self.duration_s,
+            "n_storylines": self.n_storylines,
+            "voice_isolation": self.voice_isolation,
             "phase": self.phase,
             "progress": self.progress,
             "message": self.message,
@@ -281,9 +295,16 @@ class Job:
             output_dir=data.get("output_dir"),
             project_path=data.get("project_path"),
             project_name=data.get("project_name"),
+            source_type=str(data.get("source_type", "capcut")),
+            source_url=data.get("source_url"),
+            transcript_language=data.get("transcript_language"),
+            transcript_kind=data.get("transcript_kind"),
             work_dir=data.get("work_dir"),
             provider=data.get("provider"),
             model=data.get("model"),
+            duration_s=int(data.get("duration_s", 30)),
+            n_storylines=int(data.get("n_storylines", 3)),
+            voice_isolation=bool(data.get("voice_isolation", False)),
             phase=data.get("phase"),
             progress=float(data.get("progress", 0.0)),
             message=data.get("message"),

@@ -69,6 +69,18 @@ def test_desktop_config_preserves_codex_model(tmp_path: Path, monkeypatch) -> No
     assert cfg.n_storylines == 3
 
 
+def test_desktop_config_always_starts_voice_isolation_off(tmp_path: Path, monkeypatch) -> None:
+    config_dir = tmp_path / "config"
+    (config_dir / "reels-editor").mkdir(parents=True)
+    (config_dir / "reels-editor" / "config.yaml").write_text(
+        "provider: codex-cli\nvoice_isolation: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_dir))
+
+    assert load_desktop_config().voice_isolation is False
+
+
 def test_storyteller_prompt_loads_from_resource_layout(tmp_path: Path, monkeypatch) -> None:
     prompt_dir = tmp_path / "prompts"
     prompt_dir.mkdir()
@@ -87,7 +99,7 @@ def test_storyteller_prompt_loads_from_resource_layout(tmp_path: Path, monkeypat
     )
 
     assert "정면승부형" in prompt
-    assert "- seg-1: 대표가 실행 원칙을 설명합니다." in prompt
+    assert "- [00:00:00] seg-1: 대표가 실행 원칙을 설명합니다." in prompt
     assert "title_candidates" in prompt
 
 

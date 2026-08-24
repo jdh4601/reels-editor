@@ -21,6 +21,7 @@ def _fake_doc(idx: int) -> dict:
     return {
         "story": {"five_lines": {"situation": "s", "desire": "d", "conflict": "c",
                                  "change": "ch", "result": "r"}, "lens": "lens"},
+        "speaker": {"name": "샘 알트만", "role": "CEO of OpenAI"},
         "title_candidates": [{"text": f"타이틀{idx}-1", "keyword": ""},
                              {"text": f"타이틀{idx}-2", "keyword": ""}],
         "subtitle_keywords": [],
@@ -92,7 +93,7 @@ def test_render_command_rerenders_workdir(tmp_path: Path, segments: dict,
         calls["base"] = (video_path, work_dir, speed)
         return FakeAssets()
 
-    def fake_with_title(assets, title_text, keyword, style, out_path):
+    def fake_with_title(assets, title_text, keyword, style, out_path, **kwargs):
         calls["title"] = (title_text, keyword, out_path)
         Path(out_path).write_bytes(b"")
         return out_path
@@ -119,7 +120,7 @@ def test_render_command_respects_title_option(tmp_path: Path, segments: dict,
     monkeypatch.setattr(cli.render, "render_base_and_assets",
                         lambda *a, **kw: FakeAssets())
 
-    def fake_with_title(assets, title_text, keyword, style, out_path):
+    def fake_with_title(assets, title_text, keyword, style, out_path, **kwargs):
         calls["title"] = title_text
         Path(out_path).write_bytes(b"")
         return out_path
@@ -192,8 +193,8 @@ def test_render_combos_builds_base_once_and_reuses_for_each_title(
         base_calls.append(work_dir)
         return FakeAssets()
 
-    def fake_with_title(assets, title_text, keyword, style, out_path):
-        title_calls.append((title_text, out_path))
+    def fake_with_title(assets, title_text, keyword, style, out_path, **kwargs):
+        title_calls.append((title_text, out_path, kwargs.get("speaker_text")))
         Path(out_path).write_bytes(b"")
         return out_path
 
@@ -206,6 +207,7 @@ def test_render_combos_builds_base_once_and_reuses_for_each_title(
 
     assert len(base_calls) == 1
     assert len(title_calls) == 2
+    assert {call[2] for call in title_calls} == {"샘 알트만 (CEO of OpenAI)"}
     assert sorted(o["file"] for o in outputs) == ["s1/reel-t1.mp4", "s1/reel-t2.mp4"]
     assert all(o["error"] is None for o in outputs)
 
@@ -227,7 +229,7 @@ def test_render_combos_runs_independent_storylines_concurrently(
 
     monkeypatch.setattr(cli.render, "render_base_and_assets", fake_base)
     monkeypatch.setattr(cli.render, "render_with_title",
-                        lambda assets, t, k, style, out: Path(out).write_bytes(b"") or out)
+                        lambda assets, t, k, style, out, **kwargs: Path(out).write_bytes(b"") or out)
     monkeypatch.setattr(cli.export, "export_cuts", lambda *a, **kw: [])
 
     result: dict = {}
@@ -272,7 +274,7 @@ def test_render_combos_marks_only_failed_title(
     class FakeAssets:
         pass
 
-    def fake_with_title(assets, title_text, keyword, style, out_path):
+    def fake_with_title(assets, title_text, keyword, style, out_path, **kwargs):
         if out_path.name == "reel-t2.mp4":
             raise RuntimeError("타이틀 오버레이 실패")
         Path(out_path).write_bytes(b"")
@@ -303,7 +305,7 @@ def test_render_combos_clears_stale_cuts_dir(
     monkeypatch.setattr(cli.render, "render_base_and_assets",
                         lambda *a, **kw: FakeAssets())
     monkeypatch.setattr(cli.render, "render_with_title",
-                        lambda assets, t, k, style, out: Path(out).write_bytes(b"") or out)
+                        lambda assets, t, k, style, out, **kwargs: Path(out).write_bytes(b"") or out)
     monkeypatch.setattr(cli.export, "export_cuts", lambda *a, **kw: [])
 
     cli.render_combos(Path("/tmp/footage.mp4"), segments, storylines, [(0, 0)],
@@ -413,7 +415,7 @@ def test_make_regenerates_then_renders_and_persists_gate_settings(
     gen_calls: list = []
 
     def fake_generate_many(segs, n, duration_s, *, runner, raw_dump_dir,
-                           feedback, only_indices):
+                           feedback, only_indices, speed):
         gen_calls.append(only_indices)
         indices = only_indices if only_indices is not None else list(range(n))
         return [StorylineResult(i, f"angle{i}", _fake_doc(i)) for i in indices]
@@ -482,7 +484,7 @@ def test_make_exits_nonzero_when_any_output_failed(
     _wire_common_mocks(monkeypatch, tmp_path, segments)
     monkeypatch.setattr(
         cli, "generate_many",
-        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices:
+        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices, speed:
             [StorylineResult(0, "angle0", _fake_doc(0))])
     monkeypatch.setattr(
         cli.gate, "run_gate_terminal_v2",
@@ -515,7 +517,7 @@ def test_make_reopens_gate_on_invalid_settings_without_losing_storylines(
     gen_calls: list = []
 
     def fake_generate_many(segs, n, duration_s, *, runner, raw_dump_dir,
-                           feedback, only_indices):
+                           feedback, only_indices, speed):
         gen_calls.append(only_indices)
         indices = only_indices if only_indices is not None else list(range(n))
         return [StorylineResult(i, f"angle{i}", _fake_doc(i)) for i in indices]
@@ -523,7 +525,7 @@ def test_make_reopens_gate_on_invalid_settings_without_losing_storylines(
     monkeypatch.setattr(cli, "generate_many", fake_generate_many)
 
     decisions = [
-        # n_storylines=99는 config.MAX_STORYLINES(3)를 벗어남 — save_config가
+        # n_storylines=99는 config.MAX_STORYLINES를 벗어남 — save_config가
         # ValueError를 던져야 한다.
         gate.MultiGateDecision("render", [(0, 0)], [], "", {"n_storylines": "99"}),
         gate.MultiGateDecision("render", [(0, 0)], [], "", {}),
@@ -565,7 +567,7 @@ def test_make_rejects_invalid_combos_and_dedupes_valid_ones(
     _wire_common_mocks(monkeypatch, tmp_path, segments)
     monkeypatch.setattr(
         cli, "generate_many",
-        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices:
+        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices, speed:
             [StorylineResult(0, "angle0", _fake_doc(0))])
     monkeypatch.setattr(
         cli.gate, "run_gate_terminal_v2",
@@ -603,7 +605,7 @@ def test_make_exits_when_all_combos_invalid(
     _wire_common_mocks(monkeypatch, tmp_path, segments)
     monkeypatch.setattr(
         cli, "generate_many",
-        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices:
+        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices, speed:
             [StorylineResult(0, "angle0", _fake_doc(0))])
     monkeypatch.setattr(
         cli.gate, "run_gate_terminal_v2",
@@ -634,7 +636,7 @@ def test_make_exits_when_all_storylines_fail_generation(
     _wire_common_mocks(monkeypatch, tmp_path, segments)
     monkeypatch.setattr(
         cli, "generate_many",
-        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices:
+        lambda segs, n, d, *, runner, raw_dump_dir, feedback, only_indices, speed:
             [StorylineResult(0, "angle0", None, "LLM 오류")])
 
     result = runner.invoke(cli.app, ["make", "무엇이든", "--no-ui",

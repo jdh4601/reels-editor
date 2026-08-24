@@ -1,24 +1,41 @@
 # D.one 릴스 스타일 (examples/완성된릴스화면*.png에서 추출)
 # 게이트에서 바꾼 값은 ~/.config/reels-editor/config.yaml의 style 설정이 우선한다.
 canvas: [1080, 1920]
-top_bar: 300        # 상단 블랙바(타이틀 영역) 높이 px — 영상 영역 1080x1240 (참고 캡처 w/h≈0.87)
-bottom_bar: 380     # 하단 블랙바(워터마크 영역) 높이 px
+top_bar: 560        # 목표 캡처 기준 상단 블랙바 높이 px
+bottom_bar: 570     # 영상 영역 1080x790을 제외한 하단 블랙바 높이 px
 font_dir: ~/Library/Fonts
+video:
+  aspect: [9, 16]       # 원본을 먼저 세로 9:16으로 중앙 크롭
+  zoom: 1.0             # 9:16 변환 후 추가 확대 없음
 title:
-  font: Pretendard-ExtraBold.otf
-  size: 72
-  color: "#FFFFFF"
-  highlight: "#FF7A00"   # 타이틀 키워드 오렌지
-  max_lines: 2
+  font: Pretendard-Bold.otf
+  size: 105             # 한 줄 제목의 최대 크기. 폭에 맞춰 자동 축소
+  y: 1120               # 제목+화자 그룹 중심, 캔버스 y=400px
+  color: "#FF7A00"       # 상단 후킹 제목 전체 오렌지
+  highlight: "#FF7A00"
+  max_lines: 1
+  speaker_size: 40      # 제목 아래 화자 이름·직함
+  speaker_color: "#FFFFFF"
+  speaker_gap: 10
 subtitle:
-  font: Pretendard-SemiBold.otf
-  size: 44
+  font: Pretendard-Bold.otf
+  size: 40              # 편집기 표기 8 × 5
+  opacity: 255          # 100%
   color: "#FFFFFF"
   highlight: "#FF3B30"   # 자막 키워드 레드
   box_alpha: 200         # 검정 박스 불투명도 0-255
+  y: -400                # 중앙 원점 편집 좌표(음수=아래), 캔버스 중심 y=1160px
   y_frac: 0.85           # 영상 영역 높이 기준 자막 baseline 위치(0=상단, 1=하단)
 watermark:
   text: "D.one"
-  font: Pretendard-Medium.otf
-  size: 48
+  font: Pretendard-Bold.otf
+  size: 75              # 편집기 표기 15 × 5
+  opacity: 128          # 50%
+  y: -1560              # D.one 중심을 하단 여백 깊숙이 배치, 캔버스 y=1740px
+  episode_text: "[Ep 1 / 1000]"
+  episode_size: 40      # 상단 화자 정보와 같은 크기
+  episode_color: "#FFFFFF"
+  episode_opacity: 255
+  episode_gap: 18
+  episode_y: -900       # 에피소드 문구는 영상 바로 아래, 캔버스 y=1410px
 speed: 1.2

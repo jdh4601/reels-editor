@@ -82,6 +82,10 @@ def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
     input_data = kwargs.pop("input", None)
     check = bool(kwargs.pop("check", False))
     capture_output = bool(kwargs.pop("capture_output", False))
+    if input_data is not None:
+        if kwargs.get("stdin") is not None:
+            raise ValueError("stdin and input arguments may not both be used")
+        kwargs["stdin"] = subprocess.PIPE
     if capture_output:
         kwargs.setdefault("stdout", subprocess.PIPE)
         kwargs.setdefault("stderr", subprocess.PIPE)

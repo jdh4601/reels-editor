@@ -11,6 +11,7 @@ def test_load_done_preset() -> None:
     s = load_style(STYLE)
     assert s.canvas == (1080, 1920)
     assert s.title_highlight == "#FF7A00"
+    assert s.title_color == "#FF7A00"
     assert s.sub_highlight == "#FF3B30"
     assert s.watermark_text == "D.one"
     assert s.title_font.name == "Pretendard-Bold.otf"
@@ -18,12 +19,16 @@ def test_load_done_preset() -> None:
     assert s.watermark_font.name == "Pretendard-Bold.otf"
     assert s.title_size == 65
     assert s.title_emphasis_size == 85
+    assert s.title_line_gap == 18
     assert s.sub_size == 40
     assert s.sub_opacity == 255
     assert s.sub_y == -400
     assert s.watermark_size == 75
     assert s.watermark_opacity == 128
     assert s.watermark_y == -1000
+    assert s.title_y == 1027
+    assert s.video_aspect == (9, 16)
+    assert s.video_zoom == 1.0
     assert s.speed == 1.2
     assert s.title_font.is_file()  # Pretendard 실제 설치 확인
 
@@ -33,12 +38,9 @@ def test_video_area_excludes_bars() -> None:
     assert s.video_area() == (1080, 1920 - s.top_bar - s.bottom_bar)
 
 
-def test_video_area_near_square() -> None:
-    # 참고 릴스(examples/완성된릴스화면*.png) 측정값: w/h 0.83~0.88
+def test_video_area_matches_reference_window() -> None:
     s = load_style(STYLE)
-    w, h = s.video_area()
-    assert 0.80 <= w / h <= 0.95
-    assert s.sub_y_frac == 0.85
+    assert s.video_area() == (1080, 790)
 
 
 def test_missing_font_raises(tmp_path: Path) -> None:

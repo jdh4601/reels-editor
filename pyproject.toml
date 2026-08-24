@@ -12,6 +12,7 @@ dependencies = [
   "uvicorn>=0.35",
   "websockets>=13",
   "pywebview>=6.0",
+  "yt-dlp>=2025.1.15",
 ]
 
 [project.optional-dependencies]

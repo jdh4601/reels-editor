@@ -87,7 +87,7 @@ def test_storyteller_prompt_loads_from_resource_layout(tmp_path: Path, monkeypat
     )
 
     assert "정면승부형" in prompt
-    assert "- seg-1: 대표가 실행 원칙을 설명합니다." in prompt
+    assert "- [00:00:00] seg-1: 대표가 실행 원칙을 설명합니다." in prompt
     assert "title_candidates" in prompt
 
 

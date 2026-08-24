@@ -28,10 +28,14 @@ class StylePreset:
     watermark_size: int
     speed: float
     title_emphasis_size: int | None = None
+    title_line_gap: int | None = None
     sub_opacity: int = 255
     sub_y: int | None = None
     watermark_opacity: int = 230
     watermark_y: int | None = None
+    title_y: int | None = None
+    video_aspect: tuple[int, int] = (9, 16)
+    video_zoom: float = 1.0
 
     def video_area(self) -> tuple[int, int]:
         return self.canvas[0], self.canvas[1] - self.top_bar - self.bottom_bar
@@ -50,6 +54,7 @@ def load_style(path: Path) -> StylePreset:
         raw = yaml.safe_load(f)
     font_dir = Path(raw["font_dir"]).expanduser()
     t, s, w = raw["title"], raw["subtitle"], raw["watermark"]
+    video = raw.get("video", {})
     return StylePreset(
         canvas=tuple(raw["canvas"]),
         top_bar=raw["top_bar"], bottom_bar=raw["bottom_bar"],
@@ -63,8 +68,12 @@ def load_style(path: Path) -> StylePreset:
         watermark_size=w["size"],
         speed=float(raw["speed"]),
         title_emphasis_size=t.get("emphasis_size"),
+        title_line_gap=int(t["line_gap"]) if "line_gap" in t else None,
         sub_opacity=int(s.get("opacity", 255)),
         sub_y=int(s["y"]) if "y" in s else None,
         watermark_opacity=int(w.get("opacity", 230)),
         watermark_y=int(w["y"]) if "y" in w else None,
+        title_y=int(t["y"]) if "y" in t else None,
+        video_aspect=tuple(video.get("aspect", (9, 16))),
+        video_zoom=float(video.get("zoom", 1.0)),
     )

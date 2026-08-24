@@ -17,13 +17,19 @@ class FakeService:
         self.store = store
         self.job = job
         self.start_args: dict | None = None
+        self.youtube_start_args: dict | None = None
         self.selection_args: dict | None = None
         self.export_args: dict | None = None
         self.batch_export_args: dict | None = None
+        self.clear_current_called = False
         self.config = AppConfig(provider="codex-cli")
 
     def snapshot(self, job_id: str | None = None) -> Job | None:
         return self.job
+
+    def clear_current(self) -> None:
+        self.clear_current_called = True
+        self.job = None
 
     def start_job(
         self,
@@ -32,14 +38,39 @@ class FakeService:
         duration_s: int | None = None,
         n_storylines: int | None = None,
         provider: str | None = None,
+        voice_isolation: bool | None = None,
     ) -> Job:
         self.start_args = {
             "project_path": project_path,
             "duration_s": duration_s,
             "n_storylines": n_storylines,
             "provider": provider,
+            "voice_isolation": voice_isolation,
         }
         assert self.job is not None
+        if voice_isolation is not None:
+            self.job.voice_isolation = voice_isolation
+        return self.job
+
+    def start_youtube_job(
+        self,
+        youtube_url: str,
+        *,
+        duration_s: int | None = None,
+        n_storylines: int | None = None,
+        provider: str | None = None,
+        voice_isolation: bool | None = None,
+    ) -> Job:
+        self.youtube_start_args = {
+            "youtube_url": youtube_url,
+            "duration_s": duration_s,
+            "n_storylines": n_storylines,
+            "provider": provider,
+            "voice_isolation": voice_isolation,
+        }
+        assert self.job is not None
+        self.job.source_type = "youtube"
+        self.job.source_url = youtube_url
         return self.job
 
     def select_variant(self, job_id: str, storyline_id: str, **kwargs) -> Job:
@@ -134,6 +165,26 @@ def test_snapshot_returns_placeholders_when_no_job(tmp_path: Path) -> None:
     assert [item["status"] for item in payload["storylines"]] == ["queued", "queued", "queued"]
 
 
+def test_clear_snapshot_releases_current_project_without_deleting_job(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job(project_path="/projects/interview", project_name="인터뷰")
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).delete("/api/snapshot?token=secret")
+
+    assert response.status_code == 200
+    assert response.json()["project_path"] is None
+    assert response.json()["project_name"] == "Reels Editor"
+    assert service.clear_current_called is True
+    assert store.load(job.id).project_path == "/projects/interview"
+
+
 def test_create_job_passes_selected_generation_settings_to_service(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
     job = store.create_job(project_path="/project")
@@ -152,15 +203,51 @@ def test_create_job_passes_selected_generation_settings_to_service(tmp_path: Pat
             "duration_s": 60,
             "n_storylines": 10,
             "provider": "claude-cli",
+            "voice_isolation": True,
         },
     )
 
     assert response.status_code == 200
+    assert response.json()["voice_isolation"] is True
     assert service.start_args == {
         "project_path": "/project",
         "duration_s": 60,
         "n_storylines": 10,
         "provider": "claude-cli",
+        "voice_isolation": True,
+    }
+
+
+def test_create_youtube_job_passes_url_and_generation_settings_to_service(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job(source_type="youtube")
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).post(
+        "/api/jobs?token=secret",
+        json={
+            "youtube_url": "https://youtu.be/abc123",
+            "duration_s": 60,
+            "n_storylines": 3,
+            "provider": "codex-cli",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source_type"] == "youtube"
+    assert response.json()["source_url"] == "https://youtu.be/abc123"
+    assert service.youtube_start_args == {
+        "youtube_url": "https://youtu.be/abc123",
+        "duration_s": 60,
+        "n_storylines": 3,
+        "provider": "codex-cli",
+        "voice_isolation": None,
     }
 
 

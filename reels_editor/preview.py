@@ -13,6 +13,7 @@ from PIL import Image
 
 from reels_editor.render import (
     render_subtitle_pngs, render_title_png, render_watermark_png,
+    video_crop_box,
 )
 from reels_editor.style import StylePreset
 
@@ -39,12 +40,11 @@ def compose_preview(frame: Path | None, title_text: str, title_keyword: str,
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 255))
     if frame is not None:
         video = Image.open(frame).convert("RGBA")
-        ratio = max(vw / video.width, vh / video.height)
-        video = video.resize((round(video.width * ratio),
-                              round(video.height * ratio)))
-        x = (video.width - vw) // 2
-        y = (video.height - vh) // 2
-        canvas.paste(video.crop((x, y, x + vw, y + vh)), (0, style.top_bar))
+        crop_w, crop_h, crop_x, crop_y = video_crop_box(
+            (video.width, video.height), style)
+        video = video.crop((crop_x, crop_y,
+                            crop_x + crop_w, crop_y + crop_h))
+        canvas.paste(video.resize((vw, vh)), (0, style.top_bar))
     else:
         canvas.paste(Image.new("RGBA", (vw, vh), (60, 60, 60, 255)),
                      (0, style.top_bar))

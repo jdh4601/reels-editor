@@ -82,6 +82,31 @@ def test_enhance_video_reuses_isolated_audio_cache(monkeypatch, tmp_path: Path) 
     assert (tmp_path / "second.mp4").read_bytes() == b"muxed:isolated"
 
 
+def test_replace_audio_applies_speech_enhancement_filter_chain(monkeypatch, tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def fake_run(args, **_kwargs):
+        seen.extend(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(voice_isolation.processes, "run", fake_run)
+
+    voice_isolation.replace_audio(
+        tmp_path / "source.mp4",
+        tmp_path / "isolated.mp3",
+        tmp_path / "enhanced.mp4",
+    )
+
+    filter_chain = seen[seen.index("-af") + 1]
+    assert filter_chain == voice_isolation.SPEECH_ENHANCEMENT_FILTER
+    assert "highpass=" in filter_chain
+    assert "lowpass=" in filter_chain
+    assert "afftdn=" in filter_chain
+    assert "agate=" in filter_chain
+    assert "acompressor=" in filter_chain
+    assert "loudnorm=" in filter_chain
+
+
 def test_extract_and_replace_audio_with_real_ffmpeg(tmp_path: Path) -> None:
     source = tmp_path / "source.mp4"
     extracted = tmp_path / "speech.wav"

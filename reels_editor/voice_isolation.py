@@ -1,4 +1,4 @@
-"""ElevenLabs Voice Isolator와 최종 MP4 오디오 교체 파이프라인."""
+"""ElevenLabs Voice Isolator와 최종 MP4 음성 개선 파이프라인."""
 from __future__ import annotations
 
 import hashlib
@@ -16,6 +16,16 @@ from reels_editor import processes
 VOICE_ISOLATION_URL = "https://api.elevenlabs.io/v1/audio-isolation"
 DEFAULT_TIMEOUT_S = 180.0
 LOUDNESS_FILTER = "loudnorm=I=-16:LRA=7:TP=-1.5"
+SPEECH_ENHANCEMENT_FILTER = ",".join(
+    (
+        "highpass=f=80",
+        "lowpass=f=12000",
+        "afftdn=nr=12:nf=-45:tn=1:gs=8",
+        "agate=threshold=0.02:ratio=3:attack=10:release=250:range=0.05",
+        "acompressor=threshold=0.125:ratio=2.5:attack=20:release=250:makeup=1.2",
+        LOUDNESS_FILTER,
+    )
+)
 
 
 class VoiceIsolationError(RuntimeError):
@@ -106,7 +116,7 @@ def extract_audio(video: Path, output: Path) -> None:
 
 
 def replace_audio(video: Path, isolated_audio: Path, output: Path) -> None:
-    """영상 스트림은 복사하고 격리 오디오만 정규화해 AAC로 다시 인코딩한다."""
+    """격리 오디오의 잔여 잡음을 줄이고 음성을 정돈해 AAC로 다시 인코딩한다."""
     output.parent.mkdir(parents=True, exist_ok=True)
     _ffmpeg(
         [
@@ -115,7 +125,7 @@ def replace_audio(video: Path, isolated_audio: Path, output: Path) -> None:
             "-map", "0:v:0",
             "-map", "1:a:0",
             "-c:v", "copy",
-            "-af", LOUDNESS_FILTER,
+            "-af", SPEECH_ENHANCEMENT_FILTER,
             "-c:a", "aac",
             "-b:a", "192k",
             "-ar", "48000",
@@ -135,7 +145,7 @@ def enhance_video(
     cache_dir: Path,
     api_key: str,
 ) -> IsolationResult:
-    """최종 영상 오디오를 격리하고 동일 PCM은 캐시해 API 재과금을 피한다."""
+    """최종 영상 오디오를 격리·개선하고 동일 PCM은 캐시해 API 재과금을 피한다."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     fd, extracted_name = tempfile.mkstemp(prefix="voice-", suffix=".wav", dir=cache_dir)
     os.close(fd)

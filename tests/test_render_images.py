@@ -15,19 +15,17 @@ def test_title_png_canvas_size_with_highlight(tmp_path: Path) -> None:
     img = Image.open(p).convert("RGBA")
     assert img.size == style.canvas
     colors = {c for _n, c in img.getcolors(maxcolors=1_000_000)}
-    assert (255, 122, 0, 255) in colors      # #FF7A00 오렌지 강조 존재
-    assert (255, 255, 255, 255) in colors    # 흰 텍스트 존재
+    assert (255, 122, 0, 255) in colors      # #FF7A00 오렌지 후킹 제목
+    assert (255, 255, 255, 255) not in colors
 
-    white = img.getchannel("A").point(lambda _a: 0)
     orange = img.getchannel("A").point(lambda _a: 0)
     pixels = list(img.get_flattened_data())
-    white.putdata([255 if pixel[:3] == (255, 255, 255) else 0 for pixel in pixels])
     orange.putdata([255 if pixel[:3] == (255, 122, 0) else 0 for pixel in pixels])
-    white_bbox = white.getbbox()
     orange_bbox = orange.getbbox()
-    assert white_bbox is not None and orange_bbox is not None
-    assert white_bbox[3] < orange_bbox[1]  # 첫 줄 흰색, 둘째 줄 주황색
-    assert orange_bbox[3] - orange_bbox[1] > white_bbox[3] - white_bbox[1]
+    assert orange_bbox is not None
+    title_bbox = img.getbbox()
+    assert title_bbox is not None
+    assert abs((title_bbox[1] + title_bbox[3]) / 2 - 446.5) <= 2
 
 
 def test_watermark_png_in_bottom_bar(tmp_path: Path) -> None:

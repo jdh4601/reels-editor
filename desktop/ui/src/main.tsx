@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AudioLines,
   Check,
   CircleAlert,
   Download,
   FolderOpen,
+  FolderX,
   LayoutDashboard,
+  Link,
   Loader2,
   RefreshCcw,
   Scissors,
@@ -13,6 +16,7 @@ import {
   Square,
   Subtitles,
   WifiOff,
+  Youtube,
 } from "lucide-react";
 import "./styles.css";
 
@@ -25,6 +29,7 @@ type StorylineCount = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 type ModelProvider = "codex-cli" | "claude-cli" | "openai" | "kimi";
 type ActiveTab = "dashboard" | "settings";
 type SettingsSaveState = "idle" | "saving" | "saved" | "error";
+type SourceType = "youtube" | "capcut";
 
 type VoiceIsolationSettings = {
   enabled: boolean;
@@ -38,6 +43,12 @@ type MediaItem = {
   size?: number;
 };
 
+type StorySection = {
+  beat: string;
+  role: string;
+  text: string;
+};
+
 type Storyline = {
   id: string;
   serverId: string;
@@ -45,6 +56,7 @@ type Storyline = {
   label: string;
   hook: string;
   summary: string;
+  sections: StorySection[];
   status: LaneStatus;
   progress: number;
   videoUrl: string | null;
@@ -64,6 +76,10 @@ type Snapshot = {
   jobError: string | null;
   projectName: string;
   projectPath: string | null;
+  sourceType: SourceType;
+  sourceUrl: string | null;
+  transcriptLanguage: string | null;
+  transcriptKind: string | null;
   sourceLabel: string;
   connection: ConnectionState;
   generatedAt: string;
@@ -73,6 +89,7 @@ type Snapshot = {
   durationS: VideoDuration;
   nStorylines: StorylineCount;
   provider: ModelProvider;
+  voiceIsolationEnabled: boolean;
   eventSeq: number;
 };
 
@@ -83,6 +100,7 @@ type ApiStoryline = {
   label?: string;
   hook?: string;
   summary?: string;
+  sections?: StorySection[];
   status?: LaneStatus;
   progress?: number;
   video_url?: string | null;
@@ -109,6 +127,14 @@ type ApiSnapshot = {
   projectName?: string;
   project_path?: string | null;
   projectPath?: string | null;
+  source_type?: SourceType;
+  sourceType?: SourceType;
+  source_url?: string | null;
+  sourceUrl?: string | null;
+  transcript_language?: string | null;
+  transcriptLanguage?: string | null;
+  transcript_kind?: string | null;
+  transcriptKind?: string | null;
   source_label?: string;
   sourceLabel?: string;
   connection?: ConnectionState;
@@ -124,6 +150,8 @@ type ApiSnapshot = {
   n_storylines?: number;
   nStorylines?: number;
   provider?: string;
+  voice_isolation?: boolean;
+  voiceIsolationEnabled?: boolean;
   seq?: number;
   event_seq?: number;
 };
@@ -145,6 +173,33 @@ const DEMO_SUMMARIES = [
   "고객 관점 전환을 중심으로 짧은 전개와 강한 마무리 문장을 구성합니다.",
 ];
 
+const DEMO_SECTIONS: StorySection[][] = [
+  [
+    { beat: "훅", role: "첫 3초에 시선을 붙잡는 문장", text: "숫자가 아니라 고객의 한마디가 가장 중요한 판단 기준이었습니다." },
+    { beat: "맥락", role: "이야기를 이해시키는 배경", text: "빠르게 성장하던 시기에도 팀은 매일 같은 질문으로 우선순위를 확인했습니다." },
+    { beat: "갈등", role: "문제와 긴장을 선명하게 만드는 구간", text: "지표는 좋아 보였지만 실제 고객이 겪는 불편은 좀처럼 줄지 않았습니다." },
+    { beat: "전환", role: "생각이나 행동이 바뀌는 순간", text: "회의실을 나와 고객을 직접 만나자 우리가 놓친 문제가 선명하게 보였습니다." },
+    { beat: "핵심 장면", role: "변화를 증명하는 구체적인 장면", text: "그날 바로 제품 순서를 바꾸고 가장 작은 불편부터 하나씩 해결했습니다." },
+    { beat: "라스트 답", role: "영상이 남기는 결론과 메시지", text: "좋은 판단은 더 많은 숫자가 아니라 더 가까이 들은 목소리에서 시작됩니다." },
+  ],
+  [
+    { beat: "훅", role: "첫 3초에 시선을 붙잡는 문장", text: "완벽한 계획을 기다렸다면 우리는 아직도 시작하지 못했을 겁니다." },
+    { beat: "맥락", role: "이야기를 이해시키는 배경", text: "처음에는 사람도 예산도 부족해서 매일 예상하지 못한 문제가 생겼습니다." },
+    { beat: "갈등", role: "문제와 긴장을 선명하게 만드는 구간", text: "준비가 부족하다는 이유로 중요한 결정을 계속 미루고 싶어졌습니다." },
+    { beat: "전환", role: "생각이나 행동이 바뀌는 순간", text: "작게 실행하고 결과를 확인하는 편이 오래 고민하는 것보다 빠르다는 걸 배웠습니다." },
+    { beat: "핵심 장면", role: "변화를 증명하는 구체적인 장면", text: "일주일짜리 실험을 반복하자 팀이 스스로 답을 찾기 시작했습니다." },
+    { beat: "라스트 답", role: "영상이 남기는 결론과 메시지", text: "실행력은 정답을 아는 능력이 아니라 다음 답을 빨리 확인하는 습관입니다." },
+  ],
+  [
+    { beat: "훅", role: "첫 3초에 시선을 붙잡는 문장", text: "고객이 떠나는 이유는 우리가 설명하지 않은 작은 순간에 숨어 있었습니다." },
+    { beat: "맥락", role: "이야기를 이해시키는 배경", text: "기능은 계속 늘었지만 처음 방문한 고객은 어디서 시작해야 할지 어려워했습니다." },
+    { beat: "갈등", role: "문제와 긴장을 선명하게 만드는 구간", text: "팀은 더 많은 기능이 필요하다고 생각했지만 고객은 이미 충분히 복잡하다고 말했습니다." },
+    { beat: "전환", role: "생각이나 행동이 바뀌는 순간", text: "무엇을 더할지가 아니라 무엇을 덜어낼지를 기준으로 제품을 다시 보기 시작했습니다." },
+    { beat: "핵심 장면", role: "변화를 증명하는 구체적인 장면", text: "첫 화면의 선택지를 절반으로 줄이자 고객의 다음 행동이 눈에 띄게 빨라졌습니다." },
+    { beat: "라스트 답", role: "영상이 남기는 결론과 메시지", text: "고객 관점은 친절한 설명이 아니라 망설일 이유를 먼저 없애는 일입니다." },
+  ],
+];
+
 const STATUS_LABEL: Record<LaneStatus, string> = {
   queued: "대기",
   rendering: "렌더 중",
@@ -154,13 +209,14 @@ const STATUS_LABEL: Record<LaneStatus, string> = {
 };
 
 const EMPTY_TITLES = ["제목 생성 대기", "추천 제목 준비 중", "렌더 후 선택 가능"];
-const EMPTY_SUMMARY = "프로젝트를 선택하면 대표 영상과 추천 제목이 여기에 표시됩니다.";
+const EMPTY_SUMMARY = "YouTube 인터뷰 링크를 넣으면 클립 후보와 후킹 제목이 여기에 표시됩니다.";
 const ACTIVE_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay", "exporting"]);
 const GENERATION_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay"]);
 const GENERATION_STAGES = [
-  { label: "프로젝트 분석", description: "CapCut 타임라인과 원본 미디어를 확인합니다." },
-  { label: "스토리라인 구성", description: "AI가 릴스별 관점과 컷 순서를 설계합니다." },
-  { label: "영상 제작", description: "세로 영상 렌더링과 제목·자막 합성을 진행합니다." },
+  { label: "영상 다운로드", description: "YouTube 인터뷰 원본을 이 Mac에 저장합니다." },
+  { label: "영어 자막 추출", description: "영어 원문 자막과 타임코드를 정리합니다." },
+  { label: "클립 선정·번역", description: "AI가 영어 원문에서 구간을 고르고 한국어 자막으로 번역합니다." },
+  { label: "릴스 제작", description: "9:16 영상에 한국어 자막과 주황색 후킹 제목을 합성합니다." },
 ] as const;
 const VIDEO_DURATIONS: VideoDuration[] = [15, 30, 60];
 const STORYLINE_COUNTS: StorylineCount[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -189,10 +245,11 @@ function progressPercent(value: number | undefined): number {
   return Math.max(0, Math.min(100, Math.round(percent)));
 }
 
-function generationStageIndex(status: JobStatus): number {
-  if (status === "loading") return 0;
-  if (status === "generating") return 1;
-  return 2;
+function generationStageIndex(phase: string | null | undefined, status: JobStatus): number {
+  if (phase === "transcript") return 1;
+  if (status === "generating" || phase === "generating") return 2;
+  if (["rendering", "overlay"].includes(phase ?? "") || status === "rendering_base" || status === "rendering_overlay") return 3;
+  return 0;
 }
 
 function isDemoMode(): boolean {
@@ -255,6 +312,7 @@ function makePlaceholderStoryline(index: number): Storyline {
     label: `스토리라인 ${index + 1}`,
     hook: "대기 중",
     summary: EMPTY_SUMMARY,
+    sections: [],
     status: "queued",
     progress: 0,
     videoUrl: null,
@@ -275,7 +333,11 @@ function makeEmptySnapshot(connection: ConnectionState = "disconnected"): Snapsh
     jobError: null,
     projectName: "Reels Editor",
     projectPath: null,
-    sourceLabel: "프로젝트 없음",
+    sourceType: "youtube",
+    sourceUrl: null,
+    transcriptLanguage: null,
+    transcriptKind: null,
+    sourceLabel: "YouTube 링크 없음",
     connection,
     generatedAt: new Date().toISOString(),
     selectedStorylineId: null,
@@ -283,6 +345,7 @@ function makeEmptySnapshot(connection: ConnectionState = "disconnected"): Snapsh
     durationS: 30,
     nStorylines: 3,
     provider: "codex-cli",
+    voiceIsolationEnabled: false,
     eventSeq: 0,
     storylines: [0, 1, 2].map(makePlaceholderStoryline),
   };
@@ -301,8 +364,12 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
       : "대표 영상 3개가 준비되었습니다.",
     jobError: null,
     projectName: "김현지대표인터뷰",
-    projectPath: "/demo/kim-hyunji",
-    sourceLabel: "대표 인터뷰 원본",
+    projectPath: null,
+    sourceType: "youtube",
+    sourceUrl: "https://www.youtube.com/watch?v=demo-founder",
+    transcriptLanguage: "en",
+    transcriptKind: "automatic",
+    sourceLabel: "YouTube · 영어 원문 자동 자막",
     connection: "connected",
     generatedAt: "2026-07-20T09:00:00+09:00",
     selectedStorylineId: "storyline-1",
@@ -310,6 +377,7 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
     durationS: 30,
     nStorylines: 3,
     provider: "codex-cli",
+    voiceIsolationEnabled: false,
     eventSeq: 1,
     storylines: [0, 1, 2].map((index) => ({
       id: `storyline-${index + 1}`,
@@ -318,6 +386,7 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
       label: `스토리라인 ${index + 1}`,
       hook: ["판단 기준", "실행 원칙", "고객 관점"][index],
       summary: DEMO_SUMMARIES[index],
+      sections: DEMO_SECTIONS[index],
       status: showGenerationProgress ? (["ready", "overlaying", "rendering"] as LaneStatus[])[index] : "ready",
       progress: showGenerationProgress ? [100, 78, 45][index] : 100,
       videoUrl: mediaUrl(items[index]?.url ?? `/media/sample-${index + 1}.mp4`),
@@ -342,6 +411,9 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
       label: storyline.label ?? `스토리라인 ${index + 1}`,
       hook: storyline.hook ?? titleOptions[0] ?? "대표 영상",
       summary: storyline.summary ?? EMPTY_SUMMARY,
+      sections: (storyline.sections ?? []).filter(
+        (section) => section.beat.trim() && section.role.trim() && section.text.trim(),
+      ),
       status: storyline.status ?? "queued",
       progress: storyline.progress ?? 0,
       videoUrl: mediaUrl(storyline.video_url ?? storyline.videoUrl ?? null),
@@ -365,7 +437,11 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
     jobError: payload.error ?? null,
     projectName: payload.project_name ?? payload.projectName ?? "Reels Editor",
     projectPath: payload.project_path ?? payload.projectPath ?? null,
-    sourceLabel: payload.source_label ?? payload.sourceLabel ?? "선택된 프로젝트",
+    sourceType: payload.source_type ?? payload.sourceType ?? "capcut",
+    sourceUrl: payload.source_url ?? payload.sourceUrl ?? null,
+    transcriptLanguage: payload.transcript_language ?? payload.transcriptLanguage ?? null,
+    transcriptKind: payload.transcript_kind ?? payload.transcriptKind ?? null,
+    sourceLabel: payload.source_label ?? payload.sourceLabel ?? "선택된 소스",
     connection: payload.connection ?? "connected",
     generatedAt: payload.generated_at ?? payload.generatedAt ?? new Date().toISOString(),
     storylines,
@@ -378,6 +454,7 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
     durationS: videoDuration(payload.duration_s ?? payload.durationS),
     nStorylines: targetStorylineCount,
     provider: modelProvider(payload.provider),
+    voiceIsolationEnabled: payload.voice_isolation ?? payload.voiceIsolationEnabled ?? false,
     eventSeq: payload.event_seq ?? payload.seq ?? 0,
   };
 }
@@ -433,6 +510,8 @@ function App() {
   const [voiceIsolationMaskedKey, setVoiceIsolationMaskedKey] = useState<string | null>(null);
   const [voiceIsolationApiKey, setVoiceIsolationApiKey] = useState("");
   const [voiceSettingsSaveState, setVoiceSettingsSaveState] = useState<SettingsSaveState>("idle");
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [youtubeError, setYoutubeError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
   const [eventConnectionVersion, setEventConnectionVersion] = useState(0);
   const [liveMessage, setLiveMessage] = useState("대시보드 연결 중");
@@ -465,6 +544,8 @@ function App() {
       setVideoDurationS(next.durationS);
       setSelectedStorylineCount(next.nStorylines);
       setSelectedProvider(next.provider);
+      setYoutubeUrl(next.sourceUrl ?? "");
+      setYoutubeError(null);
     }
     setConnection(next.connection);
     eventSeqRef.current = jobChanged ? next.eventSeq : Math.max(eventSeqRef.current, next.eventSeq);
@@ -563,10 +644,12 @@ function App() {
   const jobBusy = ACTIVE_JOB_STATUSES.has(snapshot?.jobStatus ?? "idle") || storylines.some(
     (storyline) => !storyline.serverId.startsWith("placeholder-") && ["queued", "rendering", "overlaying"].includes(storyline.status),
   );
-  const canGenerate = Boolean(snapshot?.projectPath) && !jobBusy;
+  const canGenerate = Boolean(snapshot?.sourceUrl || snapshot?.projectPath) && !jobBusy;
+  const activeVoiceIsolation = snapshot?.voiceIsolationEnabled ?? false;
+  const displayedVoiceIsolation = jobBusy ? activeVoiceIsolation : voiceIsolationEnabled;
   const generateLabel = jobBusy ? "생성 중" : "다시 생성";
   const generationActive = GENERATION_JOB_STATUSES.has(snapshot?.jobStatus ?? "idle");
-  const activeGenerationStage = generationStageIndex(snapshot?.jobStatus ?? "idle");
+  const activeGenerationStage = generationStageIndex(snapshot?.jobPhase, snapshot?.jobStatus ?? "idle");
   const generationProgress = snapshot?.jobProgress ?? 0;
 
   const stats = useMemo(() => {
@@ -691,12 +774,36 @@ function App() {
         await startProjectJob(payload.path);
         setLiveMessage(`선택한 프로젝트로 대표 영상 ${selectedStorylineCount}개 렌더를 시작합니다.`);
       }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "프로젝트 폴더 선택에 실패했습니다.";
+      setLiveMessage(detail);
+    }
+  }
+
+  async function clearProject() {
+    if ((!snapshot?.projectPath && !snapshot?.sourceUrl) || jobBusy) return;
+    setLiveMessage("현재 인터뷰 선택을 비웁니다.");
+    try {
+      if (isDemoMode()) {
+        applySnapshot(makeEmptySnapshot("connected"));
+      } else {
+        const response = await apiMutation("/api/snapshot", { method: "DELETE" });
+        applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
+      }
+      setYoutubeUrl("");
+      setLiveMessage("인터뷰 선택을 비웠습니다. 기존 작업 파일은 유지됩니다.");
     } catch {
-      setLiveMessage("프로젝트 폴더 선택에 실패했습니다.");
+      setLiveMessage("프로젝트 선택을 비우지 못했습니다.");
     }
   }
 
   async function startProjectJob(projectPath: string) {
+    if (voiceIsolationEnabled && !voiceIsolationConfigured) {
+      const message = "Voice Isolation + Speech Enhancement를 사용하려면 설정에서 ElevenLabs API 키를 저장하세요.";
+      setActiveTab("settings");
+      setLiveMessage(message);
+      throw new Error(message);
+    }
     const response = await apiMutation("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -705,17 +812,63 @@ function App() {
         duration_s: videoDurationS,
         n_storylines: selectedStorylineCount,
         provider: selectedProvider,
+        voice_isolation: voiceIsolationEnabled,
       }),
     });
     applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
     setEventConnectionVersion((version) => version + 1);
   }
 
+  async function startYoutubeJob(sourceUrl: string) {
+    const normalized = sourceUrl.trim();
+    if (!normalized) {
+      const message = "YouTube 인터뷰 링크를 입력하세요.";
+      setYoutubeError(message);
+      setLiveMessage(message);
+      return;
+    }
+    if (voiceIsolationEnabled && !voiceIsolationConfigured) {
+      const message = "Voice Isolation + Speech Enhancement를 사용하려면 설정에서 ElevenLabs API 키를 저장하세요.";
+      setActiveTab("settings");
+      setLiveMessage(message);
+      throw new Error(message);
+    }
+    setYoutubeError(null);
+    setLiveMessage("YouTube 영상 정보와 자막을 확인합니다.");
+    const response = await apiMutation("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        youtube_url: normalized,
+        duration_s: videoDurationS,
+        n_storylines: selectedStorylineCount,
+        provider: selectedProvider,
+        voice_isolation: voiceIsolationEnabled,
+      }),
+    });
+    applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
+    setEventConnectionVersion((version) => version + 1);
+  }
+
+  function submitYoutube(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (jobBusy) return;
+    if (isDemoMode()) {
+      setLiveMessage("YouTube 링크로 클립 생성을 시작합니다.");
+      return;
+    }
+    void startYoutubeJob(youtubeUrl).catch((error) => {
+      const detail = error instanceof Error ? error.message : "YouTube 링크를 처리하지 못했습니다.";
+      setYoutubeError(detail);
+      setLiveMessage(detail);
+    });
+  }
+
   async function exportSelected() {
     if (!readySelected || !snapshot) return;
     setExportState("exporting");
     setLiveMessage(
-      voiceIsolationEnabled
+      activeVoiceIsolation
         ? `선택한 영상 ${selectedExportStorylines.length}개의 목소리를 선명하게 처리합니다.`
         : `선택한 영상 ${selectedExportStorylines.length}개 내보내기를 준비합니다.`,
     );
@@ -744,7 +897,7 @@ function App() {
   async function saveVoiceIsolationSettings() {
     if (voiceIsolationEnabled && !voiceIsolationConfigured && !voiceIsolationApiKey.trim()) {
       setVoiceSettingsSaveState("error");
-      setLiveMessage("Voice Isolator를 켜려면 ElevenLabs API 키가 필요합니다.");
+      setLiveMessage("Voice Isolation + Speech Enhancement를 켜려면 ElevenLabs API 키가 필요합니다.");
       return;
     }
     setVoiceSettingsSaveState("saving");
@@ -763,7 +916,11 @@ function App() {
       setVoiceIsolationMaskedKey(settings.masked_key);
       setVoiceIsolationApiKey("");
       setVoiceSettingsSaveState("saved");
-      setLiveMessage(settings.enabled ? "ElevenLabs Voice Isolator가 연결되었습니다." : "Voice Isolator를 껐습니다.");
+      setLiveMessage(
+        settings.enabled
+          ? "Voice Isolation + Speech Enhancement가 연결되었습니다."
+          : "Voice Isolation + Speech Enhancement 기본값을 껐습니다.",
+      );
     } catch (error) {
       setVoiceSettingsSaveState("error");
       setLiveMessage(error instanceof Error ? error.message : "Voice Isolator 설정 저장에 실패했습니다.");
@@ -849,19 +1006,39 @@ function App() {
           </div>
         </div>
         <div className="workbar-actions" aria-label="작업 도구">
-          <button type="button" className="ghost-button" onClick={chooseProject}> <FolderOpen size={17} /> 프로젝트</button>
+          <button type="button" className="ghost-button" onClick={chooseProject}> <FolderOpen size={17} /> CapCut 가져오기</button>
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={(!snapshot.projectPath && !snapshot.sourceUrl) || jobBusy}
+            onClick={clearProject}
+          >
+            <FolderX size={17} /> 비우기
+          </button>
           <button
             type="button"
             className="ghost-button"
             disabled={!canGenerate}
             onClick={() => {
               if (!isDemoMode()) {
-                if (!snapshot.projectPath) {
-                  setLiveMessage("먼저 프로젝트 폴더를 선택하세요.");
+                if (snapshot.sourceType === "youtube" && snapshot.sourceUrl) {
+                  setLiveMessage(`YouTube 인터뷰에서 클립 ${selectedStorylineCount}개 생성을 다시 시작합니다.`);
+                  void startYoutubeJob(snapshot.sourceUrl).catch((error) => {
+                    const detail = error instanceof Error ? error.message : "생성 요청이 실패했습니다.";
+                    setYoutubeError(detail);
+                    setLiveMessage(detail);
+                  });
                   return;
                 }
-                setLiveMessage(`대표 영상 ${selectedStorylineCount}개 렌더를 시작합니다.`);
-                void startProjectJob(snapshot.projectPath).catch(() => setLiveMessage("생성 요청이 실패했습니다."));
+                if (snapshot.projectPath) {
+                  setLiveMessage(`대표 영상 ${selectedStorylineCount}개 렌더를 시작합니다.`);
+                  void startProjectJob(snapshot.projectPath).catch((error) => {
+                    const detail = error instanceof Error ? error.message : "생성 요청이 실패했습니다.";
+                    setLiveMessage(detail);
+                  });
+                  return;
+                }
+                setLiveMessage("먼저 YouTube 인터뷰 링크를 입력하세요.");
                 return;
               }
               setLiveMessage(`대표 영상 ${selectedStorylineCount}개 렌더를 시작합니다.`);
@@ -898,6 +1075,90 @@ function App() {
           <Settings2 size={16} /> 설정
         </button>
       </nav>
+
+      <form className="youtube-source" onSubmit={submitYoutube} hidden={activeTab !== "dashboard"} aria-labelledby="youtube-source-title">
+        <div className="youtube-source-heading">
+          <span className="youtube-source-icon" aria-hidden="true"><Youtube size={20} /></span>
+          <div>
+            <p className="eyebrow">LONGFORM TO REELS</p>
+            <h2 id="youtube-source-title">창업가 인터뷰 YouTube 링크</h2>
+          </div>
+        </div>
+        <div className="youtube-source-entry">
+          <label htmlFor="youtube-url" className="sr-only">YouTube 인터뷰 URL</label>
+          <span aria-hidden="true"><Link size={17} /></span>
+          <input
+            id="youtube-url"
+            type="url"
+            inputMode="url"
+            autoComplete="url"
+            placeholder="https://www.youtube.com/watch?v=..."
+            value={youtubeUrl}
+            disabled={jobBusy}
+            aria-invalid={Boolean(youtubeError)}
+            aria-describedby="youtube-source-help"
+            onChange={(event) => {
+              setYoutubeUrl(event.target.value);
+              setYoutubeError(null);
+            }}
+          />
+          <button type="submit" disabled={jobBusy || !youtubeUrl.trim()}>
+            {jobBusy && snapshot.sourceType === "youtube" ? <Loader2 size={16} className="spin" /> : <Scissors size={16} />}
+            {jobBusy && snapshot.sourceType === "youtube" ? "만드는 중" : "클립 만들기"}
+          </button>
+        </div>
+        <p id="youtube-source-help" className={youtubeError ? "youtube-source-help error" : "youtube-source-help"}>
+          {youtubeError ?? "영어 인터뷰와 영어 원문 자막을 저장하고, 선택한 구간을 한국어 자막의 1분 이하 릴스로 만듭니다."}
+        </p>
+      </form>
+
+      {snapshot.jobStatus === "failed" && snapshot.jobError && activeTab === "dashboard" ? (
+        <section className="notice error" role="alert">
+          <CircleAlert size={18} aria-hidden="true" />
+          <span><strong>클립 생성 실패</strong>{snapshot.jobError}</span>
+        </section>
+      ) : null}
+
+      <section
+        className={`generation-option ${displayedVoiceIsolation ? "enabled" : ""}`}
+        aria-labelledby="voice-processing-title"
+        hidden={activeTab !== "dashboard"}
+      >
+        <div className="generation-option-icon" aria-hidden="true"><AudioLines size={19} /></div>
+        <div className="generation-option-copy">
+          <div className="generation-option-heading">
+            <p className="eyebrow">{jobBusy ? "이번 작업" : "다음 생성 옵션"}</p>
+            <span>{displayedVoiceIsolation ? "적용" : "원본 유지"}</span>
+          </div>
+          <h2 id="voice-processing-title">Voice Isolation + Speech Enhancement</h2>
+          <p>배경 소음을 줄이고 목소리의 명료도와 음량을 다듬은 뒤 최종 영상을 내보냅니다.</p>
+        </div>
+        <div className="generation-option-control">
+          <label className="switch">
+            <input
+              type="checkbox"
+              checked={displayedVoiceIsolation}
+              disabled={jobBusy}
+              onChange={(event) => {
+                setVoiceIsolationEnabled(event.target.checked);
+                setLiveMessage(
+                  event.target.checked
+                    ? "다음 생성에 Voice Isolation + Speech Enhancement를 적용합니다."
+                    : "다음 생성은 원본 오디오를 유지합니다.",
+                );
+              }}
+              role="switch"
+              aria-label="다음 생성에 Voice Isolation과 Speech Enhancement 적용"
+              aria-checked={displayedVoiceIsolation}
+            />
+            <span className="switch-track" aria-hidden="true"><Check size={15} /></span>
+            <span>{displayedVoiceIsolation ? "ON" : "OFF"}</span>
+          </label>
+          {!voiceIsolationConfigured && voiceIsolationEnabled && !jobBusy ? (
+            <button type="button" className="inline-settings-button" onClick={() => setActiveTab("settings")}>API 키 설정</button>
+          ) : null}
+        </div>
+      </section>
 
       <section className="settings-panel" hidden={activeTab !== "settings"} aria-labelledby="settings-title">
         <header className="settings-header">
@@ -976,8 +1237,8 @@ function App() {
 
           <div className="settings-row voice-isolation-row">
             <div>
-              <h3>ElevenLabs Voice Isolator</h3>
-              <p>최종 내보내기에서만 사람 목소리를 분리합니다. 30초 영상은 공개 가격 기준 약 $0.06입니다.</p>
+              <h3>Voice Isolation + Speech Enhancement</h3>
+              <p>ElevenLabs로 목소리를 분리한 뒤 노이즈 억제·음량 정규화·명료도 보정을 적용합니다. 저장한 ON/OFF는 다음 생성의 기본값입니다.</p>
             </div>
             <div className="voice-isolation-control">
               <label className="switch voice-isolation-switch">
@@ -992,7 +1253,7 @@ function App() {
                   aria-checked={voiceIsolationEnabled}
                 />
                 <span className="switch-track" aria-hidden="true"><Check size={15} /></span>
-                <span>음성 개선 {voiceIsolationEnabled ? "ON" : "OFF"}</span>
+                <span>기본 음성 개선 {voiceIsolationEnabled ? "ON" : "OFF"}</span>
               </label>
               <div className="api-key-entry">
                 <input
@@ -1033,7 +1294,7 @@ function App() {
         </div>
         <div><strong>{stats.ready}/{stats.total}</strong><small>준비된 대표 영상</small></div>
         <div><strong>{stats.failed}</strong><small>실패한 스토리라인</small></div>
-        <div><strong>{subtitlesEnabled ? "ON" : "OFF"}</strong><small>자막 오버레이</small></div>
+        <div><strong>{subtitlesEnabled ? "ON" : "OFF"}</strong><small>클립 자막</small></div>
       </section>
 
       {generationActive && activeTab === "dashboard" ? (
@@ -1120,7 +1381,33 @@ function App() {
                 ) : null}
               </div>
 
-              <p className="summary">{storyline.summary}</p>
+              <section className="story-structure" aria-label={`${storyline.label} 스토리 구성`}>
+                <div className="story-structure-heading">
+                  <strong>스토리 구성</strong>
+                  <span>{storyline.sections.length > 0 ? `${storyline.sections.length}개 구간` : "구성 대기"}</span>
+                </div>
+                {storyline.sections.length > 0 ? (
+                  <ol className="story-beats">
+                    {storyline.sections.map((section, sectionIndex) => (
+                      <li
+                        className={section.beat.includes("훅") ? "story-beat is-hook" : "story-beat"}
+                        key={`${section.beat}-${sectionIndex}`}
+                      >
+                        <span className="story-beat-index" aria-hidden="true">{String(sectionIndex + 1).padStart(2, "0")}</span>
+                        <div className="story-beat-content">
+                          <div className="story-beat-heading">
+                            <strong>{section.beat}</strong>
+                            <span>{section.role}</span>
+                          </div>
+                          <p>{section.text}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="summary">{storyline.summary}</p>
+                )}
+              </section>
 
               <fieldset className="title-options">
                 <legend>AI 추천 제목 3개 중 선택</legend>
@@ -1148,7 +1435,7 @@ function App() {
                   />
                   <span>내보내기 선택</span>
                 </label>
-                {storyline.status === "failed" ? <button type="button" onClick={() => retryStoryline(storyline)}>다시 시도</button> : null}
+              {storyline.status === "failed" ? <button type="button" disabled={jobBusy} onClick={() => retryStoryline(storyline)}>다시 시도</button> : null}
               </div>
               {storyline.error ? <p className="lane-error" role="alert">{storyline.error}</p> : null}
             </article>
@@ -1161,7 +1448,7 @@ function App() {
           <strong>{selectedExportStorylines.length > 0 ? `${selectedExportStorylines.length}개 영상 선택됨` : "선택된 영상 없음"}</strong>
           <span>
             {selectedExportStorylines.length > 0
-              ? `${selectedExportStorylines.map((storyline) => storyline.label).join(" · ")}${voiceIsolationEnabled ? " · Voice Isolator ON" : ""}`
+              ? `${selectedExportStorylines.map((storyline) => storyline.label).join(" · ")}${activeVoiceIsolation ? " · Voice + Speech 개선 ON" : ""}`
               : "준비된 대표 영상을 복수로 선택할 수 있습니다."}
           </span>
         </div>

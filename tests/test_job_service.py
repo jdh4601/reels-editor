@@ -12,13 +12,14 @@ from typing import Any
 
 import pytest
 
-from reels_editor.jobs import JobService, JobServiceDeps, JobServiceError, JobStore, Status
+from reels_editor.jobs import Job, JobService, JobServiceDeps, JobServiceError, JobStore, Status, Storyline
 from reels_editor import processes
 from reels_editor.render import RenderAssets
 from reels_editor.storyteller import StorylineResult
 from reels_editor.style import StylePreset
 from reels_editor.config import AppConfig
 from reels_editor.voice_isolation import IsolationResult
+from reels_editor.youtube import YouTubeSource
 
 
 @dataclass
@@ -206,6 +207,52 @@ def test_job_service_uses_duration_stored_on_each_job(tmp_path: Path) -> None:
     assert calls.durations == [60]
 
 
+def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp_path: Path) -> None:
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    video = tmp_path / "youtube-source.mp4"
+    video.write_bytes(b"youtube")
+    transcript = tmp_path / "source.ko.json3"
+    transcript.write_text("{}", encoding="utf-8")
+    download_args: dict[str, Any] = {}
+
+    def download(url: str, output_dir: Path, **kwargs: Any) -> YouTubeSource:
+        download_args.update({"url": url, "output_dir": output_dir, **kwargs})
+        kwargs["progress_cb"](0.5)
+        return YouTubeSource(
+            video_path=video,
+            segments=_segments(video),
+            title="1시간 창업가 인터뷰",
+            video_id="abc123",
+            source_url=url,
+            transcript_path=transcript,
+            transcript_language="ko",
+            transcript_kind="automatic",
+        )
+
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=replace(deps, download_youtube_source=download),
+    )
+
+    job = service.run_youtube_job_sync(
+        "https://www.youtube.com/watch?v=abc123",
+        duration_s=60,
+    )
+
+    assert job.status is Status.READY
+    assert job.source_type == "youtube"
+    assert job.source_url == "https://www.youtube.com/watch?v=abc123"
+    assert job.project_path is None
+    assert job.project_name == "1시간 창업가 인터뷰"
+    assert job.input_path == str(video)
+    assert job.transcript_language == "ko"
+    assert job.transcript_kind == "automatic"
+    assert download_args["output_dir"] == tmp_path / "jobs" / job.id / "source"
+    assert calls.durations == [60]
+    assert calls.base == 3
+
+
 def test_job_service_uses_storyline_count_and_provider_stored_on_each_job(tmp_path: Path) -> None:
     calls = Calls()
     results = [StorylineResult(index, f"관점 {index + 1}", _doc(str(index + 1))) for index in range(10)]
@@ -378,9 +425,9 @@ def test_export_applies_voice_isolator_once_and_records_manifest(tmp_path: Path)
     service = JobService(
         store=JobStore(tmp_path / "jobs"),
         deps=deps,
-        config=AppConfig(provider="codex-cli", voice_isolation=True),
+        config=AppConfig(provider="codex-cli", voice_isolation=False),
     )
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = service.run_job_sync("김현지대표인터뷰", voice_isolation=True)
     destination = tmp_path / "isolated.mp4"
 
     service.export_selected(job.id, destination, storyline_id="s1")
@@ -389,6 +436,7 @@ def test_export_applies_voice_isolator_once_and_records_manifest(tmp_path: Path)
     assert len(enhanced_sources) == 1
     manifest = json.loads((tmp_path / "isolated.mp4.manifest.json").read_text(encoding="utf-8"))
     assert manifest["voice_isolation"] is True
+    assert manifest["speech_enhancement"] is True
     assert manifest["voice_isolation_cache_hit"] is False
     assert manifest["voice_isolation_audio_hash"] == "abc123"
 
@@ -401,12 +449,42 @@ def test_export_requires_elevenlabs_key_when_voice_isolation_enabled(tmp_path: P
     service = JobService(
         store=JobStore(tmp_path / "jobs"),
         deps=deps,
-        config=AppConfig(provider="codex-cli", voice_isolation=True),
+        config=AppConfig(provider="codex-cli", voice_isolation=False),
     )
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = service.run_job_sync("김현지대표인터뷰", voice_isolation=True)
 
     with pytest.raises(JobServiceError, match="ElevenLabs API key"):
         service.export_selected(job.id, tmp_path / "missing-key.mp4", storyline_id="s1")
+
+
+def test_export_keeps_job_voice_isolation_choice_after_global_setting_changes(tmp_path: Path) -> None:
+    enhanced_sources: list[Path] = []
+
+    def enhance(source: Path, output: Path, *, cache_dir: Path, api_key: str) -> IsolationResult:
+        enhanced_sources.append(source)
+        output.write_bytes(b"unexpected")
+        return IsolationResult(output, cache_hit=False, audio_hash="unused")
+
+    deps = replace(
+        _deps(tmp_path, Calls()),
+        enhance_export_video=enhance,
+        resolve_voice_isolation_key=lambda: "xi-test-key",
+    )
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=deps,
+        config=AppConfig(provider="codex-cli", voice_isolation=False),
+    )
+    job = service.run_job_sync("김현지대표인터뷰", voice_isolation=False)
+    service.config = replace(service.config, voice_isolation=True)
+    destination = tmp_path / "original-audio.mp4"
+
+    service.export_selected(job.id, destination, storyline_id="s1")
+
+    assert enhanced_sources == []
+    manifest = json.loads((tmp_path / "original-audio.mp4.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["voice_isolation"] is False
+    assert manifest["speech_enhancement"] is False
 
 
 def test_batch_export_rejects_empty_selection(tmp_path: Path) -> None:
@@ -470,6 +548,46 @@ def test_retry_invalidates_old_overlay_cache_for_same_title_choice(tmp_path: Pat
     assert new_payload.startswith("base-v")
     assert new_payload != old_payload
     assert not old_variant_path.exists()
+
+
+def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: Path) -> None:
+    calls = Calls()
+    store = JobStore(tmp_path / "jobs")
+    service = JobService(store=store, deps=_deps(tmp_path, calls))
+    video = tmp_path / "source.mp4"
+    job = Job(
+        id="recover-job",
+        source_type="youtube",
+        input_path=str(video),
+        duration_s=30,
+        n_storylines=1,
+        status=Status.FAILED,
+        phase="partial-failure",
+        storylines=[Storyline(
+            id="s1",
+            index=0,
+            angle_name="정면승부형",
+            status=Status.FAILED,
+            error="JSON parse failed",
+        )],
+    )
+    store.save(job)
+    source_dir = store.job_dir(job.id) / "source"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    segments = _segments(video)
+    (source_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
+    malformed = json.dumps(_doc("복구"), ensure_ascii=False).replace(
+        '"복구 제목 1"', '“복구 제목 1"', 1
+    )
+    (store.job_dir(job.id) / "llm_raw_s1.txt").write_text(malformed, encoding="utf-8")
+
+    recovered = service.retry_storyline(job.id, "s1")
+    story = recovered.storylines[0]
+
+    assert recovered.status is Status.READY
+    assert story.status is Status.READY
+    assert story.title_candidates[0] == "복구 제목 1"
+    assert story.edl_path is not None
 
 
 def test_cancel_marks_active_job_and_blocks_second_active_job(tmp_path: Path) -> None:

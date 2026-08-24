@@ -98,6 +98,7 @@ async function assertNoCriticalOverlap(page) {
   const result = await page.evaluate(() => {
     const selectors = [
       ".topbar",
+      ".generation-option",
       ".status-row",
       ".generation-progress",
       ".lane",
@@ -183,6 +184,23 @@ async function assertPortraitPreviewGeometry(page) {
   }
 }
 
+async function assertStoryStructureReadable(page) {
+  const result = await page.locator(".story-beat").evaluateAll((elements) => ({
+    count: elements.length,
+    clipped: elements.some((element) => {
+      const paragraph = element.querySelector("p");
+      return paragraph && (paragraph.scrollHeight > paragraph.clientHeight + 1 || paragraph.scrollWidth > paragraph.clientWidth + 1);
+    }),
+    missingLabels: elements.some((element) =>
+      !element.querySelector(".story-beat-heading strong")?.textContent?.trim()
+      || !element.querySelector(".story-beat-heading span")?.textContent?.trim(),
+    ),
+  }));
+  if (result.count !== 18 || result.clipped || result.missingLabels) {
+    throw new Error(`Expected 18 complete role-labeled story sections, got ${JSON.stringify(result)}`);
+  }
+}
+
 async function assertVerticalLaneLayout(page, minPreviewHeight, maxPreviewHeight, maxLaneHeight) {
   const geometry = await page.evaluate(() => ({
     lanes: Array.from(document.querySelectorAll(".lane")).map((element) => {
@@ -235,7 +253,7 @@ async function assertProductionFailureDoesNotLeakDemo(browser) {
 
   await page.goto("http://127.0.0.1:5179/#token=hash-secret", { waitUntil: "networkidle" });
   await page.waitForSelector(".lane", { state: "visible" });
-  await page.waitForFunction(() => document.body.innerText.includes("프로젝트 없음"));
+  await page.waitForFunction(() => document.body.innerText.includes("YouTube 링크 없음"));
 
   const bodyText = await page.locator("body").innerText();
   const laneCount = await page.locator(".lane").count();
@@ -261,7 +279,23 @@ async function assertProductionFailureDoesNotLeakDemo(browser) {
 
 async function assertEmptySnapshotPadsToThree(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  let clearCalled = false;
   await page.route("**/api/snapshot", async (route) => {
+    if (route.request().method() === "DELETE") {
+      clearCalled = true;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: "",
+          project_name: "Reels Editor",
+          project_path: null,
+          source_label: "프로젝트 없음",
+          storylines: [],
+          subtitles_on: true,
+        }),
+      });
+      return;
+    }
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
@@ -280,9 +314,12 @@ async function assertEmptySnapshotPadsToThree(browser) {
   const laneCount = await page.locator(".lane").count();
   const videoCount = await page.locator("video").count();
   const bodyText = await page.locator("body").innerText();
-  if (laneCount !== 3 || videoCount !== 0 || !bodyText.includes("프로젝트를 선택하면")) {
+  if (laneCount !== 3 || videoCount !== 0 || !bodyText.includes("YouTube 인터뷰 링크를 넣으면")) {
     throw new Error(`Expected successful empty snapshot to pad to 3 placeholder lanes, got ${JSON.stringify({ laneCount, videoCount })}`);
   }
+  await page.getByRole("button", { name: "비우기" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("프로젝트 없음"));
+  if (!clearCalled) throw new Error("Expected clear project button to call DELETE /api/snapshot");
   await page.close();
 }
 
@@ -454,7 +491,7 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
     if (!bodyText.includes("하트비트 훅 1") || !bodyText.includes("하트비트 제목 1-1")) {
       throw new Error("Populated lanes did not survive heartbeat event");
     }
-    if (bodyText.includes("프로젝트를 선택하면")) {
+    if (bodyText.includes("YouTube 인터뷰 링크를 넣으면")) {
       throw new Error("Heartbeat was incorrectly normalized as an empty snapshot");
     }
     if (!exportDisabled) {
@@ -505,8 +542,14 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
           duration_s: createBody.duration_s,
           n_storylines: createBody.n_storylines,
           provider: createBody.provider,
+          voice_isolation: createBody.voice_isolation,
         }),
       );
+      return;
+    }
+    if (request.url?.startsWith("/api/settings/voice-isolation")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ enabled: false, configured: true, masked_key: "xi_••••" }));
       return;
     }
     if (request.url?.startsWith("/api/snapshot")) {
@@ -566,6 +609,11 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
     await page.goto("http://127.0.0.1:5182/#token=regenerate-secret", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.innerText.includes("이전 프로젝트"));
     await page.waitForTimeout(200);
+    const voiceProcessingSwitch = page.getByRole("switch", { name: "다음 생성에 Voice Isolation과 Speech Enhancement 적용" });
+    await page.locator(".generation-option .switch").click();
+    if (!(await voiceProcessingSwitch.isChecked())) {
+      throw new Error("Voice processing choice did not turn on before regeneration");
+    }
     await page.getByRole("tab", { name: "설정" }).click();
     await page.getByText("60초", { exact: true }).click();
     await page.getByText("10개", { exact: true }).click();
@@ -588,7 +636,7 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
     if (createCalls !== 1) {
       throw new Error(`Expected one regenerate request, got ${createCalls}`);
     }
-    if (createBody?.duration_s !== 60 || createBody?.n_storylines !== 10 || createBody?.provider !== "claude-cli") {
+    if (createBody?.duration_s !== 60 || createBody?.n_storylines !== 10 || createBody?.provider !== "claude-cli" || createBody?.voice_isolation !== true) {
       throw new Error(`Expected selected generation settings in regenerate request, got ${JSON.stringify(createBody)}`);
     }
     if (!websocketUrls.some((url) => new URL(url, "http://127.0.0.1").searchParams.get("after") === "2")) {
@@ -618,7 +666,7 @@ try {
     const selectedVideoCount = await page.locator("input[name='selected-video']:checked").count();
     const switchCount = await page.locator("input[role='switch']").count();
 
-    if (laneCount !== 3 || videoCount !== 3 || titleRadioCount !== 9 || selectedVideoCount !== 1 || switchCount !== 2) {
+    if (laneCount !== 3 || videoCount !== 3 || titleRadioCount !== 9 || selectedVideoCount !== 1 || switchCount !== 3) {
       throw new Error(
         `Unexpected dashboard counts at ${viewport.width}x${viewport.height}: ` +
           JSON.stringify({ laneCount, videoCount, titleRadioCount, selectedVideoCount, switchCount }),
@@ -627,7 +675,8 @@ try {
 
     await assertVideosReady(page);
     await assertPortraitPreviewGeometry(page);
-    await assertVerticalLaneLayout(page, 340, 430, 520);
+    await assertStoryStructureReadable(page);
+    await assertVerticalLaneLayout(page, 340, 430, 900);
     await assertSingleAudibleVideo(page);
     await page.keyboard.press("Digit2");
     const selectedAfterShortcuts = await page.locator("input[name='selected-video']:checked").count();
@@ -666,7 +715,7 @@ try {
   await progressPage.waitForSelector(".generation-progress", { state: "visible" });
   const progressText = await progressPage.locator(".generation-progress").innerText();
   const progressValue = await progressPage.locator(".generation-progress-track").getAttribute("aria-valuenow");
-  if (!progressText.includes("생성 진행 · 3/3단계") || !progressText.includes("제목·자막 오버레이") || progressValue !== "64") {
+  if (!progressText.includes("생성 진행 · 4/4단계") || !progressText.includes("제목·자막 오버레이") || progressValue !== "64") {
     throw new Error(`Unexpected generation progress panel: ${JSON.stringify({ progressText, progressValue })}`);
   }
   await assertNoCriticalOverlap(progressPage);

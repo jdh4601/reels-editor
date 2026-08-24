@@ -27,6 +27,19 @@ def test_group_captions_merges_short_fragments() -> None:
     assert all(len(g[2]) <= 20 for g in groups)
 
 
+def test_group_captions_splits_long_youtube_cue_and_distributes_timing() -> None:
+    groups = render.group_captions(
+        [[0.0, 4.0, "고객이 원하는 것을 모르고 제품부터 만들면 정말 오래 헤매게 됩니다"]],
+        max_chars=20,
+    )
+
+    assert len(groups) >= 2
+    assert groups[0][0] == 0.0
+    assert groups[-1][1] == 4.0
+    assert all(len(group[2]) <= 20 for group in groups)
+    assert " ".join(group[2] for group in groups) == "고객이 원하는 것을 모르고 제품부터 만들면 정말 오래 헤매게 됩니다"
+
+
 def test_split_by_keywords_marks_highlight() -> None:
     parts = render.split_by_keywords("일단 무조건 거부감을 가져요", ["거부감"])
     assert parts == [("일단 무조건 ", False), ("거부감", True), ("을 가져요", False)]
@@ -52,9 +65,18 @@ def test_build_base_filter_content_crop_first(edl_doc: dict, segments: dict) -> 
     ordered = edl.ordered_segments(edl_doc, segments)
     f = render.build_base_filter(ordered, 1.2, style, in_size=(1920, 1080),
                                  content_crop=(608, 1080, 656, 0))
-    vw, vh = style.video_area()
-    aspect = render._crop_expr(608, 1080, vw, vh)
-    assert f"crop=608:1080:656:0,{aspect}" in f
+    crop = render.video_crop_box((608, 1080), style)
+    assert f"crop=608:1080:656:0,crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}" in f
+
+
+def test_video_crop_box_fits_source_to_nine_sixteen_canvas_without_extra_zoom() -> None:
+    style = load_style(STYLE)
+
+    crop = render.video_crop_box((1920, 1080), style)
+
+    # 전체 출력은 9:16이고, 중앙 영상창은 원본을 추가 확대 없이 채운다.
+    assert crop == render._center_crop_box(
+        1920, 1080, *style.video_area())
 
 
 def test_parse_cropdetect_picks_most_common() -> None:

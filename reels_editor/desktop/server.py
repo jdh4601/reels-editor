@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import socket
 import threading
@@ -25,6 +26,7 @@ from reels_editor.config import (
     save_credential,
 )
 from reels_editor.jobs import Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
+from reels_editor.youtube import YouTubeSourceError
 
 from .dialogs import DialogProvider, FakeDialogProvider
 from .tools import probe_required_tools
@@ -35,10 +37,12 @@ class SaveDialogRequest(BaseModel):
 
 
 class CreateJobRequest(BaseModel):
-    project_path: str
+    project_path: str | None = None
+    youtube_url: str | None = Field(default=None, max_length=2048)
     duration_s: Literal[15, 30, 60] = 30
     n_storylines: int = Field(default=3, ge=1, le=10)
     provider: Literal["codex-cli", "claude-cli", "openai", "kimi"] = "codex-cli"
+    voice_isolation: bool | None = None
 
 
 class SelectionRequest(BaseModel):
@@ -139,15 +143,37 @@ def create_app(
     def snapshot(_auth: None = Depends(require_token)) -> dict[str, Any]:
         return _snapshot_from_job(service.snapshot())
 
+    @app.delete("/api/snapshot")
+    def clear_snapshot(_auth: None = Depends(require_token)) -> dict[str, Any]:
+        try:
+            service.clear_current()
+        except JobServiceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _snapshot_from_job(None)
+
     @app.post("/api/jobs")
     def create_job(request: CreateJobRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:
         try:
-            job = service.start_job(
-                request.project_path,
-                duration_s=request.duration_s,
-                n_storylines=request.n_storylines,
-                provider=request.provider,
-            )
+            if request.youtube_url and request.youtube_url.strip():
+                job = service.start_youtube_job(
+                    request.youtube_url,
+                    duration_s=request.duration_s,
+                    n_storylines=request.n_storylines,
+                    provider=request.provider,
+                    voice_isolation=request.voice_isolation,
+                )
+            elif request.project_path and request.project_path.strip():
+                job = service.start_job(
+                    request.project_path,
+                    duration_s=request.duration_s,
+                    n_storylines=request.n_storylines,
+                    provider=request.provider,
+                    voice_isolation=request.voice_isolation,
+                )
+            else:
+                raise HTTPException(status_code=422, detail="YouTube URL 또는 CapCut 프로젝트 경로가 필요합니다.")
+        except YouTubeSourceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except JobServiceError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _snapshot_from_job(job)
@@ -298,7 +324,9 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
             "job_id": "",
             "project_name": "Reels Editor",
             "project_path": None,
-            "source_label": "프로젝트 없음",
+            "source_type": "youtube",
+            "source_url": None,
+            "source_label": "YouTube 링크 없음",
             "connection": "connected",
             "generated_at": "",
             "storylines": [_placeholder_storyline(index) for index in range(3)],
@@ -307,6 +335,7 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
             "duration_s": 30,
             "n_storylines": 3,
             "provider": "codex-cli",
+            "voice_isolation": False,
             "seq": 0,
             "event_seq": 0,
         }
@@ -314,7 +343,11 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "job_id": job.id,
         "project_name": job.project_name or "Reels Editor",
         "project_path": job.project_path,
-        "source_label": job.project_path or job.input_path or "선택된 프로젝트",
+        "source_type": job.source_type,
+        "source_url": job.source_url,
+        "transcript_language": job.transcript_language,
+        "transcript_kind": job.transcript_kind,
+        "source_label": _source_label(job),
         "connection": "connected",
         "generated_at": job.updated_at,
         "status": job.status.value,
@@ -327,6 +360,7 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "duration_s": job.duration_s,
         "n_storylines": job.n_storylines,
         "provider": job.provider or "codex-cli",
+        "voice_isolation": job.voice_isolation,
         "storylines": [_storyline_snapshot(job, storyline) for storyline in job.storylines],
         "export": job.export.to_dict(),
         "seq": job.seq,
@@ -337,13 +371,15 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
 def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
     variant = _active_variant(storyline)
     artifact_id = _artifact_for_variant(job, variant)
+    content = _story_content_for_storyline(storyline)
     return {
         "id": storyline.id,
         "storyline_id": storyline.id,
         "index": storyline.index + 1,
         "label": f"스토리라인 {storyline.index + 1}",
         "hook": storyline.angle_name or (storyline.title_candidates[0] if storyline.title_candidates else "대표 영상"),
-        "summary": _summary_for_storyline(storyline),
+        "summary": content["summary"],
+        "sections": content["sections"],
         "status": _ui_status(storyline.status),
         "progress": int(round(storyline.progress * 100)) if storyline.progress <= 1 else int(storyline.progress),
         "video_url": _media_url(job.id, artifact_id) if artifact_id else None,
@@ -354,9 +390,18 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
             if 0 <= storyline.selected_title_index < len(storyline.title_candidates)
             else ""
         ),
-        "error": storyline.error,
+        "error": _storyline_error_message(storyline.error),
         "revision": storyline.revision,
     }
+
+
+def _source_label(job: Job) -> str:
+    if job.source_type == "youtube":
+        if job.transcript_language:
+            kind = "수동" if job.transcript_kind == "manual" else "자동"
+            return f"YouTube · {job.transcript_language} {kind} 자막"
+        return job.source_url or "YouTube 인터뷰"
+    return job.project_path or job.input_path or "선택된 프로젝트"
 
 
 def _active_variant(storyline: Storyline) -> Variant | None:
@@ -387,7 +432,8 @@ def _placeholder_storyline(index: int) -> dict[str, Any]:
         "index": display,
         "label": f"스토리라인 {display}",
         "hook": "대기 중",
-        "summary": "프로젝트를 선택하면 대표 영상과 추천 제목이 여기에 표시됩니다.",
+        "summary": "YouTube 인터뷰 링크를 넣으면 클립 후보와 후킹 제목이 여기에 표시됩니다.",
+        "sections": [],
         "status": "queued",
         "progress": 0,
         "video_url": None,
@@ -413,19 +459,101 @@ def _selected_subtitles(job: Job) -> bool:
     return True
 
 
-def _summary_for_storyline(storyline: Storyline) -> str:
-    if not storyline.edl_path:
-        return storyline.error or "스토리라인 생성 대기 중입니다."
-    try:
-        import json
+_BEAT_ROLES = {
+    "훅": "첫 3초에 시선을 붙잡는 문장",
+    "맥락": "이야기를 이해시키는 배경",
+    "갈등": "문제와 긴장을 선명하게 만드는 구간",
+    "전환": "생각이나 행동이 바뀌는 순간",
+    "핵심 장면": "변화를 증명하는 구체적인 장면",
+    "라스트 답": "영상이 남기는 결론과 메시지",
+}
 
+_FIVE_LINE_BEATS = {
+    "situation": ("훅 · 상황", "첫 장면에서 맥락과 궁금증을 만드는 문장"),
+    "desire": ("목표", "주인공이 원하는 것을 보여주는 문장"),
+    "conflict": ("갈등", _BEAT_ROLES["갈등"]),
+    "change": ("전환", _BEAT_ROLES["전환"]),
+    "result": ("결론", _BEAT_ROLES["라스트 답"]),
+}
+
+
+def _story_content_for_storyline(storyline: Storyline) -> dict[str, Any]:
+    if not storyline.edl_path:
+        error = _storyline_error_message(storyline.error)
+        return {
+            "summary": error or "스토리라인 생성 대기 중입니다.",
+            "sections": [],
+        }
+    try:
         doc = json.loads(Path(storyline.edl_path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return storyline.error or ""
+        return {"summary": _storyline_error_message(storyline.error) or "", "sections": []}
+
+    segments_path = (
+        Path(storyline.segments_path)
+        if storyline.segments_path
+        else Path(storyline.edl_path).with_name("segments.json")
+    )
+    try:
+        segments_doc = json.loads(segments_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        segments_doc = {}
+    segment_text = {
+        str(item.get("id", "")): str(item.get("text", "")).strip()
+        for item in segments_doc.get("segments", [])
+        if isinstance(item, dict) and item.get("id") and item.get("text")
+    }
+    subtitle_translations = doc.get("subtitle_translations", {})
+    if not isinstance(subtitle_translations, dict):
+        subtitle_translations = {}
+
+    sections: list[dict[str, str]] = []
+    for cut in doc.get("cuts", []):
+        if not isinstance(cut, dict):
+            continue
+        beat = str(cut.get("beat", "구간")).strip() or "구간"
+        text = " ".join(
+            str(subtitle_translations.get(str(segment_id)) or segment_text.get(str(segment_id), ""))
+            for segment_id in cut.get("seg_ids", [])
+        ).strip()
+        if text:
+            sections.append({
+                "beat": beat,
+                "role": _BEAT_ROLES.get(beat, "이야기의 흐름을 이어가는 구간"),
+                "text": text,
+            })
+
+    if sections:
+        return {
+            "summary": " ".join(section["text"] for section in sections),
+            "sections": sections,
+        }
+
     five = doc.get("story", {}).get("five_lines", {})
     if isinstance(five, dict):
-        return " ".join(str(value) for value in five.values() if value)[:140]
-    return str(doc.get("story", {}).get("lens", ""))[:140]
+        for key, (beat, role) in _FIVE_LINE_BEATS.items():
+            text = str(five.get(key, "")).strip()
+            if text:
+                sections.append({"beat": beat, "role": role, "text": text})
+    summary = " ".join(section["text"] for section in sections)
+    if not summary:
+        summary = str(doc.get("story", {}).get("lens", ""))
+    return {"summary": summary, "sections": sections}
+
+
+def _storyline_error_message(error: str | None) -> str | None:
+    if not error:
+        return None
+    if "대본 생성 3회 실패" in error and ("마지막 응답" in error or "JSON 파싱" in error):
+        return (
+            "AI 응답의 JSON 따옴표 형식이 올바르지 않아 대본을 읽지 못했습니다. "
+            "작업이 끝난 뒤 다시 시도를 누르면 저장된 응답을 복구합니다."
+        )
+    return error if len(error) <= 600 else error[:597] + "..."
+
+
+def _summary_for_storyline(storyline: Storyline) -> str:
+    return str(_story_content_for_storyline(storyline)["summary"])
 
 
 def _ui_status(value: Status) -> str:

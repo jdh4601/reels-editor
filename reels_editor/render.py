@@ -52,7 +52,21 @@ def group_captions(items: list[list], max_dur: float = 2.4,
     """파편 자막을 읽기 좋은 덩어리로 병합. 빈 텍스트는 앞 그룹 시간에 흡수."""
     groups: list[list] = []
     buf: list | None = None
+    expanded: list[list] = []
     for a, b, t in items:
+        chunks = _caption_chunks(str(t), max_chars)
+        if len(chunks) <= 1:
+            expanded.append([a, b, t])
+            continue
+        weights = [max(1, len(chunk.replace(" ", ""))) for chunk in chunks]
+        total_weight = sum(weights)
+        cursor = float(a)
+        for index, (chunk, weight) in enumerate(zip(chunks, weights)):
+            end = float(b) if index == len(chunks) - 1 else cursor + (float(b) - float(a)) * weight / total_weight
+            expanded.append([round(cursor, 3), round(end, 3), chunk])
+            cursor = end
+
+    for a, b, t in expanded:
         if not t:
             if buf:
                 buf[1] = b
@@ -67,6 +81,27 @@ def group_captions(items: list[list], max_dur: float = 2.4,
     if buf:
         groups.append(buf)
     return groups
+
+
+def _caption_chunks(text: str, max_chars: int) -> list[str]:
+    normalized = " ".join(text.split())
+    if not normalized or len(normalized) <= max_chars:
+        return [normalized]
+    words = normalized.split(" ")
+    chunks: list[str] = []
+    current = ""
+    for word in words:
+        pieces = [word[i:i + max_chars] for i in range(0, len(word), max_chars)] or [""]
+        for piece in pieces:
+            candidate = f"{current} {piece}".strip()
+            if current and len(candidate) > max_chars:
+                chunks.append(current)
+                current = piece
+            else:
+                current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def split_by_keywords(text: str, keywords: list[str]) -> list[tuple[str, bool]]:
@@ -90,6 +125,34 @@ def _crop_expr(in_w: int, in_h: int, aspect_w: int, aspect_h: int) -> str:
     x = (in_w - cw) // 2
     y = (in_h - ch) // 2
     return f"crop={cw}:{ch}:{x}:{y}"
+
+
+def _even_crop_size(value: float, limit: int) -> int:
+    size = min(limit, max(2, int(round(value))))
+    return size if size % 2 == 0 else size - 1
+
+
+def _center_crop_box(in_w: int, in_h: int,
+                     aspect_w: int, aspect_h: int) -> tuple[int, int, int, int]:
+    crop_w = _even_crop_size(min(in_w, in_h * aspect_w / aspect_h), in_w)
+    crop_h = _even_crop_size(min(in_h, in_w * aspect_h / aspect_w), in_h)
+    return crop_w, crop_h, (in_w - crop_w) // 2, (in_h - crop_h) // 2
+
+
+def video_crop_box(in_size: tuple[int, int],
+                   style: StylePreset) -> tuple[int, int, int, int]:
+    """9:16 캔버스의 영상창에 맞춘 원본 중앙 크롭 영역."""
+    in_w, in_h = in_size
+    video_w, video_h = style.video_area()
+    frame_w, frame_h, frame_x, frame_y = _center_crop_box(
+        in_w, in_h, video_w, video_h)
+
+    zoom = max(style.video_zoom, 1.0)
+    crop_w = _even_crop_size(frame_w / zoom, frame_w)
+    crop_h = _even_crop_size(frame_h / zoom, frame_h)
+    crop_x = frame_x + (frame_w - crop_w) // 2
+    crop_y = frame_y + (frame_h - crop_h) // 2
+    return crop_w, crop_h, crop_x, crop_y
 
 
 def parse_cropdetect(lines: list[str]) -> tuple[int, int, int, int] | None:
@@ -131,7 +194,8 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
         c_w, c_h, c_x, c_y = content_crop
         pre = f"crop={c_w}:{c_h}:{c_x}:{c_y},"
         src_w, src_h = c_w, c_h
-    vid = (f"[vc]{pre}{_crop_expr(src_w, src_h, vw, vh)},scale={vw}:{vh},"
+    crop_w, crop_h, crop_x, crop_y = video_crop_box((src_w, src_h), style)
+    vid = (f"[vc]{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
            f"pad={cw}:{ch}:0:{style.top_bar}:black[v]")
     return "".join(parts) + concat + vid
 
@@ -250,9 +314,15 @@ def render_title_png(title: str, keyword: str, style: StylePreset, out: Path) ->
         for text, row_font, _color in rows:
             _left, row_top, _right, row_bottom = _ink_bbox(d, text, row_font)
             heights.append(row_bottom - row_top)
-        gap = round(style.title_size * 0.15) if len(rows) > 1 else 0
+        default_gap = round(style.title_size * 0.15)
+        gap = (style.title_line_gap
+               if style.title_line_gap is not None else default_gap) if len(rows) > 1 else 0
         group_h = sum(heights) + gap * (len(rows) - 1)
-        top_y = (style.top_bar - group_h) / 2
+        if style.title_y is None:
+            group_center_y = style.top_bar / 2
+        else:
+            group_center_y = _editor_y_to_canvas(style.title_y, H)
+        top_y = group_center_y - group_h / 2
         for (text, row_font, color), height in zip(rows, heights):
             center = (W // 2, round(top_y + height / 2))
             d.text(_centered_text_origin(d, text, row_font, center), text,

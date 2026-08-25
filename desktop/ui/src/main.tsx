@@ -6,7 +6,6 @@ import {
   Copy,
   Download,
   FolderX,
-  LayoutDashboard,
   Link,
   Loader2,
   MessageSquareText,
@@ -16,7 +15,6 @@ import {
   Square,
   Subtitles,
   WifiOff,
-  Youtube,
 } from "lucide-react";
 import "./styles.css";
 
@@ -26,7 +24,6 @@ type ConnectionState = "connected" | "connecting" | "disconnected";
 type ExportState = "idle" | "exporting" | "done" | "failed";
 type ContentType = "story" | "strategy" | "failure" | "principle";
 type ModelProvider = "codex-cli" | "claude-cli" | "openai" | "kimi";
-type ActiveTab = "dashboard" | "settings";
 type SettingsSaveState = "idle" | "saving" | "saved" | "error";
 type CaptionActionState = "idle" | "generating" | "error" | "copied";
 type PlaybackSpeedSettings = {
@@ -56,9 +53,7 @@ type Storyline = {
   status: LaneStatus;
   progress: number;
   videoUrl: string | null;
-  titleOptions: string[];
-  selectedTitle: string;
-  selectedTitleIndex: number;
+  title: string;
   instagramCaption: string;
   error?: string;
   revision: number;
@@ -111,12 +106,7 @@ type ApiStoryline = {
   progress?: number;
   video_url?: string | null;
   videoUrl?: string | null;
-  title_options?: string[];
-  titleOptions?: string[];
-  selected_title_index?: number;
-  selectedTitleIndex?: number;
-  selected_title?: string;
-  selectedTitle?: string;
+  title?: string;
   instagram_caption?: string;
   instagramCaption?: string;
   error?: string;
@@ -178,9 +168,9 @@ type EventPayload =
   | { event: "heartbeat"; seq?: number; event_seq?: number };
 
 const DEMO_TITLES = [
-  ["숫자보다 중요한 대표의 기준", "김현지 대표가 말한 성장의 조건", "팀을 움직인 한 가지 판단"],
-  ["대표 인터뷰에서 건진 실행 원칙", "좋은 의사결정은 어디서 시작되나", "현장에서 배운 리더십의 언어"],
-  ["짧게 보는 김현지 대표의 관점", "고객을 먼저 본 순간 달라진 것", "선택을 빠르게 만드는 질문"],
+  "숫자보다 앞선 고객 한마디",
+  "완벽한 계획, 못 쓴 1년",
+  "기능 절반, 이탈 절반",
 ];
 
 const DEMO_SUMMARIES = [
@@ -224,7 +214,7 @@ const STATUS_LABEL: Record<LaneStatus, string> = {
   failed: "실패",
 };
 
-const EMPTY_TITLES = ["제목 생성 대기", "추천 제목 준비 중", "렌더 후 선택 가능"];
+const EMPTY_TITLE = "제목 준비 중";
 const INSTAGRAM_CAPTION_CTA = "다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀";
 const EMPTY_SUMMARY = "YouTube 인터뷰 링크를 넣으면 클립 후보와 후킹 제목이 여기에 표시됩니다.";
 const ACTIVE_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay", "exporting"]);
@@ -344,9 +334,7 @@ function makePlaceholderStoryline(index: number): Storyline {
     status: "queued",
     progress: 0,
     videoUrl: null,
-    titleOptions: EMPTY_TITLES,
-    selectedTitle: EMPTY_TITLES[0],
-    selectedTitleIndex: 0,
+    title: EMPTY_TITLE,
     instagramCaption: "",
     revision: 0,
   };
@@ -419,9 +407,7 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
       status: showGenerationProgress ? (["ready", "overlaying", "rendering"] as LaneStatus[])[index] : "ready",
       progress: showGenerationProgress ? [100, 78, 45][index] : 100,
       videoUrl: mediaUrl(items[index]?.url ?? `/media/sample-${index + 1}.mp4`),
-      titleOptions: DEMO_TITLES[index],
-      selectedTitle: DEMO_TITLES[index][0],
-      selectedTitleIndex: 0,
+      title: DEMO_TITLES[index],
       instagramCaption: "",
       revision: 1,
     })),
@@ -431,15 +417,14 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
 function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
   const targetStorylineCount = Math.max(0, Math.min(10, payload.n_storylines ?? payload.nStorylines ?? 0));
   const storylines: Storyline[] = (payload.storylines ?? []).slice(0, targetStorylineCount).map((storyline, index) => {
-    const titleOptions = (storyline.title_options ?? storyline.titleOptions ?? EMPTY_TITLES).slice(0, 3);
-    const selectedTitleIndex = storyline.selected_title_index ?? storyline.selectedTitleIndex ?? 0;
+    const title = storyline.title ?? EMPTY_TITLE;
     const serverId = storyline.storyline_id ?? storyline.id ?? `storyline-${index + 1}`;
     return {
       id: serverId,
       serverId,
       index: storyline.index ?? index + 1,
       label: storyline.label ?? `릴스 ${index + 1}`,
-      hook: storyline.hook ?? titleOptions[0] ?? "대표 영상",
+      hook: storyline.hook ?? title ?? "대표 영상",
       summary: storyline.summary ?? EMPTY_SUMMARY,
       sections: (storyline.sections ?? []).filter(
         (section) => section.beat.trim() && section.role.trim() && section.text.trim(),
@@ -447,9 +432,7 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
       status: storyline.status ?? "queued",
       progress: storyline.progress ?? 0,
       videoUrl: mediaUrl(storyline.video_url ?? storyline.videoUrl ?? null),
-      titleOptions,
-      selectedTitle: storyline.selected_title ?? storyline.selectedTitle ?? titleOptions[selectedTitleIndex] ?? titleOptions[0],
-      selectedTitleIndex,
+      title,
       instagramCaption: storyline.instagram_caption ?? storyline.instagramCaption ?? "",
       error: storyline.error,
       revision: storyline.revision ?? 1,
@@ -547,7 +530,8 @@ function App() {
   const [speedSettingsSaveState, setSpeedSettingsSaveState] = useState<SettingsSaveState>("idle");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsMenuRef = useRef<HTMLDivElement | null>(null);
   const [eventConnectionVersion, setEventConnectionVersion] = useState(0);
   const [liveMessage, setLiveMessage] = useState("대시보드 연결 중");
   const [captionStates, setCaptionStates] = useState<Record<string, CaptionActionState>>({});
@@ -707,35 +691,13 @@ function App() {
     });
   }
 
-  async function patchSelection(
-    storyline: Storyline,
-    titleIndex: number,
-    subtitlesOn = subtitlesEnabled,
-  ) {
+  async function patchSelection(storyline: Storyline, subtitlesOn = subtitlesEnabled) {
     if (isDemoMode() || !snapshot) return;
     await apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/selection`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title_index: titleIndex,
-        subtitles_on: subtitlesOn,
-      }),
+      body: JSON.stringify({ subtitles_on: subtitlesOn }),
     });
-  }
-
-  function chooseTitle(storyline: Storyline, title: string, titleIndex: number) {
-    setLiveMessage(`${storyline.label} 제목 오버레이를 반영합니다.`);
-    if (isDemoMode()) {
-      updateStoryline(storyline.id, { selectedTitle: title, selectedTitleIndex: titleIndex, status: "overlaying", progress: 92 });
-      window.setTimeout(() => {
-        updateStoryline(storyline.id, { selectedTitle: title, selectedTitleIndex: titleIndex, status: "ready", progress: 100 });
-        setLiveMessage(`${storyline.label} 제목이 반영되었습니다.`);
-      }, 350);
-      return;
-    }
-    void patchSelection(storyline, titleIndex, subtitlesEnabled).catch(() =>
-      setLiveMessage("제목 변경 요청이 실패했습니다."),
-    );
   }
 
   function selectForExport(storyline: Storyline, checked?: boolean) {
@@ -780,7 +742,7 @@ function App() {
       if (isDemoMode()) {
         await new Promise((resolve) => window.setTimeout(resolve, 450));
         updateStoryline(storyline.id, {
-          instagramCaption: `Ep ${storyline.index}. ${storyline.selectedTitle}\n\n이 릴스는 창업가가 고객의 문제를 먼저 확인하고, 가장 작은 실행으로 시장의 반응을 검증한 과정을 다룹니다. 제품을 완성한 뒤 알리는 것이 아니라 실제 대화에서 구매 이유를 찾았습니다.\n\n중요한 것은 더 많은 기능이 아니었습니다. 반복해서 들리는 불편 중 고객이 비용을 지불할 만큼 큰 문제 하나를 선택하고, 그 문제를 해결하는 제안을 먼저 만들었습니다.\n\n1인 창업가에게 시간과 자원은 가장 중요한 생존 조건입니다. 작은 고객 인터뷰와 유료 제안은 제품 개발과 마케팅을 동시에 검증하면서 불필요한 실행을 줄이는 방법이 될 수 있습니다.\n\n여러분은 지금 제품을 설명하고 있나요, 아니면 고객이 돈을 내고 해결하고 싶은 문제를 확인하고 있나요?\n\n${INSTAGRAM_CAPTION_CTA}`,
+          instagramCaption: `Ep ${storyline.index}. ${storyline.title}\n\n이 릴스는 창업가가 고객의 문제를 먼저 확인하고, 가장 작은 실행으로 시장의 반응을 검증한 과정을 다룹니다. 제품을 완성한 뒤 알리는 것이 아니라 실제 대화에서 구매 이유를 찾았습니다.\n\n중요한 것은 더 많은 기능이 아니었습니다. 반복해서 들리는 불편 중 고객이 비용을 지불할 만큼 큰 문제 하나를 선택하고, 그 문제를 해결하는 제안을 먼저 만들었습니다.\n\n1인 창업가에게 시간과 자원은 가장 중요한 생존 조건입니다. 작은 고객 인터뷰와 유료 제안은 제품 개발과 마케팅을 동시에 검증하면서 불필요한 실행을 줄이는 방법이 될 수 있습니다.\n\n여러분은 지금 제품을 설명하고 있나요, 아니면 고객이 돈을 내고 해결하고 싶은 문제를 확인하고 있나요?\n\n${INSTAGRAM_CAPTION_CTA}`,
         });
       } else {
         if (!snapshot) return;
@@ -821,7 +783,7 @@ function App() {
           updateStoryline(selectedStoryline.id, { status: "overlaying", progress: 94 });
           window.setTimeout(() => updateStoryline(selectedStoryline.id, { status: "ready", progress: 100 }), 350);
         }
-        void patchSelection(selectedStoryline, selectedStoryline.selectedTitleIndex, next).catch(() =>
+        void patchSelection(selectedStoryline, next).catch(() =>
           setLiveMessage("자막 변경 요청이 실패했습니다."),
         );
       }
@@ -1039,6 +1001,81 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
+  // 설정은 팝오버 안에서만 열리므로, 바깥을 누르거나 Esc를 눌러 닫는다.
+  useEffect(() => {
+    if (!settingsOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!settingsMenuRef.current?.contains(event.target as Node)) setSettingsOpen(false);
+    }
+    function onEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setSettingsOpen(false);
+    }
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onEscape);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onEscape);
+    };
+  }, [settingsOpen]);
+
+  function SettingsPopover() {
+    return (
+      <div className="settings-popover" role="dialog" aria-label="생성 설정">
+        <div className="settings-field">
+          <div className="settings-field-heading">
+            <h3>재생 배속</h3>
+            <strong>{playbackSpeedLabel(playbackSpeed)}×</strong>
+          </div>
+          <input
+            type="range"
+            min={MIN_PLAYBACK_SPEED}
+            max={MAX_PLAYBACK_SPEED}
+            step={PLAYBACK_SPEED_STEP}
+            value={playbackSpeed}
+            disabled={jobBusy}
+            aria-label="재생 배속"
+            aria-valuetext={`${playbackSpeedLabel(playbackSpeed)}배`}
+            style={{
+              "--range-progress": `${((playbackSpeed - MIN_PLAYBACK_SPEED) / (MAX_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)) * 100}%`,
+            } as React.CSSProperties}
+            onChange={(event) => updatePlaybackSpeed(Number(event.target.value))}
+          />
+          <p className={speedSettingsSaveState === "error" ? "settings-note error" : "settings-note"}>
+            {speedSettingsSaveState === "saving"
+              ? "저장 중"
+              : speedSettingsSaveState === "saved"
+                ? "저장됨"
+                : speedSettingsSaveState === "error"
+                  ? "저장 실패"
+                  : jobBusy
+                    ? "작업 중에는 바꿀 수 없습니다"
+                    : "다음 생성부터 적용됩니다"}
+          </p>
+        </div>
+
+        <div className="settings-field">
+          <div className="settings-field-heading">
+            <h3>모델</h3>
+          </div>
+          <select
+            id="model-provider"
+            aria-label="모델 프로바이더"
+            value={selectedProvider}
+            disabled={jobBusy}
+            onChange={(event) => setSelectedProvider(event.target.value as ModelProvider)}
+          >
+            {PROVIDER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <p className="settings-note">
+            {PROVIDER_OPTIONS.find((option) => option.value === selectedProvider)?.description}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   function onVideoPlay(id: string) {
     Object.entries(videoRefs.current).forEach(([otherId, video]) => {
       if (otherId !== id && video) video.pause();
@@ -1058,13 +1095,24 @@ function App() {
     <main className="app-shell">
       <div className="topbar">
         <div className="project-block">
-          <span className="app-mark" aria-hidden="true"><Scissors size={18} /></span>
-          <div>
-            <p className="eyebrow">Reels Editor</p>
-            <h1>{snapshot.projectName}</h1>
-          </div>
+          <p className="eyebrow">Reels Editor</p>
+          <h1>{snapshot.projectName}</h1>
         </div>
         <div className="workbar-actions" aria-label="작업 도구">
+          <div className="settings-menu" ref={settingsMenuRef}>
+            <button
+              type="button"
+              className={settingsOpen ? "icon-button active" : "icon-button"}
+              aria-label="생성 설정"
+              title="생성 설정"
+              aria-haspopup="dialog"
+              aria-expanded={settingsOpen}
+              onClick={() => setSettingsOpen((open) => !open)}
+            >
+              <Settings2 size={17} />
+            </button>
+            {settingsOpen ? <SettingsPopover /> : null}
+          </div>
           <button
             type="button"
             className="ghost-button"
@@ -1105,57 +1153,9 @@ function App() {
         </div>
       </div>
 
-      <nav className="workspace-tabs" role="tablist" aria-label="작업 화면">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "dashboard"}
-          className={activeTab === "dashboard" ? "active" : ""}
-          onClick={() => setActiveTab("dashboard")}
-        >
-          <LayoutDashboard size={16} /> 대시보드
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "settings"}
-          className={activeTab === "settings" ? "active" : ""}
-          onClick={() => setActiveTab("settings")}
-        >
-          <Settings2 size={16} /> 설정
-        </button>
-      </nav>
-
-      <form className="youtube-source" onSubmit={submitYoutube} hidden={activeTab !== "dashboard"} aria-labelledby="youtube-source-title">
-        <div className="youtube-source-heading">
-          <span className="youtube-source-icon" aria-hidden="true"><Youtube size={20} /></span>
-          <div>
-            <p className="eyebrow">LONGFORM TO REELS</p>
-            <h2 id="youtube-source-title">창업가 인터뷰 YouTube 링크</h2>
-          </div>
-        </div>
-        <fieldset className="content-type-picker" disabled={jobBusy}>
-          <legend>어떤 내용의 릴스를 찾을까요?</legend>
-          <p>하나 이상 선택하면 해당 유형에서 겹치지 않는 후보 10개를 찾습니다.</p>
-          <div className="content-type-options">
-            {CONTENT_TYPE_OPTIONS.map((option, index) => (
-              <label className={selectedContentTypes.includes(option.value) ? "selected" : ""} key={option.value}>
-                <input
-                  type="checkbox"
-                  name="content-type"
-                  value={option.value}
-                  checked={selectedContentTypes.includes(option.value)}
-                  onChange={() => toggleContentType(option.value)}
-                />
-                <span className="content-type-number">0{index + 1}</span>
-                <span><strong>{option.label}</strong><small>{option.example}</small></span>
-                <Check size={16} aria-hidden="true" />
-              </label>
-            ))}
-          </div>
-        </fieldset>
+      <form className="youtube-source" onSubmit={submitYoutube}>
         <div className="youtube-source-entry">
-          <label htmlFor="youtube-url" className="sr-only">YouTube 인터뷰 URL</label>
+          <label htmlFor="youtube-url" className="sr-only">창업가 인터뷰 YouTube 링크</label>
           <span aria-hidden="true"><Link size={17} /></span>
           <input
             id="youtube-url"
@@ -1177,19 +1177,39 @@ function App() {
             {jobBusy ? "분석 중" : "후보 10개 분석"}
           </button>
         </div>
+        <fieldset className="content-type-picker" disabled={jobBusy}>
+          <legend className="sr-only">찾을 릴스 유형</legend>
+          {CONTENT_TYPE_OPTIONS.map((option) => (
+            <label
+              key={option.value}
+              title={option.example}
+              className={selectedContentTypes.includes(option.value) ? "selected" : ""}
+            >
+              <input
+                type="checkbox"
+                name="content-type"
+                value={option.value}
+                checked={selectedContentTypes.includes(option.value)}
+                onChange={() => toggleContentType(option.value)}
+              />
+              <Check size={13} aria-hidden="true" />
+              {option.label}
+            </label>
+          ))}
+        </fieldset>
         <p id="youtube-source-help" className={youtubeError ? "youtube-source-help error" : "youtube-source-help"}>
           {youtubeError ?? "분석이 끝나면 원하는 후보를 복수 선택합니다. 최종 영상은 항상 30~40초로 제작됩니다."}
         </p>
       </form>
 
-      {snapshot.jobStatus === "failed" && snapshot.jobError && activeTab === "dashboard" ? (
+      {snapshot.jobStatus === "failed" && snapshot.jobError ? (
         <section className="notice error" role="alert">
           <CircleAlert size={18} aria-hidden="true" />
           <span><strong>클립 생성 실패</strong>{snapshot.jobError}</span>
         </section>
       ) : null}
 
-      {candidateSelectionActive && activeTab === "dashboard" ? (
+      {candidateSelectionActive ? (
         <section className="candidate-workspace" aria-labelledby="candidate-workspace-title">
           <header className="candidate-workspace-header">
             <div>
@@ -1238,85 +1258,7 @@ function App() {
         </section>
       ) : null}
 
-      <section className="settings-panel" hidden={activeTab !== "settings"} aria-labelledby="settings-title">
-        <header className="settings-header">
-          <div>
-            <p className="eyebrow">생성 환경</p>
-            <h2 id="settings-title">영상 생성 설정</h2>
-          </div>
-          <span className="settings-state">{jobBusy ? "작업 중 변경 불가" : "다음 생성부터 적용"}</span>
-        </header>
-
-        <div className="settings-list">
-          <div className="settings-row playback-speed-row">
-            <div>
-              <h3>재생 배속</h3>
-              <p>영상과 음성을 함께 빠르게 재생합니다. 슬라이더를 드래그하거나 위에서 스크롤해 0.05배 단위로 조절하세요.</p>
-            </div>
-            <div className="playback-speed-control">
-              <div className="playback-speed-heading">
-                <strong>{playbackSpeedLabel(playbackSpeed)}×</strong>
-                <span className={speedSettingsSaveState === "error" ? "settings-error" : ""}>
-                  {speedSettingsSaveState === "saving"
-                    ? "저장 중"
-                    : speedSettingsSaveState === "saved"
-                      ? "저장됨"
-                      : speedSettingsSaveState === "error"
-                        ? "저장 실패"
-                        : "다음 생성부터 적용"}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={MIN_PLAYBACK_SPEED}
-                max={MAX_PLAYBACK_SPEED}
-                step={PLAYBACK_SPEED_STEP}
-                value={playbackSpeed}
-                disabled={jobBusy}
-                aria-label="재생 배속"
-                aria-valuetext={`${playbackSpeedLabel(playbackSpeed)}배`}
-                style={{
-                  "--range-progress": `${((playbackSpeed - MIN_PLAYBACK_SPEED) / (MAX_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)) * 100}%`,
-                } as React.CSSProperties}
-                onChange={(event) => updatePlaybackSpeed(Number(event.target.value))}
-                onWheel={(event) => {
-                  if (jobBusy) return;
-                  event.preventDefault();
-                  updatePlaybackSpeed(playbackSpeed + (event.deltaY < 0 ? PLAYBACK_SPEED_STEP : -PLAYBACK_SPEED_STEP));
-                }}
-              />
-              <div className="playback-speed-scale" aria-hidden="true">
-                <span>1.0×</span>
-                <span>1.5×</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="settings-row provider-row">
-            <div>
-              <h3>모델 프로바이더</h3>
-              <p>{PROVIDER_OPTIONS.find((option) => option.value === selectedProvider)?.description}</p>
-            </div>
-            <label className="provider-select" htmlFor="model-provider">
-              <span className="sr-only">모델 프로바이더</span>
-              <select
-                id="model-provider"
-                aria-label="모델 프로바이더"
-                value={selectedProvider}
-                disabled={jobBusy}
-                onChange={(event) => setSelectedProvider(event.target.value as ModelProvider)}
-              >
-                {PROVIDER_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-        </div>
-      </section>
-
-      <section className="status-row" aria-label="작업 상태" hidden={activeTab !== "dashboard"}>
+      <section className="status-row" aria-label="작업 상태">
         <div>
           <span className={`connection-dot ${connection}`} />
           <strong>{connection === "connected" ? "로컬 엔진 연결됨" : connection === "connecting" ? "연결 중" : "연결 끊김"}</strong>
@@ -1333,7 +1275,7 @@ function App() {
         <div><strong>{candidateSelectionActive ? "30–40초" : subtitlesEnabled ? "ON" : "OFF"}</strong><small>{candidateSelectionActive ? "고정 영상 길이" : "클립 자막"}</small></div>
       </section>
 
-      {generationActive && activeTab === "dashboard" ? (
+      {generationActive ? (
         <section className="generation-progress" aria-labelledby="generation-progress-title" aria-live="polite">
           <div className="generation-progress-heading">
             <div className="generation-progress-title">
@@ -1373,7 +1315,7 @@ function App() {
         </section>
       ) : null}
 
-      {connection === "disconnected" && activeTab === "dashboard" ? (
+      {connection === "disconnected" ? (
         <section className="notice" role="status">
           <WifiOff size={18} aria-hidden="true" />
           <span>로컬 Python 엔진과 연결이 끊겼습니다. 현재 화면은 마지막 상태입니다.</span>
@@ -1381,7 +1323,7 @@ function App() {
         </section>
       ) : null}
 
-      <section className="lane-scroller" aria-label="생성된 릴스 비교" hidden={activeTab !== "dashboard" || storylines.length === 0}>
+      <section className="lane-scroller" aria-label="생성된 릴스 비교" hidden={storylines.length === 0}>
         <div className="lanes">
           {storylines.map((storyline) => (
             <article className={`lane ${selectedExportIds.includes(storyline.id) ? "selected-lane" : ""}`} key={storyline.id} aria-labelledby={`${storyline.id}-title`}>
@@ -1445,20 +1387,10 @@ function App() {
                 )}
               </section>
 
-              <fieldset className="title-options">
-                <legend>AI 추천 제목 3개 중 선택</legend>
-                {storyline.titleOptions.map((title, optionIndex) => (
-                  <label key={title} className="title-option">
-                    <input
-                      type="radio"
-                      name={`title-${storyline.id}`}
-                      checked={storyline.selectedTitle === title}
-                      onChange={() => chooseTitle(storyline, title, optionIndex)}
-                    />
-                    <span>{optionIndex + 1}. {title}</span>
-                  </label>
-                ))}
-              </fieldset>
+              <div className="lane-title">
+                <p className="eyebrow">화면 제목</p>
+                <strong>{storyline.title}</strong>
+              </div>
 
               <section className={storyline.instagramCaption ? "caption-tool has-caption" : "caption-tool"} aria-label={`${storyline.label} Instagram 캡션`}>
                 <div className="caption-tool-heading">
@@ -1512,7 +1444,7 @@ function App() {
         </div>
       </section>
 
-      <section className="export-bar" aria-label="내보내기" hidden={activeTab !== "dashboard" || storylines.length === 0}>
+      <section className="export-bar" aria-label="내보내기" hidden={storylines.length === 0}>
         <div className="export-summary">
           <strong>{selectedExportStorylines.length > 0 ? `${selectedExportStorylines.length}개 영상 선택됨` : "선택된 영상 없음"}</strong>
           <span>

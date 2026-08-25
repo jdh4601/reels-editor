@@ -32,6 +32,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
 
+      # 스타일 프리셋이 ~/Library/Fonts에서 Pretendard를 찾는다.
+      - name: Install Pretendard
+        run: |
+          mkdir -p "$HOME/Library/Fonts"
+          curl -fsSL -o /tmp/pretendard.zip \
+            https://github.com/orioncactus/pretendard/releases/download/v1.3.9/Pretendard-1.3.9.zip
+          unzip -o -q /tmp/pretendard.zip -d /tmp/pretendard
+          find /tmp/pretendard -name "Pretendard-*.otf" -exec cp {} "$HOME/Library/Fonts/" \;
+          ls "$HOME/Library/Fonts/"
+
       - name: Install package
         run: pip install -e ".[dev]"
 

@@ -102,7 +102,7 @@ async function assertNoCriticalOverlap(page) {
       ".generation-progress",
       ".lane",
       ".phone-frame",
-      ".title-options",
+      ".lane-title",
       ".lane-footer",
       ".export-bar",
     ];
@@ -349,8 +349,7 @@ async function assertMediaTokenAndMutationFailures(browser) {
           status: "ready",
           progress: 100,
           video_url: `/media/protected-${number}.mp4`,
-          title_options: [`운영 제목 ${number}-1`, `운영 제목 ${number}-2`, `운영 제목 ${number}-3`],
-          selected_title_index: 0,
+          title: `운영 제목 ${number}`,
         })),
       }),
     });
@@ -376,11 +375,8 @@ async function assertMediaTokenAndMutationFailures(browser) {
     throw new Error(`Expected protected media requests to include token query, got ${JSON.stringify(mediaTokens)}`);
   }
 
-  await page.locator(".lane").nth(0).locator("fieldset.title-options label").nth(1).click();
-  await page.waitForFunction(() => document.body.innerText.includes("제목 변경 요청이 실패했습니다."));
   await page.locator(".export-bar .switch").click();
   await page.waitForFunction(() => document.body.innerText.includes("자막 변경 요청이 실패했습니다."));
-  await page.locator(".lane").nth(1).locator("fieldset.title-options label").nth(1).click();
   await page.locator(".lane").nth(1).locator("input[name='selected-video']").check();
   await Promise.all([
     page.waitForRequest((request) => request.url().includes("/api/jobs/job-42/export-batch")),
@@ -391,9 +387,12 @@ async function assertMediaTokenAndMutationFailures(browser) {
   if (JSON.stringify(batchExportBody.storyline_ids) !== JSON.stringify(["s1", "s2"])) {
     throw new Error(`Expected two selected storylines in batch export: ${JSON.stringify(batchExportBody)}`);
   }
-  if (selectionBodies.length < 3) throw new Error(`Expected selection mutations, got ${JSON.stringify(selectionBodies)}`);
+  if (!selectionBodies.length) throw new Error(`Expected selection mutations, got ${JSON.stringify(selectionBodies)}`);
+  if (selectionBodies.some((body) => "title_index" in body)) {
+    throw new Error(`Selection mutations should no longer carry a title choice: ${JSON.stringify(selectionBodies)}`);
+  }
   if (selectionBodies.some((body) => "selected_for_export" in body)) {
-    throw new Error(`Title/subtitle mutations should not control multi-selection: ${JSON.stringify(selectionBodies)}`);
+    throw new Error(`Subtitle mutations should not control multi-selection: ${JSON.stringify(selectionBodies)}`);
   }
   await page.close();
 }
@@ -442,8 +441,7 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
             status: number === 1 ? "overlaying" : "ready",
             progress: number === 1 ? 95 : 100,
             video_url: null,
-            title_options: [`하트비트 제목 ${number}-1`, `하트비트 제목 ${number}-2`, `하트비트 제목 ${number}-3`],
-            selected_title_index: 0,
+            title: `하트비트 제목 ${number}`,
           })),
         }),
       );
@@ -490,7 +488,7 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
     const exportDisabled = await page.locator(".export-button").isDisabled();
     const generateButton = page.getByRole("button", { name: /처리 중/ });
     const cancelButton = page.getByRole("button", { name: "작업 취소" });
-    if (!bodyText.includes("하트비트 훅 1") || !bodyText.includes("하트비트 제목 1-1")) {
+    if (!bodyText.includes("하트비트 훅 1") || !bodyText.includes("하트비트 제목 1")) {
       throw new Error("Populated lanes did not survive heartbeat event");
     }
     if (bodyText.includes("YouTube 인터뷰 링크를 넣으면")) {
@@ -605,8 +603,7 @@ async function assertInstagramCaptionGeneration(browser) {
       status: "ready",
       progress: 100,
       video_url: null,
-      title_options: ["광고 없이 첫 고객을 만든 방법", "첫 고객은 대화에서 나옵니다", "제품보다 먼저 검증할 것"],
-      selected_title_index: 0,
+      title: "광고비 0원, 첫 고객",
       instagram_caption: instagramCaption,
     }],
   });
@@ -725,9 +722,11 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
     await page.goto("http://127.0.0.1:5182/#token=regenerate-secret", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.innerText.includes("이전 프로젝트"));
     await page.waitForTimeout(200);
-    await page.getByRole("tab", { name: "설정" }).click();
+    await page.getByRole("button", { name: "생성 설정" }).click();
+    await page.waitForSelector(".settings-popover", { state: "visible" });
     await page.getByLabel("모델 프로바이더").selectOption("claude-cli");
-    await page.getByRole("tab", { name: "대시보드" }).click();
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".settings-popover", { state: "detached" });
     await page.getByRole("button", { name: "다시 분석" }).click();
     await page.waitForFunction(() => document.body.innerText.includes("새 작업 프로젝트"));
     const requestedLaneCount = await page.locator(".lane").count();
@@ -771,16 +770,16 @@ try {
 
     const laneCount = await page.locator(".lane").count();
     const videoCount = await page.locator("video").count();
-    const titleRadioCount = await page.locator("fieldset.title-options input[type='radio']").count();
+    const laneTitleCount = await page.locator(".lane-title strong").count();
     const selectedVideoCount = await page.locator("input[name='selected-video']:checked").count();
     const switchCount = await page.locator("input[role='switch']").count();
     const contentTypeCount = await page.locator("input[name='content-type']").count();
     const selectedContentTypeCount = await page.locator("input[name='content-type']:checked").count();
 
-    if (laneCount !== 3 || videoCount !== 3 || titleRadioCount !== 9 || selectedVideoCount !== 1 || switchCount !== 1 || contentTypeCount !== 4 || selectedContentTypeCount !== 4) {
+    if (laneCount !== 3 || videoCount !== 3 || laneTitleCount !== 3 || selectedVideoCount !== 1 || switchCount !== 1 || contentTypeCount !== 4 || selectedContentTypeCount !== 4) {
       throw new Error(
         `Unexpected dashboard counts at ${viewport.width}x${viewport.height}: ` +
-          JSON.stringify({ laneCount, videoCount, titleRadioCount, selectedVideoCount, switchCount, contentTypeCount, selectedContentTypeCount }),
+          JSON.stringify({ laneCount, videoCount, laneTitleCount, selectedVideoCount, switchCount, contentTypeCount, selectedContentTypeCount }),
       );
     }
 
@@ -798,7 +797,8 @@ try {
     await page.screenshot({ path: screenshot, fullPage: true });
     summary.push({ viewport: `${viewport.width}x${viewport.height}`, screenshot });
 
-    await page.getByRole("tab", { name: "설정" }).click();
+    await page.getByRole("button", { name: "생성 설정" }).click();
+    await page.waitForSelector(".settings-popover", { state: "visible" });
     const durationRadioCount = await page.locator("input[name='video-duration']").count();
     const storylineCountRadioCount = await page.locator("input[name='storyline-count']").count();
     const selectedProvider = await page.getByLabel("모델 프로바이더").inputValue();
@@ -818,12 +818,13 @@ try {
       await page.screenshot({ path: settingsScreenshot, fullPage: true });
       summary.push({ viewport: "settings-1280x800", screenshot: settingsScreenshot });
     }
-    await speedControl.hover();
-    await page.mouse.wheel(0, -100);
+    await speedControl.fill("1.25");
     await page.waitForTimeout(300);
     if (await speedControl.inputValue() !== "1.25") {
-      throw new Error(`Expected mouse wheel to raise playback speed by 0.05, got ${await speedControl.inputValue()}`);
+      throw new Error(`Expected playback speed to change to 1.25, got ${await speedControl.inputValue()}`);
     }
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".settings-popover", { state: "detached" });
     await page.close();
   }
   const progressPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });

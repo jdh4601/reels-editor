@@ -36,10 +36,21 @@ def _status(value: Any, default: Status = Status.IDLE) -> Status:
         return default
 
 
+def _storyline_title(data: dict[str, Any]) -> str:
+    """제목 선택 기능이 있던 시절의 저장본에서도 확정 제목 하나를 읽어낸다."""
+    title = str(data.get("title", "")).strip()
+    if title:
+        return title
+    candidates = [str(item) for item in data.get("title_candidates", [])]
+    if not candidates:
+        return ""
+    index = int(data.get("selected_title_index", 0))
+    return candidates[index] if 0 <= index < len(candidates) else candidates[0]
+
+
 @dataclass
 class Variant:
     id: str
-    title_index: int
     title_text: str
     subtitles_enabled: bool
     subtitles_on: bool | None = None
@@ -57,7 +68,6 @@ class Variant:
         )
         return {
             "id": self.id,
-            "title_index": self.title_index,
             "title_text": self.title_text,
             "subtitles_enabled": self.subtitles_enabled,
             "subtitles_on": subtitles_on,
@@ -72,7 +82,6 @@ class Variant:
     def from_dict(cls, data: dict[str, Any]) -> Variant:
         return cls(
             id=str(data.get("id", "")),
-            title_index=int(data.get("title_index", 0)),
             title_text=str(data.get("title_text", "")),
             subtitles_enabled=bool(
                 data.get("subtitles_enabled", data.get("subtitles_on", True))
@@ -93,8 +102,7 @@ class Storyline:
     angle_name: str = ""
     status: Status = Status.IDLE
     progress: float = 0.0
-    title_candidates: list[str] = field(default_factory=list)
-    selected_title_index: int = 0
+    title: str = ""
     subtitles_on: bool = True
     variants: list[Variant] = field(default_factory=list)
     base_video_path: str | None = None
@@ -117,8 +125,7 @@ class Storyline:
             "angle_name": self.angle_name,
             "status": self.status.value,
             "progress": self.progress,
-            "title_candidates": self.title_candidates,
-            "selected_title_index": self.selected_title_index,
+            "title": self.title,
             "subtitles_on": self.subtitles_on,
             "variants": [variant.to_dict() for variant in self.variants],
             "base_video_path": self.base_video_path,
@@ -142,8 +149,7 @@ class Storyline:
             angle_name=str(data.get("angle_name", "")),
             status=_status(data.get("status")),
             progress=float(data.get("progress", 0.0)),
-            title_candidates=[str(item) for item in data.get("title_candidates", [])],
-            selected_title_index=int(data.get("selected_title_index", 0)),
+            title=_storyline_title(data),
             subtitles_on=bool(data.get("subtitles_on", True)),
             variants=[
                 Variant.from_dict(item)

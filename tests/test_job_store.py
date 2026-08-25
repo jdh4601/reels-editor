@@ -26,12 +26,11 @@ def test_job_store_persists_and_lists_recent_jobs(tmp_path: Path) -> None:
             index=0,
             angle_name="정면승부형",
             status=Status.READY,
-            title_candidates=["첫 번째 제목", "두 번째 제목", "세 번째 제목"],
+            title="첫 번째 제목",
             instagram_caption="Ep 1. 첫 번째 캡션",
             variants=[
                 Variant(
                     id="s1-t1-on",
-                    title_index=0,
                     title_text="첫 번째 제목",
                     subtitles_enabled=True,
                 )
@@ -46,7 +45,7 @@ def test_job_store_persists_and_lists_recent_jobs(tmp_path: Path) -> None:
     assert saved.revision > first_revision
     assert saved.request_id > 0
     assert loaded.id == job.id
-    assert loaded.storylines[0].title_candidates == ["첫 번째 제목", "두 번째 제목", "세 번째 제목"]
+    assert loaded.storylines[0].title == "첫 번째 제목"
     assert loaded.storylines[0].variants[0].subtitles_enabled is True
     assert loaded.storylines[0].instagram_caption == "Ep 1. 첫 번째 캡션"
     assert loaded.source_url == "https://youtu.be/abc123"
@@ -120,8 +119,7 @@ def test_job_snapshot_keeps_dashboard_snake_case_fields(tmp_path: Path) -> None:
             angle_name="반전형",
             status=Status.RENDERING_OVERLAY,
             progress=0.8,
-            title_candidates=["A", "B", "C"],
-            selected_title_index=1,
+            title="B",
             subtitles_on=False,
             base_path="/work/job/s1/base.mp4",
             assets_path="/work/job/s1/assets.json",
@@ -130,7 +128,6 @@ def test_job_snapshot_keeps_dashboard_snake_case_fields(tmp_path: Path) -> None:
             variants=[
                 Variant(
                     id="v1",
-                    title_index=1,
                     title_text="B",
                     subtitles_enabled=False,
                     subtitles_on=False,
@@ -146,7 +143,7 @@ def test_job_snapshot_keeps_dashboard_snake_case_fields(tmp_path: Path) -> None:
     assert data["project_name"] == "김현지대표인터뷰"
     assert data["provider"] == "codex"
     assert data["seq"] == 2
-    assert data["storylines"][0]["selected_title_index"] == 1
+    assert data["storylines"][0]["title"] == "B"
     assert data["storylines"][0]["subtitles_on"] is False
     assert data["storylines"][0]["base_path"] == "/work/job/s1/base.mp4"
     assert data["storylines"][0]["variants"][0]["subtitles_on"] is False
@@ -179,8 +176,8 @@ def test_select_export_enforces_exactly_one_variant(tmp_path: Path) -> None:
             id="s1",
             index=0,
             variants=[
-                Variant(id="v1", title_index=0, title_text="A", subtitles_enabled=True),
-                Variant(id="v2", title_index=1, title_text="B", subtitles_enabled=False),
+                Variant(id="v1", title_text="A", subtitles_enabled=True),
+                Variant(id="v2", title_text="B", subtitles_enabled=False),
             ],
         )
     )

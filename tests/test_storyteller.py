@@ -437,3 +437,57 @@ def test_generate_many_only_indices(segments: dict) -> None:
 
     results = storyteller.generate_many(segments, 3, runner=runner, only_indices=[2])
     assert [r.index for r in results] == [2]
+
+
+def test_title_candidate_over_length_limit_is_rejected() -> None:
+    doc = {"title_candidates": [
+        {"text": "첫 고객이 없을 때 대표가 가장 먼저 한 일", "keyword": "첫 고객"},
+        {"text": "광고비 0원, 첫 고객", "keyword": "광고비"},
+        {"text": "매출보다 먼저 무너진 것", "keyword": "매출"},
+    ]}
+
+    errors = storyteller.validate_and_normalize_title_candidates(doc)
+
+    assert any("14자" in e for e in errors)
+
+
+def test_title_candidates_that_are_all_declarative_sentences_are_rejected() -> None:
+    doc = {"title_candidates": [
+        {"text": "망하기 직전에 알았습니다", "keyword": "망하기"},
+        {"text": "결국 저는 포기했어요", "keyword": "포기"},
+        {"text": "그때 전부 바꿨다", "keyword": "전부"},
+    ]}
+
+    errors = storyteller.validate_and_normalize_title_candidates(doc)
+
+    assert any("명사구" in e for e in errors)
+
+
+def test_title_candidates_allow_one_declarative_sentence_among_noun_phrases() -> None:
+    doc = {"title_candidates": [
+        {"text": "망하기 직전에 알았습니다", "keyword": "망하기"},
+        {"text": "광고비 0원, 첫 고객", "keyword": "광고비"},
+        {"text": "매출보다 먼저 무너진 것", "keyword": "매출"},
+    ]}
+
+    assert storyteller.validate_and_normalize_title_candidates(doc) == []
+
+
+def test_generate_script_retries_when_titles_are_too_long(
+        segments: dict, edl_doc: dict) -> None:
+    calls: list[str] = []
+    verbose = {**edl_doc, "title_candidates": [
+        {"text": "첫 고객이 없을 때 대표가 가장 먼저 한 일", "keyword": "첫 고객"},
+        {"text": "대기업 합격을 포기하고 창업을 선택한 진짜 이유", "keyword": "대기업"},
+        {"text": "꿈을 포기하지 못해서 결국 바로 시작했습니다", "keyword": "꿈"},
+    ]}
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(verbose if len(calls) == 1 else edl_doc, ensure_ascii=False)
+
+    out = storyteller.generate_script(segments, runner=runner)
+
+    assert len(calls) == 2
+    assert "14자" in calls[1]
+    assert out["title_candidates"][0]["text"] == "대기업을 버린 이유"

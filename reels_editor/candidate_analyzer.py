@@ -8,7 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from reels_editor.storyteller import StorylineResult, extract_json, generate_script
+from reels_editor.storyteller import (
+    StorylineResult,
+    extract_json,
+    generate_script,
+    is_declarative_sentence,
+    text_hook_principles,
+    title_length_error,
+)
 
 if TYPE_CHECKING:
     from reels_editor.jobs.models import ContentCandidate
@@ -73,6 +80,7 @@ def build_candidate_prompt(
     return (
         PROMPT_PATH.read_text(encoding="utf-8")
         .replace("{candidate_count}", str(CANDIDATE_COUNT))
+        .replace("{text_hook_block}", text_hook_principles())
         .replace("{content_types}", type_listing)
         .replace("{segments_listing}", segment_listing)
         .replace("{feedback_block}", correction)
@@ -103,7 +111,8 @@ def generate_candidates(
         last_problem = "; ".join(errors)
         feedback = (
             "이전 후보 목록이 검증에 실패했다. 정확히 10개의 서로 다른 후보를 만들고, "
-            "허용된 content_type과 실제 SEGMENTS의 id만 사용하라. 오류:\n"
+            "허용된 content_type과 실제 SEGMENTS의 id만 사용하라. title은 릴스 화면에 "
+            "그대로 박히는 텍스트 훅이므로 공백 제외 14자를 넘기지 마라. 오류:\n"
             + "\n".join(errors)
         )
     if raw_dump is not None:
@@ -153,9 +162,11 @@ def generate_selected_candidates(
                 min_duration_s=MIN_DURATION_S,
                 max_duration_s=MAX_DURATION_S,
             )
-            return StorylineResult(index, label, doc)
+            return StorylineResult(index, label, doc, title=candidate.title)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
-            return StorylineResult(index, label, None, f"{type(exc).__name__}: {exc}")
+            return StorylineResult(
+                index, label, None, f"{type(exc).__name__}: {exc}", title=candidate.title
+            )
 
     with ThreadPoolExecutor(max_workers=len(candidates)) as executor:
         return list(executor.map(one, enumerate(candidates)))
@@ -206,7 +217,23 @@ def _parse_candidates(
             segment_ids=segment_ids,
         ))
     errors.extend(_duplicate_errors(candidates))
+    errors.extend(_text_hook_errors(candidates))
     return candidates, errors
+
+
+def _text_hook_errors(candidates: list[ContentCandidate]) -> list[str]:
+    """후보 제목이 곧 릴스 제목이므로 텍스트 훅 원칙을 여기서 검증한다."""
+    errors: list[str] = []
+    titled = [candidate for candidate in candidates if candidate.title]
+    for index, candidate in enumerate(titled):
+        length_error = title_length_error(candidate.title)
+        if length_error:
+            errors.append(f"candidates[{index}].title이 {length_error}")
+    if not errors and titled and all(is_declarative_sentence(c.title) for c in titled):
+        errors.append(
+            "모든 title이 서술형 완결 문장임 — 최소 1개는 명사구로 끝맺을 것"
+        )
+    return errors
 
 
 def _duplicate_errors(candidates: list[ContentCandidate]) -> list[str]:

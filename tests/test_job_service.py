@@ -36,6 +36,7 @@ class Calls:
     active_base: int = 0
     base_version: int = 0
     caption_requests: list[dict[str, Any]] = field(default_factory=list)
+    overlay_keywords: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -139,6 +140,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
 
     def render_overlay(_assets, *, title_text: str, out_path: Path, subtitles_enabled: bool, **_kwargs):
         calls.overlay += 1
+        calls.overlay_keywords.append(str(_kwargs.get("keyword", "")))
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(f"{Path(_assets.base).read_text(encoding='utf-8')}:{title_text}:{subtitles_enabled}".encode())
         return out_path
@@ -473,7 +475,7 @@ def test_selection_change_rerenders_overlay_only_and_exports_one_selected(tmp_pa
     job = _run_ready(service)
     before = (calls.generate, calls.base, calls.overlay)
 
-    selected_story_change = service.select_variant(job.id, "s1", title_index=1, subtitles_on=False)
+    selected_story_change = service.select_variant(job.id, "s1", subtitles_on=False)
     selected_story = next(item for item in selected_story_change.storylines if item.id == "s1")
     active_selected_variant = selected_story.variants[-1]
 
@@ -482,12 +484,11 @@ def test_selection_change_rerenders_overlay_only_and_exports_one_selected(tmp_pa
     assert active_selected_variant.selected is True
     assert (calls.generate, calls.base) == before[:2]
 
-    selected = service.select_variant(job.id, "s2", title_index=2, subtitles_on=False)
+    selected = service.select_variant(job.id, "s2", subtitles_on=False)
 
     assert (calls.generate, calls.base) == before[:2]
     assert calls.overlay == before[2] + 2
     story = next(item for item in selected.storylines if item.id == "s2")
-    assert story.selected_title_index == 2
     assert story.subtitles_on is False
     assert selected.selected_storyline_id == "s1"
     assert sum(variant.selected for item in selected.storylines for variant in item.variants) == 1
@@ -495,7 +496,6 @@ def test_selection_change_rerenders_overlay_only_and_exports_one_selected(tmp_pa
     selected = service.select_variant(
         job.id,
         "s2",
-        title_index=2,
         subtitles_on=False,
         selected_for_export=True,
     )
@@ -614,7 +614,6 @@ def test_stale_overlay_request_is_suppressed(tmp_path: Path) -> None:
     after = service.store.load(job.id)
     story_after = next(item for item in after.storylines if item.id == "s1")
     assert story_after.render_request_id == 9
-    assert story_after.selected_title_index == 0
     assert len(story_after.variants) == len(story.variants)
 
 
@@ -622,7 +621,7 @@ def test_retry_invalidates_old_overlay_cache_for_same_title_choice(tmp_path: Pat
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
     job = _run_ready(service)
-    alternate = service.select_variant(job.id, "s1", title_index=1, subtitles_on=False)
+    alternate = service.select_variant(job.id, "s1", subtitles_on=False)
     story = next(item for item in alternate.storylines if item.id == "s1")
     old_variant_path = Path(story.active_variant_path or "")
     old_payload = old_variant_path.read_text(encoding="utf-8")
@@ -634,7 +633,7 @@ def test_retry_invalidates_old_overlay_cache_for_same_title_choice(tmp_path: Pat
     retry_overlay_count = calls.overlay
     retry_base_count = calls.base
 
-    rerendered = service.select_variant(retried.id, "s1", title_index=1, subtitles_on=False)
+    rerendered = service.select_variant(retried.id, "s1", subtitles_on=False)
     rerendered_story = next(item for item in rerendered.storylines if item.id == "s1")
     new_variant_path = Path(rerendered_story.active_variant_path or "")
     new_payload = new_variant_path.read_text(encoding="utf-8")
@@ -683,7 +682,7 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
 
     assert recovered.status is Status.READY
     assert story.status is Status.READY
-    assert story.title_candidates[0] == "복구 제목 1"
+    assert story.title == "복구 제목 1"
     assert story.edl_path is not None
 
 
@@ -831,8 +830,7 @@ def test_cancel_terminates_overlay_process_and_blocks_new_job_until_done(tmp_pat
             service.select_variant,
             job.id,
             "s1",
-            title_index=1,
-            subtitles_on=True,
+            subtitles_on=False,
         )
     )
     thread.start()
@@ -892,7 +890,7 @@ def test_overlay_completion_does_not_release_active_slot_while_base_renders_cont
     else:
         pytest.fail("first storyline did not become ready")
 
-    service.select_variant(job.id, "s1", title_index=1, subtitles_on=False)
+    service.select_variant(job.id, "s1", subtitles_on=False)
 
     with pytest.raises(JobServiceError, match="another job is already active"):
         service.start_youtube_job("https://youtu.be/replacement")
@@ -911,3 +909,41 @@ def _capture_exception(errors: list[BaseException], fn, *args, **kwargs) -> None
         fn(*args, **kwargs)
     except BaseException as exc:  # noqa: BLE001 - test helper records thread failures
         errors.append(exc)
+
+
+def test_candidate_title_becomes_the_rendered_reel_title(tmp_path: Path) -> None:
+    calls = Calls()
+    results = [StorylineResult(0, "전략형", _doc("https://youtu.be/A"), title="광고비 0원, 첫 고객")]
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls, results))
+
+    job = _run_ready(service, candidate_count=1)
+
+    story = job.storylines[0]
+    assert story.title == "광고비 0원, 첫 고객"
+    assert story.variants[0].title_text == "광고비 0원, 첫 고객"
+    assert "광고비 0원, 첫 고객" in Path(story.active_variant_path).read_text(encoding="utf-8")
+
+
+def test_rendered_title_has_no_highlight_keyword(tmp_path: Path) -> None:
+    calls = Calls()
+    results = [StorylineResult(0, "전략형", _doc("https://youtu.be/A"), title="직원 셋, 같은 날 퇴사")]
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls, results))
+
+    _run_ready(service, candidate_count=1)
+
+    assert calls.overlay_keywords == [""]
+
+
+def test_subtitle_toggle_keeps_the_candidate_title(tmp_path: Path) -> None:
+    calls = Calls()
+    results = [StorylineResult(0, "전략형", _doc("https://youtu.be/A"), title="매출보다 먼저 무너진 것")]
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls, results))
+    job = _run_ready(service, candidate_count=1)
+
+    toggled = service.select_variant(job.id, "s1", subtitles_on=False)
+
+    story = next(item for item in toggled.storylines if item.id == "s1")
+    assert story.title == "매출보다 먼저 무너진 것"
+    assert story.subtitles_on is False
+    assert story.variants[-1].title_text == "매출보다 먼저 무너진 것"
+    assert set(calls.overlay_keywords) == {""}

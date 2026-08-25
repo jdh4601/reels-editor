@@ -46,7 +46,6 @@ class CreateJobRequest(BaseModel):
 
 
 class SelectionRequest(BaseModel):
-    title_index: int
     subtitles_on: bool = True
     selected_for_export: bool = False
 
@@ -182,7 +181,6 @@ def create_app(
             job = service.select_variant(
                 job_id,
                 storyline_id,
-                title_index=request.title_index,
                 subtitles_on=request.subtitles_on,
                 selected_for_export=request.selected_for_export,
             )
@@ -397,19 +395,13 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
         "storyline_id": storyline.id,
         "index": storyline.index + 1,
         "label": f"릴스 {storyline.index + 1}",
-        "hook": storyline.angle_name or (storyline.title_candidates[0] if storyline.title_candidates else "대표 영상"),
+        "hook": storyline.angle_name or storyline.title or "대표 영상",
         "summary": content["summary"],
         "sections": content["sections"],
         "status": _ui_status(storyline.status),
         "progress": int(round(storyline.progress * 100)) if storyline.progress <= 1 else int(storyline.progress),
         "video_url": _media_url(job.id, artifact_id) if artifact_id else None,
-        "title_options": storyline.title_candidates[:3],
-        "selected_title_index": storyline.selected_title_index,
-        "selected_title": (
-            storyline.title_candidates[storyline.selected_title_index]
-            if 0 <= storyline.selected_title_index < len(storyline.title_candidates)
-            else ""
-        ),
+        "title": storyline.title,
         "instagram_caption": storyline.instagram_caption,
         "error": _storyline_error_message(storyline.error),
         "revision": storyline.revision,
@@ -456,9 +448,7 @@ def _placeholder_storyline(index: int) -> dict[str, Any]:
         "status": "queued",
         "progress": 0,
         "video_url": None,
-        "title_options": ["제목 생성 대기", "추천 제목 준비 중", "렌더 후 선택 가능"],
-        "selected_title_index": 0,
-        "selected_title": "제목 생성 대기",
+        "title": "제목 준비 중",
         "error": None,
         "revision": 0,
     }

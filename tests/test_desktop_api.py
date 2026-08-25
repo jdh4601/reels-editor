@@ -312,12 +312,11 @@ def test_registered_artifact_range_and_snapshot_url_stays_tokenless(tmp_path: Pa
             angle_name="정면승부형",
             status=Status.READY,
             progress=1.0,
-            title_candidates=["A", "B", "C"],
+            title="A",
             active_variant_path=str(artifact_path),
             variants=[
                 Variant(
                     id=artifact.id,
-                    title_index=0,
                     title_text="A",
                     subtitles_enabled=True,
                     status=Status.READY,
@@ -363,14 +362,13 @@ def test_selection_request_passes_selected_for_export(tmp_path: Path) -> None:
 
     response = TestClient(app).patch(
         f"/api/jobs/{job.id}/storylines/s2/selection?token=secret",
-        json={"title_index": 2, "subtitles_on": False, "selected_for_export": True},
+        json={"subtitles_on": False, "selected_for_export": True},
     )
 
     assert response.status_code == 200
     assert service.selection_args == {
         "job_id": job.id,
         "storyline_id": "s2",
-        "title_index": 2,
         "subtitles_on": False,
         "selected_for_export": True,
     }

@@ -226,7 +226,6 @@ class JobService:
         job_id: str,
         storyline_id: str,
         *,
-        title_index: int,
         subtitles_on: bool,
         selected_for_export: bool = False,
     ) -> Job:
@@ -234,10 +233,7 @@ class JobService:
             job = self.store.load(job_id)
             storyline = self._find_storyline(job, storyline_id)
             if storyline.status not in {Status.READY, Status.RENDERING_OVERLAY}:
-                raise JobServiceError("storyline is not ready for title selection")
-            if not 0 <= title_index < len(storyline.title_candidates):
-                raise JobServiceError("title_index is out of range")
-            storyline.selected_title_index = title_index
+                raise JobServiceError("storyline is not ready for subtitle selection")
             storyline.subtitles_on = subtitles_on
             storyline.render_request_id += 1
             request_id = storyline.render_request_id
@@ -245,7 +241,7 @@ class JobService:
             storyline.progress = 0.94
             job.status = Status.RENDERING_OVERLAY
             job.phase = "overlay"
-            job.message = "제목/자막 오버레이를 반영하는 중입니다."
+            job.message = "자막 오버레이를 반영하는 중입니다."
             self._save(job)
 
         with self._job_operation(job_id):
@@ -301,11 +297,7 @@ class JobService:
             segments_path = Path(storyline.edl_path).parent / "segments.json"
             if not segments_path.is_file():
                 raise JobServiceError("릴스 원문 구간 파일을 찾지 못했습니다.")
-            title = (
-                storyline.title_candidates[storyline.selected_title_index]
-                if 0 <= storyline.selected_title_index < len(storyline.title_candidates)
-                else (storyline.title_candidates[0] if storyline.title_candidates else "창업가 인사이트")
-            )
+            title = storyline.title or "창업가 인사이트"
             episode_number = storyline.index + 1
             candidate = self._candidate_for_storyline(job, storyline)
             provider = job.provider or self.config.provider
@@ -382,16 +374,16 @@ class JobService:
         with self._lock:
             current = self.store.load(job_id)
             recovered = self._find_storyline(current, storyline_id)
-            recovered.title_candidates = [
-                str(item.get("text", "")).strip()
-                for item in doc.get("title_candidates", [])
-            ][:3]
+            if not recovered.title:
+                recovered.title = _fallback_doc_title(doc)
             recovered.status = Status.RENDERING_BASE
             recovered.progress = 0.2
             recovered.error = None
             self._save(current)
 
-        result = StorylineResult(storyline.index, storyline.angle_name, doc)
+        result = StorylineResult(
+            storyline.index, storyline.angle_name, doc, title=storyline.title
+        )
         self._render_storyline_from_result(
             job_id,
             result,
@@ -436,7 +428,6 @@ class JobService:
             self.select_variant(
                 job_id,
                 selected_storyline_id,
-                title_index=story_for_request.selected_title_index,
                 subtitles_on=subtitles_on,
                 selected_for_export=True,
             )
@@ -500,7 +491,6 @@ class JobService:
                 self.select_variant(
                     job_id,
                     storyline_id,
-                    title_index=story.selected_title_index,
                     subtitles_on=subtitles_on,
                     selected_for_export=False,
                 )
@@ -934,11 +924,9 @@ class JobService:
             progress=0.0,
             error=result.error,
         )
-        if result.doc is not None:
-            storyline.title_candidates = [
-                str(item.get("text", "")).strip()
-                for item in result.doc.get("title_candidates", [])
-            ][:3]
+        storyline.title = result.title or (
+            _fallback_doc_title(result.doc) if result.doc is not None else ""
+        )
         return storyline
 
     def _render_storyline_with_registry(
@@ -995,11 +983,11 @@ class JobService:
                 detail="제목·자막 오버레이와 오디오를 합성하는 중입니다.",
             )
             assets_path = assets.write_manifest(sdir / ".render" / "assets.json")
-            title = result.doc["title_candidates"][0]
+            title_text = result.title or _fallback_doc_title(result.doc)
             speaker_text = render.speaker_label(result.doc)
             key = render.variant_cache_key(
                 storyline_id=story_id,
-                title_text=title["text"],
+                title_text=title_text,
                 subtitles_enabled=True,
                 style_hash_value=f"{render.style_hash(style)}-{_assets_fingerprint(assets_path, assets)}",
                 speaker_text=speaker_text,
@@ -1007,8 +995,8 @@ class JobService:
             out = sdir / f"{key}.mp4"
             self.deps.render_overlay_variant(
                 assets,
-                title_text=title["text"],
-                keyword=title.get("keyword", ""),
+                title_text=title_text,
+                keyword="",
                 style=style,
                 out_path=out,
                 subtitles_enabled=True,
@@ -1030,13 +1018,12 @@ class JobService:
                 storyline.assets_path = str(assets_path)
                 storyline.edl_path = str(sdir / "edl.json")
                 storyline.active_variant_path = str(out)
-                storyline.selected_title_index = 0
+                storyline.title = title_text
                 storyline.subtitles_on = True
                 storyline.variants = [
                     Variant(
                         id=artifact.id,
-                        title_index=0,
-                        title_text=title["text"],
+                        title_text=title_text,
                         subtitles_enabled=True,
                         subtitles_on=True,
                         style_hash=render.style_hash(style),
@@ -1135,10 +1122,8 @@ class JobService:
             raise JobServiceError("storyline has no render assets")
         style = merged_style(self.deps.load_style(self.style_path), self.config.style)
         assets = render.RenderAssets.read_manifest(Path(story.assets_path))
-        title_index = story.selected_title_index
-        title_text = story.title_candidates[title_index]
-        doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8")) if story.edl_path else {"title_candidates": []}
-        title_doc = doc.get("title_candidates", [{}])[title_index] if title_index < len(doc.get("title_candidates", [])) else {}
+        title_text = story.title
+        doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8")) if story.edl_path else {}
         speaker_text = render.speaker_label(doc)
         key = render.variant_cache_key(
             storyline_id=storyline_id,
@@ -1152,7 +1137,7 @@ class JobService:
             self.deps.render_overlay_variant(
                 assets,
                 title_text=title_text,
-                keyword=str(title_doc.get("keyword", "")),
+                keyword="",
                 style=style,
                 out_path=out,
                 subtitles_enabled=story.subtitles_on,
@@ -1169,7 +1154,6 @@ class JobService:
             story = self._find_storyline(job, storyline_id)
             variant = Variant(
                 id=artifact.id,
-                title_index=title_index,
                 title_text=title_text,
                 subtitles_enabled=story.subtitles_on,
                 subtitles_on=story.subtitles_on,
@@ -1185,7 +1169,7 @@ class JobService:
             job.status = Status.READY
             job.phase = "ready"
             job.progress = 1.0
-            job.message = "선택한 제목/자막 버전이 준비되었습니다."
+            job.message = "선택한 자막 버전이 준비되었습니다."
             self._save(job)
             should_select_for_export = selected_for_export or job.selected_storyline_id == story.id
             if should_select_for_export:
@@ -1334,6 +1318,17 @@ class JobService:
         if self._active_job_id == job_id:
             self._active_job_id = None
         self._process_registries.pop(job_id, None)
+
+
+def _fallback_doc_title(doc: dict[str, Any] | None) -> str:
+    """후보 제목이 없는 저장본이나 복구 경로에서만 쓰는 대본 자체의 제목."""
+    if not doc:
+        return ""
+    for item in doc.get("title_candidates", []):
+        text = str(item.get("text", "")).strip() if isinstance(item, dict) else ""
+        if text:
+            return text
+    return ""
 
 
 def _assets_fingerprint(manifest_path: Path, assets: render.RenderAssets) -> str:

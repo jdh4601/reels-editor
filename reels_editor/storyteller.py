@@ -14,6 +14,7 @@ from reels_editor import edl as edl_mod
 from reels_editor import processes
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "storytelling-30s.md"
+TEXT_HOOK_PATH = Path(__file__).parent.parent / "prompts" / "text-hook-principles.md"
 DEFAULT_SPEED = 1.2
 MAX_RETRIES = 2
 LONG_REEL_DURATION_S = 60
@@ -99,6 +100,7 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             .replace("{maximum_duration_s}", str(maximum_s))
             .replace("{source_budget_s}", str(round(maximum_s * speed)))
             .replace("{duration_rule}", duration_rule)
+            .replace("{text_hook_block}", text_hook_principles())
             .replace("{schema}", _SCHEMA)
             .replace("{segments_listing}", listing)
             .replace("{translation_block}", translation)
@@ -125,9 +127,30 @@ def extract_json(text: str) -> dict:
         return json.loads(repaired)
 
 
+def text_hook_principles() -> str:
+    """제목을 만드는 모든 프롬프트가 공유하는 텍스트 훅 원칙."""
+    return TEXT_HOOK_PATH.read_text(encoding="utf-8").strip()
+
+
 def title_char_count(text: str) -> int:
     """공백을 제외한 글자 수. 화면에서 차지하는 밀도를 기준으로 센다."""
     return len(re.sub(r"\s+", "", text))
+
+
+def is_declarative_sentence(text: str) -> bool:
+    """`~습니다`, `~했다`처럼 서술형으로 끝맺어 힘이 빠지는 제목인지 판별한다."""
+    return bool(_DECLARATIVE_ENDING_RE.search(text))
+
+
+def title_length_error(text: str) -> str | None:
+    """길이 상한을 넘긴 제목의 오류 문구. 지키고 있으면 None."""
+    length = title_char_count(text)
+    if length <= MAX_TITLE_CHARS:
+        return None
+    return (
+        f"공백 제외 {length}자로 {MAX_TITLE_CHARS}자를 초과함 — "
+        f"조사와 수식어를 덜어내고 명사구로 줄일 것: {text}"
+    )
 
 
 def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
@@ -152,13 +175,10 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
         if not text:
             errors.append(f"title_candidates[{i}].text 비어있음")
             continue
-        length = title_char_count(text)
-        if length > MAX_TITLE_CHARS:
-            errors.append(
-                f"title_candidates[{i}].text가 공백 제외 {length}자로 "
-                f"{MAX_TITLE_CHARS}자를 초과함 — 조사와 수식어를 덜어내고 명사구로 줄일 것: {text}"
-            )
-        if _DECLARATIVE_ENDING_RE.search(text):
+        length_error = title_length_error(text)
+        if length_error:
+            errors.append(f"title_candidates[{i}].text가 {length_error}")
+        if is_declarative_sentence(text):
             declarative_count += 1
         keyword = str(candidate.get("keyword", "")).strip()
         candidate["text"] = text
@@ -334,11 +354,16 @@ def validate_caption_completeness(doc: dict[str, Any], segments: dict[str, Any])
 
 @dataclass(frozen=True)
 class StorylineResult:
-    """병렬 생성 결과 하나."""
+    """병렬 생성 결과 하나.
+
+    title은 후보 분석 단계에서 확정한 릴스 제목이다. 화면에 박히는 제목은
+    이 값이며, doc 안의 title_candidates는 후보 없이 생성하는 CLI 경로에서만 쓴다.
+    """
     index: int
     angle_name: str
     doc: dict | None
     error: str | None = None
+    title: str = ""
 
 
 def generate_many(segments: dict, n: int, duration_s: int = 30, *,

@@ -83,3 +83,80 @@ def test_generate_candidates_retries_when_candidates_are_duplicates(segments: di
     assert len(calls) == 2
     assert "내용이 너무 비슷" in calls[1]
     assert len(candidates) == 10
+
+
+def _payload_with_titles(titles: list[str]) -> dict:
+    payload = _payload(["strategy"])
+    for candidate, title in zip(payload["candidates"], titles):
+        candidate["title"] = title
+    return payload
+
+
+def test_candidate_title_over_length_limit_is_rejected(segments: dict) -> None:
+    long_title = "첫 고객이 없을 때 대표가 가장 먼저 한 일"
+    titles = [long_title, *TOPICS[1:]]
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        payload = _payload_with_titles(titles) if len(calls) == 1 else _payload(["strategy"])
+        return json.dumps(payload, ensure_ascii=False)
+
+    candidate_analyzer.generate_candidates(segments, ["strategy"], runner=runner)
+
+    assert len(calls) == 2
+    assert "14자" in calls[1]
+
+
+def test_candidate_titles_all_declarative_are_rejected(segments: dict) -> None:
+    declarative = [f"{topic} 했습니다" for topic in TOPICS]
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        payload = _payload_with_titles(declarative) if len(calls) == 1 else _payload(["strategy"])
+        return json.dumps(payload, ensure_ascii=False)
+
+    candidate_analyzer.generate_candidates(segments, ["strategy"], runner=runner)
+
+    assert len(calls) == 2
+    assert "명사구" in calls[1]
+
+
+def test_candidate_prompt_carries_text_hook_principles(segments: dict) -> None:
+    prompt = candidate_analyzer.build_candidate_prompt(segments, ["strategy"])
+
+    assert "스타카토" in prompt
+    assert "14자" in prompt
+
+
+def test_selected_candidate_result_carries_candidate_title(segments: dict) -> None:
+    from reels_editor.jobs.models import ContentCandidate
+
+    candidate = ContentCandidate(
+        id="c1",
+        content_type="strategy",
+        title="광고비 0원, 첫 고객",
+        summary="요약",
+        takeaway="교훈",
+        segment_ids=["t0"],
+    )
+    doc = {
+        "story": {"five_lines": {}, "lens": "l"},
+        "title_candidates": [
+            {"text": "무시되는 제목 하나", "keyword": ""},
+            {"text": "무시되는 제목 둘", "keyword": ""},
+            {"text": "무시되는 제목 셋", "keyword": ""},
+        ],
+        "speaker": {"name": "화자", "role": ""},
+        "subtitle_keywords": [],
+        "cuts": [{"beat": "훅", "seg_ids": ["t0", "t1", "t2"]}],
+    }
+
+    results = candidate_analyzer.generate_selected_candidates(
+        segments,
+        [candidate],
+        runner=lambda _p: json.dumps(doc, ensure_ascii=False),
+    )
+
+    assert results[0].title == "광고비 0원, 첫 고객"

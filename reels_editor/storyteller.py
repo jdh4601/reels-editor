@@ -42,7 +42,9 @@ def maximum_duration_s(duration_s: int) -> int:
 
 
 def build_prompt(segments: dict, duration_s: int, feedback: str | None,
-                 angle: str | None = None, *, speed: float = DEFAULT_SPEED) -> str:
+                 angle: str | None = None, *, speed: float = DEFAULT_SPEED,
+                 min_duration_s: int = 0,
+                 max_duration_s: int | None = None) -> str:
     template = PROMPT_PATH.read_text(encoding="utf-8")
     listing = "\n".join(
         f"- [{_timestamp(s.get('source_start_us', 0))}] {s['id']}: {s['text']}"
@@ -77,12 +79,22 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
         )
     else:
         source_context = ""
-    maximum_s = maximum_duration_s(duration_s)
+    maximum_s = max_duration_s if max_duration_s is not None else maximum_duration_s(duration_s)
+    duration_rule = (
+        f"완성 영상은 반드시 {min_duration_s}~{maximum_s}초 사이여야 한다. "
+        f"목표는 {duration_s}초이며, 원문 소스 길이 합은 최대 {round(maximum_s * speed)}초다."
+        if min_duration_s > 0
+        else (
+            f"완성 영상은 절대 {maximum_s}초를 넘지 않는다. "
+            f"원문 소스 길이 합은 최대 {round(maximum_s * speed)}초다."
+        )
+    )
     return (template
             .replace("{speed}", str(speed))
             .replace("{duration_s}", str(duration_s))
             .replace("{maximum_duration_s}", str(maximum_s))
             .replace("{source_budget_s}", str(round(maximum_s * speed)))
+            .replace("{duration_rule}", duration_rule)
             .replace("{schema}", _SCHEMA)
             .replace("{segments_listing}", listing)
             .replace("{translation_block}", translation)
@@ -167,12 +179,22 @@ def generate_script(segments: dict, duration_s: int = 30,
                     runner: Callable[[str], str] | None = None,
                     raw_dump: Path | None = None,
                     angle: str | None = None,
-                    speed: float = DEFAULT_SPEED) -> dict:
+                    speed: float = DEFAULT_SPEED,
+                    min_duration_s: int = 0,
+                    max_duration_s: int | None = None) -> dict:
     run = runner or _run_claude
     last_raw = ""
     last_problem = "알 수 없는 생성 오류"
     for _attempt in range(1 + MAX_RETRIES):
-        last_raw = run(build_prompt(segments, duration_s, feedback, angle, speed=speed))
+        last_raw = run(build_prompt(
+            segments,
+            duration_s,
+            feedback,
+            angle,
+            speed=speed,
+            min_duration_s=min_duration_s,
+            max_duration_s=max_duration_s,
+        ))
         try:
             doc = extract_json(last_raw)
         except (ValueError, json.JSONDecodeError) as e:
@@ -195,7 +217,11 @@ def generate_script(segments: dict, duration_s: int = 30,
         errs = title_errs + speaker_errs + translation_errs + edl_errs + caption_errs
         if not errs:
             actual_duration = edl_mod.estimate_duration_s(doc, segments, speed)
-            maximum_s = maximum_duration_s(duration_s)
+            maximum_s = max_duration_s if max_duration_s is not None else maximum_duration_s(duration_s)
+            if min_duration_s > 0 and actual_duration < min_duration_s:
+                errs.append(
+                    f"완성 길이 {actual_duration:.1f}초가 최소 {min_duration_s}초보다 짧음 — 완결된 인접 seg_ids를 추가할 것"
+                )
             if actual_duration > maximum_s:
                 errs.append(
                     f"완성 길이 {actual_duration:.1f}초가 최대 {maximum_s}초를 초과함 — seg_ids를 줄일 것"

@@ -20,8 +20,8 @@ from typing import Any, Callable
 from PIL import Image, ImageDraw, ImageFont
 
 from reels_editor import captions, processes
-from reels_editor.capcut import US
 from reels_editor.style import StylePreset
+from reels_editor.timebase import US
 
 # 자동자막(STT) 흔한 오인식 보정. 필요 시 확장.
 DEFAULT_TEXT_FIXES = {
@@ -50,12 +50,12 @@ def timeline_items(ordered: list[dict], speed: float) -> list[list]:
 
 def group_captions(items: list[list], max_dur: float = 2.4,
                    max_chars: int = 20) -> list[list]:
-    """파편 cue를 길이 제한보다 문장 완결성을 우선해 자막으로 묶는다.
+    """파편 cue의 문장 완결성을 검사한 뒤 한 줄 의미 절로 나눈다.
 
-    ``max_dur``와 ``max_chars``는 이전 API와의 호환을 위해 유지한다. 완결되지
-    않은 문장은 이 제한을 넘어도 다음 cue와 합쳐 화면에서 중간에 끊지 않는다.
+    완결되지 않은 문장은 다음 cue와 먼저 합치며, 검사를 통과한 전체 문장만
+    쉼표·연결어미를 기준으로 ``max_chars`` 안팎의 표시 자막으로 분할한다.
     """
-    _ = max_dur, max_chars
+    _ = max_dur
     groups = captions.group_complete_sentences(items)
     errors = captions.completeness_errors(groups)
     if errors:
@@ -64,7 +64,7 @@ def group_captions(items: list[list], max_dur: float = 2.4,
             "완성해야 합니다:\n" + "\n".join(errors)
         )
     display_groups: list[list] = []
-    for a, b, text in groups:
+    for a, b, text in captions.split_display_phrases(groups, max_chars=max_chars):
         display_text = hide_subtitle_punctuation(str(text))
         if display_text:
             display_groups.append([a, b, display_text])
@@ -90,6 +90,30 @@ def split_by_keywords(text: str, keywords: list[str]) -> list[tuple[str, bool]]:
         tail = split_by_keywords(text[i + len(kw):], keywords) if text[i + len(kw):] else []
         return head + [(kw, True)] + tail
     return [(text, False)]
+
+
+def sparse_subtitle_highlights(groups: list[list], keywords: list[str]) -> list[list[str]]:
+    """강조를 최대 3회로 제한하고 강조 자막 사이에 두 자막을 비운다."""
+    plan: list[list[str]] = [[] for _group in groups]
+    candidates = list(dict.fromkeys(keyword.strip() for keyword in keywords if keyword.strip()))
+    if not candidates or not groups:
+        return plan
+    budget = min(3, max(1, (len(groups) + 5) // 6))
+    used: set[str] = set()
+    last_index = -3
+    count = 0
+    for index, (_start, _end, text) in enumerate(groups):
+        if count >= budget or index - last_index < 3:
+            continue
+        matches = [keyword for keyword in candidates if keyword in str(text)]
+        if not matches:
+            continue
+        keyword = next((item for item in matches if item not in used), matches[0])
+        plan[index] = [keyword]
+        used.add(keyword)
+        last_index = index
+        count += 1
+    return plan
 
 
 def _crop_expr(in_w: int, in_h: int, aspect_w: int, aspect_h: int) -> str:
@@ -209,61 +233,6 @@ def _draw_highlighted_line(d: ImageDraw.ImageDraw, xy: tuple[int, int], text: st
         x += int(d.textlength(part, font=font))
 
 
-def _wrap_lines(text: str, font: ImageFont.FreeTypeFont, max_w: int,
-                d: ImageDraw.ImageDraw) -> list[str]:
-    """공백 단위 그리디 줄바꿈."""
-    lines: list[str] = []
-    cur = ""
-    for word in text.split():
-        if d.textlength(word, font=font) > max_w:
-            if cur:
-                lines.append(cur)
-                cur = ""
-            piece = ""
-            for char in word:
-                candidate_piece = piece + char
-                if piece and d.textlength(candidate_piece, font=font) > max_w:
-                    lines.append(piece)
-                    piece = char
-                else:
-                    piece = candidate_piece
-            cur = piece
-            continue
-        cand = f"{cur} {word}".strip()
-        if cur and d.textlength(cand, font=font) > max_w:
-            lines.append(cur)
-            cur = word
-        else:
-            cur = cand
-    if cur:
-        lines.append(cur)
-    return lines
-
-
-def _fit_wrapped_caption(
-    text: str,
-    font_path: Path,
-    max_size: int,
-    max_width: int,
-    d: ImageDraw.ImageDraw,
-    max_lines: int = 2,
-) -> tuple[ImageFont.FreeTypeFont, list[str]]:
-    """완전한 문장을 동시에 표시할 수 있는 가장 큰 1~2줄 폰트를 고른다."""
-    low, high = 18, max(18, max_size)
-    best_font = ImageFont.truetype(str(font_path), low)
-    best_lines = _wrap_lines(text, best_font, max_width, d)
-    while low <= high:
-        size = (low + high) // 2
-        candidate = ImageFont.truetype(str(font_path), size)
-        lines = _wrap_lines(text, candidate, max_width, d)
-        if len(lines) <= max_lines:
-            best_font, best_lines = candidate, lines
-            low = size + 1
-        else:
-            high = size - 1
-    return best_font, best_lines
-
-
 def _editor_y_to_canvas(y: int, canvas_h: int) -> int:
     """중앙 원점 편집 좌표를 1080×1920 렌더 캔버스의 y 중심점으로 변환."""
     return round(canvas_h / 2 - y / 2)
@@ -330,14 +299,17 @@ def render_title_png(
     if speaker_text:
         _left, speaker_top, _right, speaker_bottom = _ink_bbox(d, speaker_text, speaker_font)
         speaker_height = speaker_bottom - speaker_top
-    gap = style.title_speaker_gap if speaker_text else 0
-    group_height = title_height + gap + speaker_height
     group_center_y = (
         style.top_bar / 2
         if style.title_y is None
         else _editor_y_to_canvas(style.title_y, H)
     )
-    title_center_y = round(group_center_y - group_height / 2 + title_height / 2)
+    if speaker_text and style.title_anchor_y is not None:
+        title_center_y = _editor_y_to_canvas(style.title_anchor_y, H)
+    else:
+        gap = style.title_speaker_gap if speaker_text else 0
+        group_height = title_height + gap + speaker_height
+        title_center_y = round(group_center_y - group_height / 2 + title_height / 2)
     title_origin = _centered_text_origin(d, title, font, (W // 2, title_center_y))
     _draw_highlighted_line(
         d,
@@ -350,7 +322,8 @@ def render_title_png(
     )
     if speaker_text:
         speaker_center_y = round(
-            group_center_y + group_height / 2 - speaker_height / 2
+            title_center_y + title_height / 2
+            + style.title_speaker_gap + speaker_height / 2
         )
         d.text(
             _centered_text_origin(d, speaker_text, speaker_font, (W // 2, speaker_center_y)),
@@ -366,24 +339,44 @@ def render_watermark_png(style: StylePreset, out: Path) -> Path:
     W, H = style.canvas
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    font = ImageFont.truetype(str(style.watermark_font), style.watermark_size)
     if style.watermark_y is None:
         center_y = H - style.bottom_bar + style.bottom_bar // 2
     else:
         center_y = _editor_y_to_canvas(style.watermark_y, H)
-    watermark_origin = _centered_text_origin(
-        d,
-        style.watermark_text,
-        font,
-        (W // 2, center_y),
-    )
-    d.text(watermark_origin,
-           style.watermark_text, font=font,
-           fill=(255, 255, 255, style.watermark_opacity))
-    if style.episode_text:
-        episode_font = ImageFont.truetype(str(style.watermark_font), style.episode_size)
+    if style.watermark_image is not None:
+        logo = Image.open(style.watermark_image).convert("RGBA")
+        logo_width = style.watermark_width or logo.width
+        logo_height = round(logo.height * logo_width / logo.width)
+        logo = logo.resize((logo_width, logo_height), Image.Resampling.LANCZOS)
+        if style.watermark_opacity < 255:
+            alpha = logo.getchannel("A").point(
+                lambda value: round(value * style.watermark_opacity / 255)
+            )
+            logo.putalpha(alpha)
+        logo_x = round((W - logo_width) / 2)
+        logo_y = round(center_y - logo_height / 2)
+        img.alpha_composite(logo, (logo_x, logo_y))
+        logo_alpha_bbox = logo.getchannel("A").getbbox()
+        watermark_ink_top = (
+            logo_y
+            if logo_alpha_bbox is None
+            else logo_y + logo_alpha_bbox[1]
+        )
+    else:
+        font = ImageFont.truetype(str(style.watermark_font), style.watermark_size)
+        watermark_origin = _centered_text_origin(
+            d,
+            style.watermark_text,
+            font,
+            (W // 2, center_y),
+        )
+        d.text(watermark_origin,
+               style.watermark_text, font=font,
+               fill=(255, 255, 255, style.watermark_opacity))
         _wl, watermark_top, _wr, _wb = _ink_bbox(d, style.watermark_text, font)
         watermark_ink_top = watermark_origin[1] + watermark_top
+    if style.episode_text:
+        episode_font = ImageFont.truetype(str(style.watermark_font), style.episode_size)
         _el, episode_top, _er, episode_bottom = _ink_bbox(
             d,
             style.episode_text,
@@ -416,54 +409,32 @@ def render_subtitle_pngs(groups: list[list], keywords: list[str],
     out_dir.mkdir(parents=True, exist_ok=True)
     pad_x, pad_y = 24, 12
     paths: list[Path] = []
+    highlight_plan = sparse_subtitle_highlights(groups, keywords)
     for i, (_a, _b, t) in enumerate(groups):
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        font, lines = _fit_wrapped_caption(
-            t,
-            style.sub_font,
-            style.sub_size,
-            W - 120 - pad_x * 2,
-            d,
-        )
+        font = ImageFont.truetype(str(style.sub_font), style.sub_size)
         if style.sub_y is None:
             _vw, vh = style.video_area()
             center_y = style.top_bar + int(vh * style.sub_y_frac) - style.sub_size // 2
         else:
             center_y = _editor_y_to_canvas(style.sub_y, H)
-        metrics = [_ink_bbox(d, line, font) for line in lines]
-        heights = [bottom - top for _left, top, _right, bottom in metrics]
-        line_gap = max(4, round(font.size * 0.18))
-        group_height = sum(heights) + line_gap * max(0, len(lines) - 1)
-        cursor_y = center_y - group_height / 2
-        origins: list[tuple[float, float]] = []
-        ink_boxes: list[tuple[float, float, float, float]] = []
-        for line, (left, top, right, bottom), height in zip(lines, metrics, heights):
-            origin_x = W / 2 - (left + right) / 2
-            origin_y = cursor_y - top
-            origins.append((origin_x, origin_y))
-            ink_boxes.append((origin_x + left, origin_y + top,
-                              origin_x + right, origin_y + bottom))
-            cursor_y += height + line_gap
-        ink_box = (
-            min(box[0] for box in ink_boxes),
-            min(box[1] for box in ink_boxes),
-            max(box[2] for box in ink_boxes),
-            max(box[3] for box in ink_boxes),
-        )
+        left, top, right, bottom = _ink_bbox(d, t, font)
+        origin_x, origin_y = _centered_text_origin(d, t, font, (W // 2, center_y))
+        ink_box = (origin_x + left, origin_y + top,
+                   origin_x + right, origin_y + bottom)
         d.rectangle((ink_box[0] - pad_x, ink_box[1] - pad_y,
                      ink_box[2] + pad_x, ink_box[3] + pad_y),
                     fill=(0, 0, 0, style.sub_box_alpha))
-        for origin, line in zip(origins, lines):
-            _draw_highlighted_line(
-                d,
-                (round(origin[0]), round(origin[1])),
-                line,
-                keywords,
-                font,
-                _hex_rgba(style.sub_color, style.sub_opacity),
-                _hex_rgba(style.sub_highlight, style.sub_opacity),
-            )
+        _draw_highlighted_line(
+            d,
+            (round(origin_x), round(origin_y)),
+            t,
+            highlight_plan[i],
+            font,
+            _hex_rgba(style.sub_color, style.sub_opacity),
+            _hex_rgba(style.sub_highlight, style.sub_opacity),
+        )
         p = out_dir / f"s{i:03d}.png"
         img.save(p)
         paths.append(p)

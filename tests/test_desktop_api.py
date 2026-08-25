@@ -16,8 +16,9 @@ class FakeService:
     def __init__(self, store: JobStore, job: Job | None = None) -> None:
         self.store = store
         self.job = job
-        self.start_args: dict | None = None
         self.youtube_start_args: dict | None = None
+        self.generate_args: dict | None = None
+        self.caption_args: dict | None = None
         self.selection_args: dict | None = None
         self.export_args: dict | None = None
         self.batch_export_args: dict | None = None
@@ -31,46 +32,25 @@ class FakeService:
         self.clear_current_called = True
         self.job = None
 
-    def start_job(
-        self,
-        project_path: str,
-        *,
-        duration_s: int | None = None,
-        n_storylines: int | None = None,
-        provider: str | None = None,
-        voice_isolation: bool | None = None,
-    ) -> Job:
-        self.start_args = {
-            "project_path": project_path,
-            "duration_s": duration_s,
-            "n_storylines": n_storylines,
-            "provider": provider,
-            "voice_isolation": voice_isolation,
-        }
-        assert self.job is not None
-        if voice_isolation is not None:
-            self.job.voice_isolation = voice_isolation
-        return self.job
-
     def start_youtube_job(
         self,
         youtube_url: str,
         *,
-        duration_s: int | None = None,
-        n_storylines: int | None = None,
+        content_types: list[str] | None = None,
         provider: str | None = None,
-        voice_isolation: bool | None = None,
     ) -> Job:
         self.youtube_start_args = {
             "youtube_url": youtube_url,
-            "duration_s": duration_s,
-            "n_storylines": n_storylines,
+            "content_types": content_types,
             "provider": provider,
-            "voice_isolation": voice_isolation,
         }
         assert self.job is not None
-        self.job.source_type = "youtube"
         self.job.source_url = youtube_url
+        return self.job
+
+    def start_selected_generation(self, job_id: str, candidate_ids: list[str]) -> Job:
+        self.generate_args = {"job_id": job_id, "candidate_ids": candidate_ids}
+        assert self.job is not None
         return self.job
 
     def select_variant(self, job_id: str, storyline_id: str, **kwargs) -> Job:
@@ -81,6 +61,22 @@ class FakeService:
     def retry_storyline(self, job_id: str, storyline_id: str) -> Job:
         assert self.job is not None
         return self.job
+
+    def generate_instagram_caption(self, job_id: str, storyline_id: str) -> Job:
+        self.caption_args = {"job_id": job_id, "storyline_id": storyline_id}
+        assert self.job is not None
+        story = next(item for item in self.job.storylines if item.id == storyline_id)
+        story.instagram_caption = "Ep 1. 첫 고객을 만든 방법\n\n본문\n\n질문?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
+        return self.job
+
+    def suggested_export_filename(
+        self,
+        job_id: str,
+        storyline_id: str | None = None,
+    ) -> str:
+        assert self.job is not None
+        index = int(storyline_id.removeprefix("s")) if storyline_id else 1
+        return f"{self.job.project_name or '릴스'} - {index}.mp4"
 
     def export_selected(
         self,
@@ -151,7 +147,7 @@ def test_api_requires_token_for_tools_snapshot_and_media(tmp_path: Path) -> None
     assert media["items"][0]["url"] == "/media/sample.mp4"
 
 
-def test_snapshot_returns_placeholders_when_no_job(tmp_path: Path) -> None:
+def test_snapshot_returns_no_reels_when_no_job(tmp_path: Path) -> None:
     app = create_app(
         static_dir=_static(tmp_path),
         media_dir=tmp_path,
@@ -161,13 +157,14 @@ def test_snapshot_returns_placeholders_when_no_job(tmp_path: Path) -> None:
     payload = TestClient(app).get("/api/snapshot?token=secret").json()
 
     assert payload["job_id"] == ""
-    assert len(payload["storylines"]) == 3
-    assert [item["status"] for item in payload["storylines"]] == ["queued", "queued", "queued"]
+    assert payload["storylines"] == []
+    assert payload["n_storylines"] == 0
+    assert payload["duration_s"] == 35
 
 
-def test_clear_snapshot_releases_current_project_without_deleting_job(tmp_path: Path) -> None:
+def test_clear_snapshot_releases_current_job_without_deleting_history(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/projects/interview", project_name="인터뷰")
+    job = store.create_job(source_url="https://youtu.be/interview", project_name="인터뷰")
     service = FakeService(store, job)
     app = create_app(
         static_dir=_static(tmp_path),
@@ -179,15 +176,15 @@ def test_clear_snapshot_releases_current_project_without_deleting_job(tmp_path: 
     response = TestClient(app).delete("/api/snapshot?token=secret")
 
     assert response.status_code == 200
-    assert response.json()["project_path"] is None
+    assert response.json()["source_url"] is None
     assert response.json()["project_name"] == "Reels Editor"
     assert service.clear_current_called is True
-    assert store.load(job.id).project_path == "/projects/interview"
+    assert store.load(job.id).source_url == "https://youtu.be/interview"
 
 
-def test_create_job_passes_selected_generation_settings_to_service(tmp_path: Path) -> None:
+def test_create_job_requires_youtube_url(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/project")
+    job = store.create_job()
     service = FakeService(store, job)
     app = create_app(
         static_dir=_static(tmp_path),
@@ -198,29 +195,16 @@ def test_create_job_passes_selected_generation_settings_to_service(tmp_path: Pat
 
     response = TestClient(app).post(
         "/api/jobs?token=secret",
-        json={
-            "project_path": "/project",
-            "duration_s": 60,
-            "n_storylines": 10,
-            "provider": "claude-cli",
-            "voice_isolation": True,
-        },
+        json={},
     )
 
-    assert response.status_code == 200
-    assert response.json()["voice_isolation"] is True
-    assert service.start_args == {
-        "project_path": "/project",
-        "duration_s": 60,
-        "n_storylines": 10,
-        "provider": "claude-cli",
-        "voice_isolation": True,
-    }
+    assert response.status_code == 422
+    assert service.youtube_start_args is None
 
 
-def test_create_youtube_job_passes_url_and_generation_settings_to_service(tmp_path: Path) -> None:
+def test_create_youtube_job_passes_url_and_selected_content_types_to_service(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(source_type="youtube")
+    job = store.create_job()
     service = FakeService(store, job)
     app = create_app(
         static_dir=_static(tmp_path),
@@ -233,27 +217,23 @@ def test_create_youtube_job_passes_url_and_generation_settings_to_service(tmp_pa
         "/api/jobs?token=secret",
         json={
             "youtube_url": "https://youtu.be/abc123",
-            "duration_s": 60,
-            "n_storylines": 3,
+            "content_types": ["strategy", "failure"],
             "provider": "codex-cli",
         },
     )
 
     assert response.status_code == 200
-    assert response.json()["source_type"] == "youtube"
     assert response.json()["source_url"] == "https://youtu.be/abc123"
     assert service.youtube_start_args == {
         "youtube_url": "https://youtu.be/abc123",
-        "duration_s": 60,
-        "n_storylines": 3,
+        "content_types": ["strategy", "failure"],
         "provider": "codex-cli",
-        "voice_isolation": None,
     }
 
 
-def test_create_job_rejects_unsupported_duration(tmp_path: Path) -> None:
+def test_create_job_rejects_empty_content_types(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/project")
+    job = store.create_job()
     service = FakeService(store, job)
     app = create_app(
         static_dir=_static(tmp_path),
@@ -264,20 +244,20 @@ def test_create_job_rejects_unsupported_duration(tmp_path: Path) -> None:
 
     response = TestClient(app).post(
         "/api/jobs?token=secret",
-        json={"project_path": "/project", "duration_s": 45},
+        json={"youtube_url": "https://youtu.be/abc123", "content_types": []},
     )
 
     assert response.status_code == 422
-    assert service.start_args is None
+    assert service.youtube_start_args is None
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("n_storylines", 0), ("n_storylines", 11), ("provider", "unsupported")],
+    [("content_types", ["unsupported"]), ("provider", "unsupported")],
 )
 def test_create_job_rejects_invalid_generation_settings(tmp_path: Path, field: str, value: object) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/project")
+    job = store.create_job()
     service = FakeService(store, job)
     app = create_app(
         static_dir=_static(tmp_path),
@@ -288,16 +268,36 @@ def test_create_job_rejects_invalid_generation_settings(tmp_path: Path, field: s
 
     response = TestClient(app).post(
         "/api/jobs?token=secret",
-        json={"project_path": "/project", field: value},
+        json={"youtube_url": "https://youtu.be/abc123", field: value},
     )
 
     assert response.status_code == 422
-    assert service.start_args is None
+    assert service.youtube_start_args is None
+
+
+def test_generate_selected_candidates_passes_only_chosen_ids(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).post(
+        f"/api/jobs/{job.id}/generate?token=secret",
+        json={"candidate_ids": ["c2", "c7"]},
+    )
+
+    assert response.status_code == 200
+    assert service.generate_args == {"job_id": job.id, "candidate_ids": ["c2", "c7"]}
 
 
 def test_registered_artifact_range_and_snapshot_url_stays_tokenless(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/capcut/김현지대표인터뷰", project_name="김현지대표인터뷰")
+    job = store.create_job(project_name="김현지대표인터뷰")
     artifact_path = store.job_dir(job.id) / "s1" / "clip.mp4"
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_bytes(b"0123456789")
@@ -352,7 +352,7 @@ def test_registered_artifact_range_and_snapshot_url_stays_tokenless(tmp_path: Pa
 
 def test_selection_request_passes_selected_for_export(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/project")
+    job = store.create_job()
     service = FakeService(store, job)
     app = create_app(
         static_dir=_static(tmp_path),
@@ -376,9 +376,30 @@ def test_selection_request_passes_selected_for_export(tmp_path: Path) -> None:
     }
 
 
+def test_caption_request_generates_and_returns_reel_caption(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    job.storylines = [Storyline(id="s1", index=0, status=Status.READY)]
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).post(
+        f"/api/jobs/{job.id}/storylines/s1/caption?token=secret",
+    )
+
+    assert response.status_code == 200
+    assert service.caption_args == {"job_id": job.id, "storyline_id": "s1"}
+    assert response.json()["storylines"][0]["instagram_caption"].startswith("Ep 1. ")
+
+
 def test_export_request_passes_requested_subtitle_state(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/project")
+    job = store.create_job()
     service = FakeService(store, job)
     dialogs = FakeDialogProvider(save_file=str(tmp_path / "out.mp4"))
     app = create_app(
@@ -396,12 +417,13 @@ def test_export_request_passes_requested_subtitle_state(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert service.export_args == {"job_id": job.id, "storyline_id": "s2", "subtitles_on": False}
+    assert Path(service.job.export.output_path or "").name == "릴스 - 2.mp4"
     assert dialogs.opened_directories == [tmp_path]
 
 
 def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/project")
+    job = store.create_job()
     service = FakeService(store, job)
     destination = tmp_path / "exports"
     dialogs = FakeDialogProvider(folder=str(destination))
@@ -427,57 +449,6 @@ def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Pa
         "subtitles_on": False,
     }
     assert dialogs.opened_directories == [destination]
-
-
-def test_voice_isolation_settings_save_key_and_enable_export_processing(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-    store = JobStore(tmp_path / "jobs")
-    service = FakeService(store)
-    app = create_app(
-        static_dir=_static(tmp_path),
-        media_dir=tmp_path,
-        job_service=service,
-        session_token="secret",
-        config_path=tmp_path / "config.yaml",
-        credentials_path=tmp_path / "credentials.yaml",
-    )
-    client = TestClient(app)
-
-    initial = client.get("/api/settings/voice-isolation?token=secret")
-    saved = client.put(
-        "/api/settings/voice-isolation?token=secret",
-        json={"enabled": True, "api_key": "xi-elevenlabs-secret"},
-    )
-    current = client.get("/api/settings/voice-isolation?token=secret")
-
-    assert initial.json() == {"enabled": False, "configured": False, "masked_key": None}
-    assert saved.status_code == 200
-    assert current.json() == {"enabled": True, "configured": True, "masked_key": "xi-…cret"}
-    assert service.config.voice_isolation is True
-    assert "voice_isolation: true" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    assert "xi-elevenlabs-secret" in (tmp_path / "credentials.yaml").read_text(encoding="utf-8")
-
-
-def test_voice_isolation_settings_reject_enable_without_key(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-    app = create_app(
-        static_dir=_static(tmp_path),
-        media_dir=tmp_path,
-        job_service=FakeService(JobStore(tmp_path / "jobs")),
-        session_token="secret",
-        config_path=tmp_path / "config.yaml",
-        credentials_path=tmp_path / "credentials.yaml",
-    )
-
-    response = TestClient(app).put(
-        "/api/settings/voice-isolation?token=secret",
-        json={"enabled": True},
-    )
-
-    assert response.status_code == 400
-    assert "API key" in response.json()["detail"]
 
 
 def test_playback_speed_settings_persist_and_update_service(tmp_path: Path) -> None:
@@ -524,7 +495,7 @@ def test_playback_speed_settings_reject_out_of_range(tmp_path: Path, speed: floa
 
 def test_events_websocket_requires_token_and_honors_after_seq(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
-    job = store.create_job(project_path="/project")
+    job = store.create_job()
     job.seq = 7
     job = store.save(job, bump_revision=False)
     app = create_app(

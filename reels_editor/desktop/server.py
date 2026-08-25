@@ -17,16 +17,14 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from reels_editor import candidate_analyzer
 from reels_editor.config import (
     AppConfig,
     DEFAULT_PLAYBACK_SPEED,
     load_config,
-    mask_key,
-    resolve_api_key,
     save_config,
-    save_credential,
 )
-from reels_editor.jobs import Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
+from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
 from reels_editor.youtube import YouTubeSourceError
 
 from .dialogs import DialogProvider, FakeDialogProvider
@@ -38,12 +36,13 @@ class SaveDialogRequest(BaseModel):
 
 
 class CreateJobRequest(BaseModel):
-    project_path: str | None = None
     youtube_url: str | None = Field(default=None, max_length=2048)
-    duration_s: Literal[15, 30, 60] = 30
-    n_storylines: int = Field(default=3, ge=1, le=10)
+    content_types: list[Literal["story", "strategy", "failure", "principle"]] = Field(
+        default_factory=lambda: ["story", "strategy", "failure", "principle"],
+        min_length=1,
+        max_length=4,
+    )
     provider: Literal["codex-cli", "claude-cli", "openai", "kimi"] = "codex-cli"
-    voice_isolation: bool | None = None
 
 
 class SelectionRequest(BaseModel):
@@ -63,9 +62,8 @@ class BatchExportRequest(BaseModel):
     subtitles_on: bool | None = None
 
 
-class VoiceIsolationSettingsRequest(BaseModel):
-    enabled: bool
-    api_key: str | None = Field(default=None, max_length=512)
+class GenerateCandidatesRequest(BaseModel):
+    candidate_ids: list[str] = Field(min_length=1, max_length=10)
 
 
 class PlaybackSpeedSettingsRequest(BaseModel):
@@ -80,7 +78,6 @@ def create_app(
     job_service: JobService | None = None,
     session_token: str | None = None,
     config_path: Path | None = None,
-    credentials_path: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Reels Editor Desktop")
     dialogs = dialog_provider or FakeDialogProvider()
@@ -107,35 +104,6 @@ def create_app(
     def tools(_auth: None = Depends(require_token)) -> dict[str, Any]:
         return probe_required_tools()
 
-    def voice_isolation_settings() -> dict[str, Any]:
-        key = resolve_api_key("elevenlabs", credentials_path)
-        config = getattr(service, "config", AppConfig(provider="codex-cli"))
-        return {
-            "enabled": bool(config.voice_isolation),
-            "configured": bool(key),
-            "masked_key": mask_key(key) if key else None,
-        }
-
-    @app.get("/api/settings/voice-isolation")
-    def get_voice_isolation_settings(_auth: None = Depends(require_token)) -> dict[str, Any]:
-        return voice_isolation_settings()
-
-    @app.put("/api/settings/voice-isolation")
-    def put_voice_isolation_settings(
-        request: VoiceIsolationSettingsRequest,
-        _auth: None = Depends(require_token),
-    ) -> dict[str, Any]:
-        api_key = (request.api_key or "").strip()
-        if api_key:
-            save_credential("elevenlabs", api_key, credentials_path)
-        if request.enabled and not resolve_api_key("elevenlabs", credentials_path):
-            raise HTTPException(status_code=400, detail="ElevenLabs API key가 필요합니다.")
-        persisted = replace(load_config(config_path), voice_isolation=request.enabled)
-        save_config(persisted, config_path)
-        current = getattr(service, "config", AppConfig(provider="codex-cli"))
-        service.config = replace(current, voice_isolation=request.enabled)
-        return voice_isolation_settings()
-
     def playback_speed_settings() -> dict[str, float]:
         config = getattr(service, "config", AppConfig(provider="codex-cli"))
         speed = float(config.style.get("speed", DEFAULT_PLAYBACK_SPEED))
@@ -157,10 +125,6 @@ def create_app(
         current = getattr(service, "config", AppConfig(provider="codex-cli"))
         service.config = replace(current, style={**current.style, "speed": speed})
         return playback_speed_settings()
-
-    @app.post("/api/dialogs/open-folder")
-    def open_folder(_auth: None = Depends(require_token)) -> dict[str, str | None]:
-        return {"path": dialogs.choose_folder()}
 
     @app.post("/api/dialogs/save-file")
     def save_file(request: SaveDialogRequest, _auth: None = Depends(require_token)) -> dict[str, str | None]:
@@ -184,25 +148,27 @@ def create_app(
             if request.youtube_url and request.youtube_url.strip():
                 job = service.start_youtube_job(
                     request.youtube_url,
-                    duration_s=request.duration_s,
-                    n_storylines=request.n_storylines,
+                    content_types=request.content_types,
                     provider=request.provider,
-                    voice_isolation=request.voice_isolation,
-                )
-            elif request.project_path and request.project_path.strip():
-                job = service.start_job(
-                    request.project_path,
-                    duration_s=request.duration_s,
-                    n_storylines=request.n_storylines,
-                    provider=request.provider,
-                    voice_isolation=request.voice_isolation,
                 )
             else:
-                raise HTTPException(status_code=422, detail="YouTube URL 또는 CapCut 프로젝트 경로가 필요합니다.")
+                raise HTTPException(status_code=422, detail="YouTube URL이 필요합니다.")
         except YouTubeSourceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except JobServiceError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _snapshot_from_job(job)
+
+    @app.post("/api/jobs/{job_id}/generate")
+    def generate_candidates(
+        job_id: str,
+        request: GenerateCandidatesRequest,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        try:
+            job = service.start_selected_generation(job_id, request.candidate_ids)
+        except JobServiceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _snapshot_from_job(job)
 
     @app.patch("/api/jobs/{job_id}/storylines/{storyline_id}/selection")
@@ -231,9 +197,28 @@ def create_app(
         except JobServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/jobs/{job_id}/storylines/{storyline_id}/caption")
+    def generate_instagram_caption(
+        job_id: str,
+        storyline_id: str,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        try:
+            job = service.generate_instagram_caption(job_id, storyline_id)
+        except JobServiceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _snapshot_from_job(job)
+
     @app.post("/api/jobs/{job_id}/export")
     def export_job(job_id: str, request: ExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:
-        destination = dialogs.choose_save_file(request.suggested_name)
+        try:
+            suggested_name = service.suggested_export_filename(
+                job_id,
+                request.storyline_id,
+            )
+        except JobServiceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        destination = dialogs.choose_save_file(suggested_name)
         if not destination:
             raise HTTPException(status_code=400, detail="export cancelled")
         try:
@@ -350,27 +335,25 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         return {
             "job_id": "",
             "project_name": "Reels Editor",
-            "project_path": None,
-            "source_type": "youtube",
             "source_url": None,
             "source_label": "YouTube 링크 없음",
             "connection": "connected",
             "generated_at": "",
-            "storylines": [_placeholder_storyline(index) for index in range(3)],
+            "storylines": [],
             "selected_storyline_id": None,
             "subtitles_on": True,
-            "duration_s": 30,
-            "n_storylines": 3,
+            "duration_s": candidate_analyzer.TARGET_DURATION_S,
+            "n_storylines": 0,
+            "content_types": list(candidate_analyzer.CONTENT_TYPES),
+            "candidates": [],
+            "selected_candidate_ids": [],
             "provider": "codex-cli",
-            "voice_isolation": False,
             "seq": 0,
             "event_seq": 0,
         }
     return {
         "job_id": job.id,
         "project_name": job.project_name or "Reels Editor",
-        "project_path": job.project_path,
-        "source_type": job.source_type,
         "source_url": job.source_url,
         "transcript_language": job.transcript_language,
         "transcript_kind": job.transcript_kind,
@@ -386,12 +369,22 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "subtitles_on": _selected_subtitles(job),
         "duration_s": job.duration_s,
         "n_storylines": job.n_storylines,
+        "content_types": job.content_types,
+        "candidates": [_candidate_snapshot(candidate) for candidate in job.candidates],
+        "selected_candidate_ids": job.selected_candidate_ids,
         "provider": job.provider or "codex-cli",
-        "voice_isolation": job.voice_isolation,
         "storylines": [_storyline_snapshot(job, storyline) for storyline in job.storylines],
         "export": job.export.to_dict(),
         "seq": job.seq,
         "event_seq": job.seq,
+    }
+
+
+def _candidate_snapshot(candidate: ContentCandidate) -> dict[str, Any]:
+    definition = candidate_analyzer.CONTENT_TYPES.get(candidate.content_type, {})
+    return {
+        **candidate.to_dict(),
+        "type_label": definition.get("label", candidate.content_type),
     }
 
 
@@ -403,7 +396,7 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
         "id": storyline.id,
         "storyline_id": storyline.id,
         "index": storyline.index + 1,
-        "label": f"스토리라인 {storyline.index + 1}",
+        "label": f"릴스 {storyline.index + 1}",
         "hook": storyline.angle_name or (storyline.title_candidates[0] if storyline.title_candidates else "대표 영상"),
         "summary": content["summary"],
         "sections": content["sections"],
@@ -417,18 +410,17 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
             if 0 <= storyline.selected_title_index < len(storyline.title_candidates)
             else ""
         ),
+        "instagram_caption": storyline.instagram_caption,
         "error": _storyline_error_message(storyline.error),
         "revision": storyline.revision,
     }
 
 
 def _source_label(job: Job) -> str:
-    if job.source_type == "youtube":
-        if job.transcript_language:
-            kind = "수동" if job.transcript_kind == "manual" else "자동"
-            return f"YouTube · {job.transcript_language} {kind} 자막"
-        return job.source_url or "YouTube 인터뷰"
-    return job.project_path or job.input_path or "선택된 프로젝트"
+    if job.transcript_language:
+        kind = "수동" if job.transcript_kind == "manual" else "자동"
+        return f"YouTube · {job.transcript_language} {kind} 자막"
+    return job.source_url or "YouTube 인터뷰"
 
 
 def _active_variant(storyline: Storyline) -> Variant | None:
@@ -457,7 +449,7 @@ def _placeholder_storyline(index: int) -> dict[str, Any]:
         "id": f"placeholder-{display}",
         "storyline_id": f"placeholder-{display}",
         "index": display,
-        "label": f"스토리라인 {display}",
+        "label": f"릴스 {display}",
         "hook": "대기 중",
         "summary": "YouTube 인터뷰 링크를 넣으면 클립 후보와 후킹 제목이 여기에 표시됩니다.",
         "sections": [],
@@ -508,7 +500,7 @@ def _story_content_for_storyline(storyline: Storyline) -> dict[str, Any]:
     if not storyline.edl_path:
         error = _storyline_error_message(storyline.error)
         return {
-            "summary": error or "스토리라인 생성 대기 중입니다.",
+            "summary": error or "릴스 생성 대기 중입니다.",
             "sections": [],
         }
     try:

@@ -69,18 +69,6 @@ def test_desktop_config_preserves_codex_model(tmp_path: Path, monkeypatch) -> No
     assert cfg.n_storylines == 3
 
 
-def test_desktop_config_always_starts_voice_isolation_off(tmp_path: Path, monkeypatch) -> None:
-    config_dir = tmp_path / "config"
-    (config_dir / "reels-editor").mkdir(parents=True)
-    (config_dir / "reels-editor" / "config.yaml").write_text(
-        "provider: codex-cli\nvoice_isolation: true\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_dir))
-
-    assert load_desktop_config().voice_isolation is False
-
-
 def test_storyteller_prompt_loads_from_resource_layout(tmp_path: Path, monkeypatch) -> None:
     prompt_dir = tmp_path / "prompts"
     prompt_dir.mkdir()
@@ -122,7 +110,6 @@ def test_desktop_api_dialog_seam_and_media_listing(tmp_path: Path) -> None:
     headers = {"Authorization": "Bearer test-token"}
 
     assert client.get("/api/health").json()["ok"] is True
-    assert client.post("/api/dialogs/open-folder", headers=headers).json() == {"path": "/chosen"}
     assert client.post("/api/dialogs/save-file", headers=headers, json={"suggested_name": "custom.mp4"}).json() == {
         "path": "/exports/custom.mp4"
     }

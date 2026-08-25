@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib.parse import parse_qs, urlparse
 
-from reels_editor.capcut import US
+from reels_editor.timebase import US
 
 YOUTUBE_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"})
 _MEDIA_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})

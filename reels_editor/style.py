@@ -39,7 +39,10 @@ class StylePreset:
     title_speaker_size: int = 30
     title_speaker_color: str = "#FFFFFF"
     title_speaker_gap: int = 18
-    episode_text: str = "[Ep 1 / 1000]"
+    title_anchor_y: int | None = None
+    watermark_image: Path | None = None
+    watermark_width: int | None = None
+    episode_text: str = "에피소드 1 / 1000"
     episode_size: int = 30
     episode_color: str = "#FFFFFF"
     episode_opacity: int = 255
@@ -55,6 +58,18 @@ def _font(font_dir: Path, name: str) -> Path:
     if not p.is_file():
         raise FileNotFoundError(
             f"폰트 없음: {p}\nPretendard를 설치하거나 style yaml의 font_dir를 수정하세요.")
+    return p
+
+
+def _asset(style_dir: Path, name: str | None) -> Path | None:
+    if not name:
+        return None
+    p = Path(name).expanduser()
+    if not p.is_absolute():
+        p = style_dir / p
+    p = p.resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"스타일 이미지 없음: {p}")
     return p
 
 
@@ -88,7 +103,10 @@ def load_style(path: Path) -> StylePreset:
         title_speaker_size=int(t.get("speaker_size", 30)),
         title_speaker_color=str(t.get("speaker_color", "#FFFFFF")),
         title_speaker_gap=int(t.get("speaker_gap", 18)),
-        episode_text=str(w.get("episode_text", "[Ep 1 / 1000]")),
+        title_anchor_y=int(t["anchor_y"]) if "anchor_y" in t else None,
+        watermark_image=_asset(path.parent, w.get("image")),
+        watermark_width=int(w["width"]) if "width" in w else None,
+        episode_text=str(w.get("episode_text", "에피소드 1 / 1000")),
         episode_size=int(w.get("episode_size", 30)),
         episode_color=str(w.get("episode_color", "#FFFFFF")),
         episode_opacity=int(w.get("episode_opacity", 255)),

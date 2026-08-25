@@ -12,14 +12,15 @@ from typing import Any
 
 import pytest
 
-from reels_editor.jobs import Job, JobService, JobServiceDeps, JobServiceError, JobStore, Status, Storyline
+from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceDeps, JobServiceError, JobStore, Status, Storyline
 from reels_editor import processes
 from reels_editor.render import RenderAssets
 from reels_editor.storyteller import StorylineResult
 from reels_editor.style import StylePreset
 from reels_editor.config import AppConfig
-from reels_editor.voice_isolation import IsolationResult
 from reels_editor.youtube import YouTubeSource
+
+TEST_URL = "https://youtu.be/founder"
 
 
 @dataclass
@@ -34,6 +35,7 @@ class Calls:
     max_active_base: int = 0
     active_base: int = 0
     base_version: int = 0
+    caption_requests: list[dict[str, Any]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -78,6 +80,7 @@ def _segments(video: Path) -> dict[str, Any]:
 
 def _doc(prefix: str) -> dict[str, Any]:
     return {
+        "speaker": {"name": "김현지", "role": "Founder"},
         "title_candidates": [
             {"text": f"{prefix} 제목 1", "keyword": "제목"},
             {"text": f"{prefix} 제목 2", "keyword": "제목"},
@@ -88,13 +91,28 @@ def _doc(prefix: str) -> dict[str, Any]:
     }
 
 
+def _candidates() -> list[ContentCandidate]:
+    types = ["story", "strategy", "failure", "principle"]
+    return [
+        ContentCandidate(
+            id=f"c{index + 1}",
+            content_type=types[index % len(types)],
+            title=f"서로 다른 후보 {index + 1}",
+            summary=f"후보 {index + 1}의 구체적인 내용",
+            takeaway=f"실행 교훈 {index + 1}",
+            segment_ids=["seg1"],
+        )
+        for index in range(10)
+    ]
+
+
 def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = None) -> JobServiceDeps:
     video = tmp_path / "source.mp4"
     video.write_bytes(b"source")
     style = _style(tmp_path)
     generated = results or [
-        StorylineResult(0, "정면승부형", _doc("A")),
-        StorylineResult(1, "반전형", _doc("B")),
+        StorylineResult(0, "정면승부형", _doc("https://youtu.be/A")),
+        StorylineResult(1, "반전형", _doc("https://youtu.be/B")),
         StorylineResult(2, "감정선형", _doc("C")),
     ]
 
@@ -130,23 +148,64 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         (work / "edl.json").write_text(__import__("json").dumps(doc), encoding="utf-8")
         (work / "segments.json").write_text(__import__("json").dumps(segments), encoding="utf-8")
 
+    def download(url: str, output_dir: Path, **_kwargs: Any) -> YouTubeSource:
+        transcript = output_dir / "source.ko.json3"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        transcript.write_text("{}", encoding="utf-8")
+        segments = _segments(video)
+        (output_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
+        title = url.rstrip("/").rsplit("/", 1)[-1]
+        return YouTubeSource(
+            video_path=video,
+            segments=segments,
+            title=title,
+            video_id=title,
+            source_url=url,
+            transcript_path=transcript,
+            transcript_language="ko",
+            transcript_kind="automatic",
+        )
+
+    def generate_caption(**kwargs: Any) -> str:
+        calls.caption_requests.append(kwargs)
+        return "Ep 2. 첫 고객을 만든 방법\n\n맥락\n\n전략\n\n교훈\n\n여러분은 무엇을 먼저 검증하고 있나요?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
+
     return JobServiceDeps(
-        find_project=lambda name: tmp_path / name,
-        load_project=lambda _path: {"draft": True},
-        build_segments=lambda _draft: _segments(video),
-        generate_many=lambda _segments, count, duration_s, **_kwargs: _count_generate(
+        analyze_candidates=lambda _segments, _types, **_kwargs: _candidates(),
+        generate_selected_candidates=lambda _segments, candidates, **_kwargs: _count_generate(
             calls,
-            generated[:count],
-            duration_s,
-            count,
+            generated[:len(candidates)],
+            35,
+            len(candidates),
             _kwargs["speed"],
         ),
+        generate_instagram_caption=generate_caption,
         build_runner=lambda cfg: _capture_provider(calls, cfg.provider),
         load_style=lambda _path: style,
         render_base_and_assets=render_base,
         render_overlay_variant=render_overlay,
         write_outputs=write_outputs,
         write_srt=lambda _groups, path: path.write_text("srt", encoding="utf-8") or path,
+        download_youtube_source=download,
+    )
+
+
+def _run_ready(
+    service: JobService,
+    url: str = TEST_URL,
+    *,
+    candidate_count: int = 3,
+    provider: str | None = None,
+    content_types: list[str] | None = None,
+):
+    analyzed = service.run_youtube_job_sync(
+        url,
+        provider=provider,
+        content_types=content_types,
+    )
+    return service.generate_selected_sync(
+        analyzed.id,
+        [candidate.id for candidate in analyzed.candidates[:candidate_count]],
     )
 
 
@@ -172,17 +231,17 @@ def _count_generate(
 def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism(tmp_path: Path) -> None:
     calls = Calls()
     results = [
-        StorylineResult(0, "정면승부형", _doc("A")),
+        StorylineResult(0, "정면승부형", _doc("https://youtu.be/A")),
         StorylineResult(1, "반전형", None, "LLM failed"),
         StorylineResult(2, "감정선형", _doc("C")),
     ]
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls, results))
 
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
 
     assert job.status is Status.FAILED
     assert job.phase == "partial-failure"
-    assert job.error == "대표 영상 2/3개만 준비되었습니다."
+    assert job.error == "선택한 릴스 2/3개만 준비되었습니다."
     assert [story.status for story in job.storylines] == [Status.READY, Status.FAILED, Status.READY]
     assert calls.generate == 1
     assert calls.base == 2
@@ -192,14 +251,57 @@ def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism
     assert not (Path(job.work_dir or "") / "s1" / "cuts").exists()
 
 
-def test_job_service_uses_duration_stored_on_each_job(tmp_path: Path) -> None:
+def test_job_service_analyzes_ten_candidates_then_generates_only_selected(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
 
-    job = service.run_job_sync("김현지대표인터뷰", duration_s=60)
+    analyzed = service.run_youtube_job_sync(
+        TEST_URL,
+        content_types=["strategy", "failure"],
+    )
 
-    assert job.duration_s == 60
-    assert calls.durations == [60]
+    assert analyzed.status is Status.AWAITING_SELECTION
+    assert analyzed.content_types == ["strategy", "failure"]
+    assert len(analyzed.candidates) == 10
+    assert analyzed.storylines == []
+    assert calls.generate == 0
+    assert calls.base == 0
+
+    generated = service.generate_selected_sync(analyzed.id, ["c2", "c7"])
+
+    assert generated.status is Status.READY
+    assert generated.selected_candidate_ids == ["c2", "c7"]
+    assert generated.n_storylines == 2
+    assert len(generated.storylines) == 2
+    assert calls.generate == 1
+    assert calls.base == 2
+
+
+def test_job_service_uses_fixed_35_second_target(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+
+    job = _run_ready(service)
+
+    assert job.duration_s == 35
+    assert calls.durations == [35]
+
+
+def test_job_service_generates_and_persists_caption_for_selected_reel(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+    ready = _run_ready(service, candidate_count=2)
+
+    updated = service.generate_instagram_caption(ready.id, "s2")
+
+    caption = updated.storylines[1].instagram_caption
+    assert caption.startswith("Ep 2. ")
+    assert service.store.load(ready.id).storylines[1].instagram_caption == caption
+    assert len(calls.caption_requests) == 1
+    request = calls.caption_requests[0]
+    assert request["episode_number"] == 2
+    assert request["candidate"]["id"] == "c2"
+    assert request["selected_title"].endswith("제목 1")
 
 
 def test_job_service_validates_storyline_length_with_configured_playback_speed(tmp_path: Path) -> None:
@@ -210,7 +312,7 @@ def test_job_service_validates_storyline_length_with_configured_playback_speed(t
         config=AppConfig(provider="codex-cli", style={"speed": 1.45}),
     )
 
-    service.run_job_sync("김현지대표인터뷰", duration_s=60)
+    _run_ready(service)
 
     assert calls.speeds == [1.45]
 
@@ -227,9 +329,12 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     def download(url: str, output_dir: Path, **kwargs: Any) -> YouTubeSource:
         download_args.update({"url": url, "output_dir": output_dir, **kwargs})
         kwargs["progress_cb"](0.5)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        segments = _segments(video)
+        (output_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
         return YouTubeSource(
             video_path=video,
-            segments=_segments(video),
+            segments=segments,
             title="1시간 창업가 인터뷰",
             video_id="abc123",
             source_url=url,
@@ -243,21 +348,16 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
         deps=replace(deps, download_youtube_source=download),
     )
 
-    job = service.run_youtube_job_sync(
-        "https://www.youtube.com/watch?v=abc123",
-        duration_s=60,
-    )
+    job = _run_ready(service, "https://www.youtube.com/watch?v=abc123")
 
     assert job.status is Status.READY
-    assert job.source_type == "youtube"
     assert job.source_url == "https://www.youtube.com/watch?v=abc123"
-    assert job.project_path is None
     assert job.project_name == "1시간 창업가 인터뷰"
     assert job.input_path == str(video)
     assert job.transcript_language == "ko"
     assert job.transcript_kind == "automatic"
     assert download_args["output_dir"] == tmp_path / "jobs" / job.id / "source"
-    assert calls.durations == [60]
+    assert calls.durations == [35]
     assert calls.base == 3
 
 
@@ -266,7 +366,6 @@ def test_youtube_job_reuses_complete_prior_download_for_same_video_id(tmp_path: 
     deps = _deps(tmp_path, calls)
     store = JobStore(tmp_path / "jobs")
     prior = store.create_job(
-        source_type="youtube",
         source_url="https://www.youtube.com/watch?v=abc123&si=old",
         project_name="이전 작업 제목",
     )
@@ -294,7 +393,7 @@ def test_youtube_job_reuses_complete_prior_download_for_same_video_id(tmp_path: 
         deps=replace(deps, download_youtube_source=unexpected_download),
     )
 
-    job = service.run_youtube_job_sync("https://youtu.be/abc123?si=new")
+    job = _run_ready(service, "https://youtu.be/abc123?si=new")
 
     assert job.status is Status.READY
     assert job.project_name == "캐시된 창업가 인터뷰"
@@ -305,29 +404,25 @@ def test_youtube_job_reuses_complete_prior_download_for_same_video_id(tmp_path: 
     assert calls.base == 3
 
 
-def test_job_service_uses_storyline_count_and_provider_stored_on_each_job(tmp_path: Path) -> None:
+def test_job_service_uses_selected_candidate_count_and_provider(tmp_path: Path) -> None:
     calls = Calls()
     results = [StorylineResult(index, f"관점 {index + 1}", _doc(str(index + 1))) for index in range(10)]
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls, results))
 
-    job = service.run_job_sync(
-        "김현지대표인터뷰",
-        n_storylines=10,
-        provider="claude-cli",
-    )
+    job = _run_ready(service, candidate_count=10, provider="claude-cli")
 
     assert job.n_storylines == 10
     assert job.provider == "claude-cli"
     assert len(job.storylines) == 10
     assert calls.storyline_counts == [10]
-    assert calls.providers == ["claude-cli"]
+    assert calls.providers == ["claude-cli", "claude-cli"]
 
 
 def test_job_service_reports_detailed_progress_during_rendering(tmp_path: Path) -> None:
     calls = Calls()
     entered_render = threading.Event()
     release_render = threading.Event()
-    deps = _deps(tmp_path, calls, [StorylineResult(0, "정면승부형", _doc("A"))])
+    deps = _deps(tmp_path, calls, [StorylineResult(0, "정면승부형", _doc("https://youtu.be/A"))])
     render_base = deps.render_base_and_assets
 
     def blocking_render_base(*args, **kwargs):
@@ -337,14 +432,15 @@ def test_job_service_reports_detailed_progress_during_rendering(tmp_path: Path) 
 
     deps = JobServiceDeps(**{**deps.__dict__, "render_base_and_assets": blocking_render_base})
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
-    job = service.start_job("김현지대표인터뷰", n_storylines=1)
+    analyzed = service.run_youtube_job_sync(TEST_URL)
+    job = service.start_selected_generation(analyzed.id, ["c1"])
 
     try:
         assert entered_render.wait(2)
         current = service.store.load(job.id)
         assert current.phase == "rendering"
         assert current.progress > 0.28
-        assert "스토리라인 1" in (current.message or "")
+        assert "릴스 1" in (current.message or "")
         assert "세로 영상" in (current.message or "")
     finally:
         release_render.set()
@@ -364,7 +460,7 @@ def test_job_service_all_fail_does_not_render(tmp_path: Path) -> None:
     ]
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls, results))
 
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
 
     assert job.status is Status.FAILED
     assert calls.base == 0
@@ -374,7 +470,7 @@ def test_job_service_all_fail_does_not_render(tmp_path: Path) -> None:
 def test_selection_change_rerenders_overlay_only_and_exports_one_selected(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
     before = (calls.generate, calls.base, calls.overlay)
 
     selected_story_change = service.select_variant(job.id, "s1", title_index=1, subtitles_on=False)
@@ -420,7 +516,7 @@ def test_selection_change_rerenders_overlay_only_and_exports_one_selected(tmp_pa
 def test_export_reconciles_requested_subtitle_variant_before_copy(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
     before = calls.overlay
     destination = tmp_path / "exported-nosub.mp4"
 
@@ -435,7 +531,7 @@ def test_export_reconciles_requested_subtitle_variant_before_copy(tmp_path: Path
 def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
     destination = tmp_path / "exports"
 
     exported = service.export_many(
@@ -445,102 +541,52 @@ def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Pat
         subtitles_on=False,
     )
 
-    assert sorted(path.name for path in destination.glob("storyline-*.mp4")) == [
-        "storyline-1.mp4",
-        "storyline-3.mp4",
+    assert sorted(path.name for path in destination.glob("*.mp4")) == [
+        "김현지 - 1.mp4",
+        "김현지 - 3.mp4",
     ]
     assert sorted(path.name for path in destination.glob("*.manifest.json")) == [
-        "storyline-1.mp4.manifest.json",
-        "storyline-3.mp4.manifest.json",
+        "김현지 - 1.mp4.manifest.json",
+        "김현지 - 3.mp4.manifest.json",
     ]
-    assert all(b":False" in path.read_bytes() for path in destination.glob("storyline-*.mp4"))
+    assert all(b":False" in path.read_bytes() for path in destination.glob("*.mp4"))
     assert exported.export.output_path == str(destination)
 
 
-def test_export_applies_voice_isolator_once_and_records_manifest(tmp_path: Path) -> None:
+def test_export_filename_uses_sanitized_founder_name_and_storyline_number(tmp_path: Path) -> None:
     calls = Calls()
-    enhanced_sources: list[Path] = []
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+    job = _run_ready(service)
+    story = next(story for story in job.storylines if story.id == "s3")
+    assert story.edl_path is not None
+    doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
+    doc["speaker"] = {"name": 'Founder: "Build/Ship?" | Interview', "role": "CEO"}
+    Path(story.edl_path).write_text(json.dumps(doc), encoding="utf-8")
 
-    def enhance(source: Path, output: Path, *, cache_dir: Path, api_key: str) -> IsolationResult:
-        assert api_key == "xi-test-key"
-        assert cache_dir.name == ".voice-isolation"
-        enhanced_sources.append(source)
-        output.write_bytes(b"voice-isolated")
-        return IsolationResult(output, cache_hit=False, audio_hash="abc123")
-
-    deps = replace(
-        _deps(tmp_path, calls),
-        enhance_export_video=enhance,
-        resolve_voice_isolation_key=lambda: "xi-test-key",
+    assert service.suggested_export_filename(job.id, "s3") == (
+        "Founder Build Ship Interview - 3.mp4"
     )
-    service = JobService(
-        store=JobStore(tmp_path / "jobs"),
-        deps=deps,
-        config=AppConfig(provider="codex-cli", voice_isolation=False),
-    )
-    job = service.run_job_sync("김현지대표인터뷰", voice_isolation=True)
-    destination = tmp_path / "isolated.mp4"
-
-    service.export_selected(job.id, destination, storyline_id="s1")
-
-    assert destination.read_bytes() == b"voice-isolated"
-    assert len(enhanced_sources) == 1
-    manifest = json.loads((tmp_path / "isolated.mp4.manifest.json").read_text(encoding="utf-8"))
-    assert manifest["voice_isolation"] is True
-    assert manifest["speech_enhancement"] is True
-    assert manifest["voice_isolation_cache_hit"] is False
-    assert manifest["voice_isolation_audio_hash"] == "abc123"
 
 
-def test_export_requires_elevenlabs_key_when_voice_isolation_enabled(tmp_path: Path) -> None:
-    deps = replace(
-        _deps(tmp_path, Calls()),
-        resolve_voice_isolation_key=lambda: None,
-    )
-    service = JobService(
-        store=JobStore(tmp_path / "jobs"),
-        deps=deps,
-        config=AppConfig(provider="codex-cli", voice_isolation=False),
-    )
-    job = service.run_job_sync("김현지대표인터뷰", voice_isolation=True)
+def test_export_filename_stays_within_filesystem_component_limit(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+    job = _run_ready(service)
+    story = next(story for story in job.storylines if story.id == "s1")
+    assert story.edl_path is not None
+    doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
+    doc["speaker"] = {"name": "매우 긴 창업가 이름" * 100, "role": "CEO"}
+    Path(story.edl_path).write_text(json.dumps(doc), encoding="utf-8")
 
-    with pytest.raises(JobServiceError, match="ElevenLabs API key"):
-        service.export_selected(job.id, tmp_path / "missing-key.mp4", storyline_id="s1")
+    filename = service.suggested_export_filename(job.id, "s1")
 
-
-def test_export_keeps_job_voice_isolation_choice_after_global_setting_changes(tmp_path: Path) -> None:
-    enhanced_sources: list[Path] = []
-
-    def enhance(source: Path, output: Path, *, cache_dir: Path, api_key: str) -> IsolationResult:
-        enhanced_sources.append(source)
-        output.write_bytes(b"unexpected")
-        return IsolationResult(output, cache_hit=False, audio_hash="unused")
-
-    deps = replace(
-        _deps(tmp_path, Calls()),
-        enhance_export_video=enhance,
-        resolve_voice_isolation_key=lambda: "xi-test-key",
-    )
-    service = JobService(
-        store=JobStore(tmp_path / "jobs"),
-        deps=deps,
-        config=AppConfig(provider="codex-cli", voice_isolation=False),
-    )
-    job = service.run_job_sync("김현지대표인터뷰", voice_isolation=False)
-    service.config = replace(service.config, voice_isolation=True)
-    destination = tmp_path / "original-audio.mp4"
-
-    service.export_selected(job.id, destination, storyline_id="s1")
-
-    assert enhanced_sources == []
-    manifest = json.loads((tmp_path / "original-audio.mp4.manifest.json").read_text(encoding="utf-8"))
-    assert manifest["voice_isolation"] is False
-    assert manifest["speech_enhancement"] is False
+    assert filename.endswith(" - 1.mp4")
+    assert len(filename.encode("utf-8")) <= 255
 
 
 def test_batch_export_rejects_empty_selection(tmp_path: Path) -> None:
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, Calls()))
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
 
     with pytest.raises(JobServiceError, match="at least one"):
         service.export_many(job.id, tmp_path / "exports", storyline_ids=[])
@@ -549,7 +595,7 @@ def test_batch_export_rejects_empty_selection(tmp_path: Path) -> None:
 def test_export_rejects_unselected_storyline_request(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
 
     with pytest.raises(JobServiceError, match="not selected"):
         service.export_selected(job.id, tmp_path / "wrong.mp4", storyline_id="s2")
@@ -558,7 +604,7 @@ def test_export_rejects_unselected_storyline_request(tmp_path: Path) -> None:
 def test_stale_overlay_request_is_suppressed(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
     story = next(item for item in job.storylines if item.id == "s1")
     story.render_request_id = 9
     job = service.store.save(job)
@@ -575,7 +621,7 @@ def test_stale_overlay_request_is_suppressed(tmp_path: Path) -> None:
 def test_retry_invalidates_old_overlay_cache_for_same_title_choice(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
     alternate = service.select_variant(job.id, "s1", title_index=1, subtitles_on=False)
     story = next(item for item in alternate.storylines if item.id == "s1")
     old_variant_path = Path(story.active_variant_path or "")
@@ -611,7 +657,6 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
     video.write_bytes(b"cached-video")
     job = Job(
         id="recover-job",
-        source_type="youtube",
         input_path=str(video),
         duration_s=30,
         n_storylines=1,
@@ -645,17 +690,17 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
 def test_cancel_marks_active_job_and_blocks_second_active_job(tmp_path: Path) -> None:
     calls = Calls()
 
-    def slow_generate(*_args, **_kwargs):
+    def slow_analyze(*_args, **_kwargs):
         time.sleep(0.2)
-        return [StorylineResult(0, "정면승부형", _doc("A"))]
+        return _candidates()
 
     deps = _deps(tmp_path, calls)
-    deps = JobServiceDeps(**{**deps.__dict__, "generate_many": slow_generate})
+    deps = JobServiceDeps(**{**deps.__dict__, "analyze_candidates": slow_analyze})
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
-    job = service.start_job("김현지대표인터뷰")
+    job = service.start_youtube_job(TEST_URL)
 
     with pytest.raises(JobServiceError):
-        service.start_job("다른프로젝트")
+        service.start_youtube_job("https://youtu.be/other")
 
     cancelled = service.cancel(job.id)
     time.sleep(0.25)
@@ -669,31 +714,31 @@ def test_cancelled_job_cannot_resume_after_new_job_replaces_active_slot(tmp_path
     release_generate = threading.Event()
     entered_generate = threading.Event()
 
-    def slow_generate(*_args, **_kwargs):
+    def slow_analyze(*_args, **_kwargs):
         entered_generate.set()
         release_generate.wait(2)
-        return [StorylineResult(0, "정면승부형", _doc("A"))]
+        return _candidates()
 
     deps = _deps(tmp_path, calls)
-    deps = JobServiceDeps(**{**deps.__dict__, "generate_many": slow_generate})
+    deps = JobServiceDeps(**{**deps.__dict__, "analyze_candidates": slow_analyze})
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
-    job_a = service.start_job("A")
+    job_a = service.start_youtube_job("https://youtu.be/A")
     assert entered_generate.wait(2)
     cancelled_a = service.cancel(job_a.id)
 
     with pytest.raises(JobServiceError):
-        service.start_job("B")
+        service.start_youtube_job("https://youtu.be/B")
 
     release_generate.set()
     time.sleep(0.25)
 
-    job_b = service.start_job("B")
+    job_b = service.start_youtube_job("https://youtu.be/B")
     time.sleep(0.25)
 
     assert cancelled_a.status is Status.CANCELLED
     assert service.store.load(job_a.id).status is Status.CANCELLED
-    assert service.store.load(job_b.id).status is Status.FAILED
-    assert service.store.load(job_b.id).phase == "partial-failure"
+    assert service.store.load(job_b.id).status is Status.AWAITING_SELECTION
+    assert service.store.load(job_b.id).phase == "awaiting_selection"
     assert service.store.load(job_b.id).project_name == "B"
 
 
@@ -701,14 +746,14 @@ def test_cancel_terminates_runner_process_spawned_inside_generation_thread(tmp_p
     calls = Calls()
     pid_file = tmp_path / "runner.pid"
 
-    def threaded_generate_many(*_args, runner, **_kwargs):
+    def threaded_analyze(*_args, runner, **_kwargs):
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(runner, "prompt")
             try:
                 future.result()
-            except RuntimeError as exc:
-                return [StorylineResult(0, "정면승부형", None, str(exc))]
-        return [StorylineResult(0, "정면승부형", _doc("A"))]
+            except RuntimeError:
+                return _candidates()
+        return _candidates()
 
     def build_runner(_cfg):
         def runner(_prompt: str) -> str:
@@ -727,9 +772,9 @@ def test_cancel_terminates_runner_process_spawned_inside_generation_thread(tmp_p
         return runner
 
     deps = _deps(tmp_path, calls)
-    deps = JobServiceDeps(**{**deps.__dict__, "generate_many": threaded_generate_many, "build_runner": build_runner})
+    deps = JobServiceDeps(**{**deps.__dict__, "analyze_candidates": threaded_analyze, "build_runner": build_runner})
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
-    job = service.start_job("김현지대표인터뷰")
+    job = service.start_youtube_job(TEST_URL)
 
     deadline = time.time() + 5
     while not pid_file.is_file() and time.time() < deadline:
@@ -777,7 +822,7 @@ def test_cancel_terminates_overlay_process_and_blocks_new_job_until_done(tmp_pat
 
     deps = replace(deps, render_overlay_variant=render_overlay)
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
-    job = service.run_job_sync("김현지대표인터뷰")
+    job = _run_ready(service)
     slow_overlay.set()
     errors: list[BaseException] = []
     thread = threading.Thread(
@@ -799,7 +844,7 @@ def test_cancel_terminates_overlay_process_and_blocks_new_job_until_done(tmp_pat
     pid = int(pid_file.read_text(encoding="utf-8"))
 
     with pytest.raises(JobServiceError):
-        service.start_job("B")
+        service.start_youtube_job("https://youtu.be/B")
 
     service.cancel(job.id)
     thread.join(timeout=3)
@@ -810,19 +855,19 @@ def test_cancel_terminates_overlay_process_and_blocks_new_job_until_done(tmp_pat
     assert service.store.load(job.id).status is Status.CANCELLED
 
     slow_overlay.clear()
-    replacement = service.start_job("B")
+    replacement = service.start_youtube_job("https://youtu.be/B")
     deadline = time.time() + 3
-    while service.store.load(replacement.id).status is not Status.READY and time.time() < deadline:
+    while service.store.load(replacement.id).status is not Status.AWAITING_SELECTION and time.time() < deadline:
         time.sleep(0.05)
-    assert service.store.load(replacement.id).status is Status.READY
+    assert service.store.load(replacement.id).status is Status.AWAITING_SELECTION
 
 
 def test_overlay_completion_does_not_release_active_slot_while_base_renders_continue(tmp_path: Path) -> None:
     calls = Calls()
     release_remaining = threading.Event()
     results = [
-        StorylineResult(0, "정면승부형", _doc("A")),
-        StorylineResult(1, "반전형", _doc("B")),
+        StorylineResult(0, "정면승부형", _doc("https://youtu.be/A")),
+        StorylineResult(1, "반전형", _doc("https://youtu.be/B")),
         StorylineResult(2, "감정선형", _doc("C")),
     ]
     deps = _deps(tmp_path, calls, results)
@@ -835,7 +880,8 @@ def test_overlay_completion_does_not_release_active_slot_while_base_renders_cont
 
     deps = JobServiceDeps(**{**deps.__dict__, "render_base_and_assets": staged_render_base})
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
-    job = service.start_job("김현지대표인터뷰")
+    analyzed = service.run_youtube_job_sync(TEST_URL)
+    job = service.start_selected_generation(analyzed.id, ["c1", "c2", "c3"])
 
     deadline = time.time() + 3
     while time.time() < deadline:
@@ -849,7 +895,7 @@ def test_overlay_completion_does_not_release_active_slot_while_base_renders_cont
     service.select_variant(job.id, "s1", title_index=1, subtitles_on=False)
 
     with pytest.raises(JobServiceError, match="another job is already active"):
-        service.start_job("replacement")
+        service.start_youtube_job("https://youtu.be/replacement")
 
     service.cancel(job.id)
     release_remaining.set()

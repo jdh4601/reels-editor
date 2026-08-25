@@ -4,13 +4,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 
 
 class Status(StrEnum):
     IDLE = "idle"
     LOADING = "loading"
     GENERATING = "generating"
+    AWAITING_SELECTION = "awaiting_selection"
     RENDERING_BASE = "rendering_base"
     RENDERING_OVERLAY = "rendering_overlay"
     READY = "ready"
@@ -105,6 +106,7 @@ class Storyline:
     doc_path: str | None = None
     segments_path: str | None = None
     revision: int = 0
+    instagram_caption: str = ""
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -128,6 +130,7 @@ class Storyline:
             "doc_path": self.doc_path,
             "segments_path": self.segments_path,
             "revision": self.revision,
+            "instagram_caption": self.instagram_caption,
             "error": self.error,
         }
 
@@ -156,6 +159,7 @@ class Storyline:
             doc_path=data.get("doc_path"),
             segments_path=data.get("segments_path"),
             revision=int(data.get("revision", 0)),
+            instagram_caption=str(data.get("instagram_caption", "")),
             error=data.get("error"),
         )
 
@@ -209,6 +213,37 @@ class Artifact:
 
 
 @dataclass
+class ContentCandidate:
+    id: str
+    content_type: str
+    title: str
+    summary: str
+    takeaway: str
+    segment_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "content_type": self.content_type,
+            "title": self.title,
+            "summary": self.summary,
+            "takeaway": self.takeaway,
+            "segment_ids": self.segment_ids,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ContentCandidate:
+        return cls(
+            id=str(data.get("id", "")),
+            content_type=str(data.get("content_type", "")),
+            title=str(data.get("title", "")),
+            summary=str(data.get("summary", "")),
+            takeaway=str(data.get("takeaway", "")),
+            segment_ids=[str(item) for item in data.get("segment_ids", [])],
+        )
+
+
+@dataclass
 class Job:
     id: str
     status: Status = Status.IDLE
@@ -216,9 +251,7 @@ class Job:
     updated_at: str = ""
     input_path: str | None = None
     output_dir: str | None = None
-    project_path: str | None = None
     project_name: str | None = None
-    source_type: str = "capcut"
     source_url: str | None = None
     transcript_language: str | None = None
     transcript_kind: str | None = None
@@ -227,7 +260,9 @@ class Job:
     model: str | None = None
     duration_s: int = 30
     n_storylines: int = 3
-    voice_isolation: bool = False
+    content_types: list[str] = field(default_factory=list)
+    candidates: list[ContentCandidate] = field(default_factory=list)
+    selected_candidate_ids: list[str] = field(default_factory=list)
     phase: str | None = None
     progress: float = 0.0
     message: str | None = None
@@ -250,9 +285,7 @@ class Job:
             "updated_at": self.updated_at,
             "input_path": self.input_path,
             "output_dir": self.output_dir,
-            "project_path": self.project_path,
             "project_name": self.project_name,
-            "source_type": self.source_type,
             "source_url": self.source_url,
             "transcript_language": self.transcript_language,
             "transcript_kind": self.transcript_kind,
@@ -261,7 +294,9 @@ class Job:
             "model": self.model,
             "duration_s": self.duration_s,
             "n_storylines": self.n_storylines,
-            "voice_isolation": self.voice_isolation,
+            "content_types": self.content_types,
+            "candidates": [candidate.to_dict() for candidate in self.candidates],
+            "selected_candidate_ids": self.selected_candidate_ids,
             "phase": self.phase,
             "progress": self.progress,
             "message": self.message,
@@ -293,9 +328,7 @@ class Job:
             updated_at=str(data.get("updated_at", "")),
             input_path=data.get("input_path"),
             output_dir=data.get("output_dir"),
-            project_path=data.get("project_path"),
             project_name=data.get("project_name"),
-            source_type=str(data.get("source_type", "capcut")),
             source_url=data.get("source_url"),
             transcript_language=data.get("transcript_language"),
             transcript_kind=data.get("transcript_kind"),
@@ -304,7 +337,13 @@ class Job:
             model=data.get("model"),
             duration_s=int(data.get("duration_s", 30)),
             n_storylines=int(data.get("n_storylines", 3)),
-            voice_isolation=bool(data.get("voice_isolation", False)),
+            content_types=[str(item) for item in data.get("content_types", [])],
+            candidates=[
+                ContentCandidate.from_dict(item)
+                for item in data.get("candidates", [])
+                if isinstance(item, dict)
+            ],
+            selected_candidate_ids=[str(item) for item in data.get("selected_candidate_ids", [])],
             phase=data.get("phase"),
             progress=float(data.get("progress", 0.0)),
             message=data.get("message"),

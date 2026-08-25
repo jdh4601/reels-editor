@@ -9,14 +9,14 @@ Use a pywebview macOS `.app` shell around a loopback-only FastAPI/Uvicorn
 process and a bundled React/Vite dashboard. Keep the existing Python editing
 engine in-process and package the app as a PyInstaller `onedir` bundle.
 
-The GUI always uses the locally authenticated OpenAI Codex CLI. Generated
-video remains local, and only JobStore-registered artifacts are exposed to the
-webview through token-protected byte-range URLs.
+The GUI uses the configured AI provider. Generated video remains local, and
+only JobStore-registered artifacts are exposed to the webview through
+token-protected byte-range URLs.
 
 ## Rationale
 
-- Python continues to own CapCut parsing, Codex execution, ffmpeg rendering,
-  persistence, cancellation, and export without a second IPC runtime.
+- Python continues to own YouTube source preparation, AI execution, ffmpeg
+  rendering, persistence, cancellation, and export without a second IPC runtime.
 - React provides the three-storyline comparison surface while pywebview keeps
   native folder and save dialogs.
 - An ephemeral loopback port plus a per-launch token limits the local HTTP

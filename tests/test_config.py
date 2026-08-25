@@ -15,7 +15,6 @@ def test_load_config_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert cfg.provider == "claude-cli"
     assert cfg.model == ""
     assert cfg.n_storylines == 3
-    assert cfg.voice_isolation is False
     assert cfg.style == {}
 
 
@@ -26,13 +25,6 @@ def test_load_config_partial_override(tmp_path: Path) -> None:
     assert cfg.provider == "kimi"
     assert cfg.n_storylines == 3          # 미지정은 기본값
     assert cfg.style == {"sub_size": 52}
-
-
-def test_load_config_accepts_voice_isolation_setting(tmp_path: Path) -> None:
-    p = tmp_path / "config.yaml"
-    p.write_text("voice_isolation: true\n", encoding="utf-8")
-
-    assert load_config(p).voice_isolation is True
 
 
 @pytest.mark.parametrize("speed", [1.0, 1.5])
@@ -174,9 +166,3 @@ def test_resolve_api_key_env_wins(tmp_path: Path, monkeypatch) -> None:
 def test_resolve_api_key_missing(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv(KEY_ENV_VARS["kimi"], raising=False)
     assert resolve_api_key("kimi", tmp_path / "none.yaml") is None
-
-
-def test_resolve_elevenlabs_api_key_from_environment(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "xi-environment")
-
-    assert resolve_api_key("elevenlabs", tmp_path / "none.yaml") == "xi-environment"

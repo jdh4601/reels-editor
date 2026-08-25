@@ -25,13 +25,34 @@ def test_group_captions_merges_short_fragments() -> None:
     assert [group[2] for group in groups] == ["결국은 제가 시장을 설득하는 것입니다"]
 
 
-def test_group_captions_keeps_long_sentence_complete() -> None:
+def test_group_captions_splits_long_sentence_at_semantic_clauses() -> None:
     groups = render.group_captions(
         [[0.0, 4.0, "고객이 원하는 것을 모르고 제품부터 만들면 정말 오래 헤매게 됩니다"]],
         max_chars=20,
     )
 
-    assert groups == [[0.0, 4.0, "고객이 원하는 것을 모르고 제품부터 만들면 정말 오래 헤매게 됩니다"]]
+    assert [group[2] for group in groups] == [
+        "고객이 원하는 것을 모르고",
+        "제품부터 만들면",
+        "정말 오래 헤매게 됩니다",
+    ]
+    assert groups[0][0] == 0.0
+    assert groups[-1][1] == 4.0
+
+
+def test_group_captions_splits_subscription_sentence_like_real_reel() -> None:
+    groups = render.group_captions([[
+        0.0,
+        6.0,
+        "왜냐하면 이제 우리는 구독 사업이었고, 그 말은 선불로 받는 돈은 줄고 나중에 받는 돈은 늘어난다는 뜻이었죠.",
+    ]])
+
+    assert [group[2] for group in groups] == [
+        "왜냐하면 이제 우리는 구독 사업이었고",
+        "그 말은 선불로 받는 돈은 줄고",
+        "나중에 받는 돈은 늘어난다는 뜻이었죠",
+    ]
+    assert all(len(group[2]) <= 22 for group in groups)
 
 
 def test_group_captions_never_mixes_start_of_next_sentence() -> None:
@@ -93,27 +114,39 @@ def test_group_captions_keeps_ascii_quoted_sentence_together() -> None:
     ]
 
 
-def test_group_captions_does_not_split_inside_open_quote() -> None:
+def test_group_captions_splits_embedded_quote_at_sentence_boundaries() -> None:
     groups = render.group_captions([[
         0.0,
         3.0,
         '그는 "실패했습니다. 다시 시작했습니다."라고 말했습니다.',
     ]])
 
-    assert groups == [[
-        0.0,
-        3.0,
-        '그는 "실패했습니다 다시 시작했습니다"라고 말했습니다',
-    ]]
+    assert len(groups) >= 2
+    assert all(len(group[2]) <= 22 for group in groups)
+    assert all(group[2].count('"') % 2 == 0 for group in groups)
 
 
-def test_group_captions_keeps_curly_quoted_sentence_together() -> None:
+def test_group_captions_balances_curly_quotes_after_display_split() -> None:
     groups = render.group_captions([
         [0.0, 0.8, "그는 “아무도 답을"],
         [0.8, 1.8, "몰랐습니다.”라고 말했습니다."],
     ])
 
-    assert groups == [[0.0, 1.8, "그는 “아무도 답을 몰랐습니다”라고 말했습니다"]]
+    assert len(groups) >= 2
+    assert all(len(group[2]) <= 20 for group in groups)
+    assert all(group[2].count("“") == group[2].count("”") for group in groups)
+
+
+def test_group_captions_splits_long_quote_without_unbalanced_quote_marks() -> None:
+    groups = render.group_captions([[
+        0.0,
+        8.0,
+        '"좋아 나는 존재하지 않는 무언가를 만들고 있어 만약 모두에게 제한 없이 열려면 계속 나아가야 해."',
+    ]])
+
+    assert len(groups) >= 3
+    assert all(len(group[2]) <= 22 for group in groups)
+    assert all('"' not in group[2] for group in groups)
 
 
 def test_group_captions_rejects_unfinished_sentence_and_open_quote() -> None:
@@ -128,6 +161,17 @@ def test_split_by_keywords_marks_highlight() -> None:
 
 def test_split_by_keywords_no_match() -> None:
     assert render.split_by_keywords("평범한 문장", ["없는말"]) == [("평범한 문장", False)]
+
+
+def test_sparse_subtitle_highlights_are_rare_and_never_consecutive() -> None:
+    groups = [[float(i), float(i + 1), f"핵심 고객 문제 {i}"] for i in range(12)]
+
+    plan = render.sparse_subtitle_highlights(groups, ["핵심", "고객", "문제"])
+
+    highlighted = [index for index, keywords in enumerate(plan) if keywords]
+    assert len(highlighted) == 2
+    assert all(len(plan[index]) == 1 for index in highlighted)
+    assert all(right - left >= 3 for left, right in zip(highlighted, highlighted[1:]))
 
 
 def test_build_base_filter_has_pad_for_bars(edl_doc: dict, segments: dict) -> None:

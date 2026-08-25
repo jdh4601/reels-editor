@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from reels_editor.capcut import US
 from reels_editor import processes
+from reels_editor.timebase import US
 
 
 def srt_timestamp(seconds: float) -> str:
@@ -38,7 +38,7 @@ def cut_filter(segs: list[dict], speed: float) -> str:
 
 def export_cuts(video_path: Path, edl_doc: dict, segments: dict,
                 out_dir: Path, speed: float) -> list[Path]:
-    """비트별 클립(배속 적용) — CapCut에서 부분 교체용."""
+    """비트별 클립을 배속 적용해 개별 MP4로 저장한다."""
     if not 0.5 <= speed <= 2.0:
         raise ValueError(f"speed {speed}는 ffmpeg atempo 지원 범위(0.5~2.0)를 벗어남")
     idx = {s["id"]: s for s in segments["segments"]}

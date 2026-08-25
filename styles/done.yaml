@@ -14,28 +14,31 @@ title:
   color: "#FF7A00"       # 상단 후킹 제목 전체 오렌지
   highlight: "#FF7A00"
   max_lines: 1
-  speaker_size: 40      # 제목 아래 화자 이름·직함
+  speaker_size: 46      # 제목 아래 화자 이름·직함을 더 크게 표시
   speaker_color: "#FFFFFF"
-  speaker_gap: 10
+  speaker_gap: 40       # 주황 제목은 고정하고 흰색 화자 정보만 아래로 이동
+  anchor_y: 1185        # 화자 정보가 있을 때 주황 제목 중심, 캔버스 y≈368px
 subtitle:
   font: Pretendard-Bold.otf
   size: 40              # 편집기 표기 8 × 5
   opacity: 255          # 100%
   color: "#FFFFFF"
-  highlight: "#FF3B30"   # 자막 키워드 레드
+  highlight: "#FFFFFF"   # 자막은 강조색 없이 모두 흰색
   box_alpha: 200         # 검정 박스 불투명도 0-255
   y: -400                # 중앙 원점 편집 좌표(음수=아래), 캔버스 중심 y=1160px
   y_frac: 0.85           # 영상 영역 높이 기준 자막 baseline 위치(0=상단, 1=하단)
 watermark:
-  text: "D.one"
+  text: ""
+  image: assets/D.one.png
+  width: 212            # 제공된 SVG의 원본 표시 폭 유지
   font: Pretendard-Bold.otf
   size: 75              # 편집기 표기 15 × 5
-  opacity: 128          # 50%
-  y: -1560              # D.one 중심을 하단 여백 깊숙이 배치, 캔버스 y=1740px
-  episode_text: "[Ep 1 / 1000]"
-  episode_size: 40      # 상단 화자 정보와 같은 크기
+  opacity: 255          # SVG에 지정된 60% 투명도를 그대로 사용
+  y: -1450              # 새 로고 중심 위치 유지, 캔버스 y=1685px
+  episode_text: "에피소드 1 / 1000"
+  episode_size: 48      # 에피소드 문구를 더 크고 선명하게 표시
   episode_color: "#FFFFFF"
   episode_opacity: 255
   episode_gap: 18
-  episode_y: -900       # 에피소드 문구는 영상 바로 아래, 캔버스 y=1410px
+  episode_y: -1000      # 에피소드 문구를 조금 아래로 이동, 캔버스 y=1460px
 speed: 1.2

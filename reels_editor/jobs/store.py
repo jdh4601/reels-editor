@@ -26,16 +26,14 @@ class JobStore:
         *,
         input_path: str | None = None,
         output_dir: str | None = None,
-        project_path: str | None = None,
         project_name: str | None = None,
-        source_type: str = "capcut",
         source_url: str | None = None,
         work_dir: str | None = None,
         provider: str | None = None,
         model: str | None = None,
         duration_s: int = 30,
         n_storylines: int = 3,
-        voice_isolation: bool = False,
+        content_types: list[str] | None = None,
         job_id: str | None = None,
     ) -> Job:
         now = _now()
@@ -45,16 +43,14 @@ class JobStore:
             updated_at=now,
             input_path=input_path,
             output_dir=output_dir,
-            project_path=project_path,
             project_name=project_name,
-            source_type=source_type,
             source_url=source_url,
             work_dir=work_dir,
             provider=provider,
             model=model,
             duration_s=duration_s,
             n_storylines=n_storylines,
-            voice_isolation=voice_isolation,
+            content_types=list(content_types or []),
         )
         saved = self.save(job)
         self._write_current(saved.id)

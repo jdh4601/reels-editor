@@ -1,31 +1,35 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import threading
 import hashlib
+import os
+import re
+import shutil
+import subprocess
+import threading
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from reels_editor import capcut, edl, export, render, voice_isolation, youtube
-from reels_editor.config import AppConfig, merged_style, resolve_api_key
+from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, youtube
+from reels_editor.config import AppConfig, merged_style
 from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
-from reels_editor.storyteller import StorylineResult, generate_many, generate_script
+from reels_editor.storyteller import StorylineResult, generate_script
 from reels_editor.style import StylePreset, load_style
 
-from .models import ExportState, Job, Status, Storyline, Variant
+from .models import ContentCandidate, ExportState, Job, Status, Storyline, Variant
 from .store import JobStore
 
 DEFAULT_STYLE = Path(__file__).parent.parent.parent / "styles" / "done.yaml"
 MAX_DESKTOP_STORYLINES = 10
 MAX_BASE_RENDERS = 2
-ALLOWED_DURATIONS = frozenset({15, 30, 60})
 DESKTOP_PROVIDERS = frozenset({"codex-cli", "claude-cli", "openai", "kimi"})
+EXPORT_TITLE_MAX_BYTES = 220
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_FILENAME_WHITESPACE = re.compile(r"\s+")
 
 
 class JobServiceError(RuntimeError):
@@ -34,10 +38,9 @@ class JobServiceError(RuntimeError):
 
 @dataclass(frozen=True)
 class JobServiceDeps:
-    find_project: Callable[[str], Path] = capcut.find_project
-    load_project: Callable[[Path], dict[str, Any]] = capcut.load_project
-    build_segments: Callable[[dict[str, Any]], dict[str, Any]] = capcut.build_segments
-    generate_many: Callable[..., list[StorylineResult]] = generate_many
+    analyze_candidates: Callable[..., list[ContentCandidate]] = candidate_analyzer.generate_candidates
+    generate_selected_candidates: Callable[..., list[StorylineResult]] = candidate_analyzer.generate_selected_candidates
+    generate_instagram_caption: Callable[..., str] = instagram_caption.generate_caption
     generate_script: Callable[..., dict[str, Any]] = generate_script
     build_runner: Callable[[AppConfig], Callable[[str], str]] = build_runner
     load_style: Callable[[Path], StylePreset] = load_style
@@ -45,8 +48,6 @@ class JobServiceDeps:
     render_overlay_variant: Callable[..., Path] = render.render_overlay_variant
     write_outputs: Callable[[Path, dict[str, Any], dict[str, Any]], None] = export.write_outputs
     write_srt: Callable[[list[list], Path], Path] = export.write_srt
-    enhance_export_video: Callable[..., voice_isolation.IsolationResult] = voice_isolation.enhance_video
-    resolve_voice_isolation_key: Callable[[], str | None] = lambda: resolve_api_key("elevenlabs")
     download_youtube_source: Callable[..., youtube.YouTubeSource] = youtube.download_youtube_source
 
 
@@ -58,13 +59,11 @@ class JobService:
         deps: JobServiceDeps | None = None,
         style_path: Path = DEFAULT_STYLE,
         config: AppConfig | None = None,
-        duration_s: int = 30,
     ) -> None:
         self.store = store or JobStore()
         self.deps = deps or JobServiceDeps()
         self.style_path = style_path
         self.config = config or AppConfig(provider="codex-cli", n_storylines=3)
-        self.duration_s = duration_s
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._active_job_id: str | None = None
@@ -74,85 +73,22 @@ class JobService:
         self._operation_counts: dict[str, int] = {}
         self._shutdown = threading.Event()
 
-    def start_job(
-        self,
-        project_path: str,
-        *,
-        duration_s: int | None = None,
-        n_storylines: int | None = None,
-        provider: str | None = None,
-        voice_isolation: bool | None = None,
-    ) -> Job:
-        with self._lock:
-            if self._active_job_id is not None:
-                raise JobServiceError("another job is already active")
-            job = self._create_job(
-                project_path,
-                self._validated_duration(duration_s),
-                self._validated_storyline_count(n_storylines),
-                self._validated_provider(provider),
-                self.config.voice_isolation if voice_isolation is None else voice_isolation,
-            )
-            self._cancel_events[job.id] = threading.Event()
-            self._process_registries[job.id] = ProcessRegistry()
-            self._operation_counts[job.id] = 1
-            self._active_job_id = job.id
-            self._worker = threading.Thread(
-                target=self._run_job_guarded,
-                args=(job.id,),
-                daemon=True,
-                name=f"reels-job-{job.id[:8]}",
-            )
-            self._worker.start()
-            return job
-
-    def run_job_sync(
-        self,
-        project_path: str,
-        *,
-        duration_s: int | None = None,
-        n_storylines: int | None = None,
-        provider: str | None = None,
-        voice_isolation: bool | None = None,
-    ) -> Job:
-        with self._lock:
-            if self._active_job_id is not None:
-                raise JobServiceError("another job is already active")
-            job = self._create_job(
-                project_path,
-                self._validated_duration(duration_s),
-                self._validated_storyline_count(n_storylines),
-                self._validated_provider(provider),
-                self.config.voice_isolation if voice_isolation is None else voice_isolation,
-            )
-            self._cancel_events[job.id] = threading.Event()
-            self._process_registries[job.id] = ProcessRegistry()
-            self._operation_counts[job.id] = 1
-            self._active_job_id = job.id
-        self._run_job_guarded(job.id)
-        return self.store.load(job.id)
-
     def start_youtube_job(
         self,
         youtube_url: str,
         *,
-        duration_s: int | None = None,
-        n_storylines: int | None = None,
+        content_types: list[str] | None = None,
         provider: str | None = None,
-        voice_isolation: bool | None = None,
     ) -> Job:
         source_url = youtube.validate_youtube_url(youtube_url)
+        selected_types = self._validated_content_types(content_types)
         with self._lock:
             if self._active_job_id is not None:
                 raise JobServiceError("another job is already active")
             job = self._create_job(
-                None,
-                self._validated_duration(duration_s),
-                self._validated_storyline_count(n_storylines),
                 self._validated_provider(provider),
-                self.config.voice_isolation if voice_isolation is None else voice_isolation,
-                source_type="youtube",
                 source_url=source_url,
+                content_types=selected_types,
             )
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
@@ -162,7 +98,7 @@ class JobService:
                 target=self._run_job_guarded,
                 args=(job.id,),
                 daemon=True,
-                name=f"reels-youtube-{job.id[:8]}",
+                name=f"reels-analyze-{job.id[:8]}",
             )
             self._worker.start()
             return job
@@ -171,29 +107,54 @@ class JobService:
         self,
         youtube_url: str,
         *,
-        duration_s: int | None = None,
-        n_storylines: int | None = None,
+        content_types: list[str] | None = None,
         provider: str | None = None,
-        voice_isolation: bool | None = None,
     ) -> Job:
         source_url = youtube.validate_youtube_url(youtube_url)
+        selected_types = self._validated_content_types(content_types)
         with self._lock:
             if self._active_job_id is not None:
                 raise JobServiceError("another job is already active")
             job = self._create_job(
-                None,
-                self._validated_duration(duration_s),
-                self._validated_storyline_count(n_storylines),
                 self._validated_provider(provider),
-                self.config.voice_isolation if voice_isolation is None else voice_isolation,
-                source_type="youtube",
                 source_url=source_url,
+                content_types=selected_types,
             )
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
             self._operation_counts[job.id] = 1
             self._active_job_id = job.id
         self._run_job_guarded(job.id)
+        return self.store.load(job.id)
+
+    def start_selected_generation(self, job_id: str, candidate_ids: list[str]) -> Job:
+        with self._lock:
+            if self._active_job_id is not None:
+                raise JobServiceError("another job is already active")
+            job = self._prepare_selected_generation(job_id, candidate_ids)
+            self._cancel_events[job.id] = threading.Event()
+            self._process_registries[job.id] = ProcessRegistry()
+            self._operation_counts[job.id] = 1
+            self._active_job_id = job.id
+            self._worker = threading.Thread(
+                target=self._run_generation_guarded,
+                args=(job.id,),
+                daemon=True,
+                name=f"reels-generate-{job.id[:8]}",
+            )
+            self._worker.start()
+            return job
+
+    def generate_selected_sync(self, job_id: str, candidate_ids: list[str]) -> Job:
+        with self._lock:
+            if self._active_job_id is not None:
+                raise JobServiceError("another job is already active")
+            job = self._prepare_selected_generation(job_id, candidate_ids)
+            self._cancel_events[job.id] = threading.Event()
+            self._process_registries[job.id] = ProcessRegistry()
+            self._operation_counts[job.id] = 1
+            self._active_job_id = job.id
+        self._run_generation_guarded(job.id)
         return self.store.load(job.id)
 
     def snapshot(self, job_id: str | None = None) -> Job | None:
@@ -329,6 +290,63 @@ class JobService:
                 self._render_storyline_base(job_id, storyline_id)
         return self.store.load(job_id)
 
+    def generate_instagram_caption(self, job_id: str, storyline_id: str) -> Job:
+        with self._lock:
+            job = self.store.load(job_id)
+            storyline = self._find_storyline(job, storyline_id)
+            if storyline.status is not Status.READY:
+                raise JobServiceError("완성된 릴스만 Instagram 캡션을 만들 수 있습니다.")
+            if not storyline.edl_path or not Path(storyline.edl_path).is_file():
+                raise JobServiceError("릴스 대본 파일을 찾지 못했습니다.")
+            segments_path = Path(storyline.edl_path).parent / "segments.json"
+            if not segments_path.is_file():
+                raise JobServiceError("릴스 원문 구간 파일을 찾지 못했습니다.")
+            title = (
+                storyline.title_candidates[storyline.selected_title_index]
+                if 0 <= storyline.selected_title_index < len(storyline.title_candidates)
+                else (storyline.title_candidates[0] if storyline.title_candidates else "창업가 인사이트")
+            )
+            episode_number = storyline.index + 1
+            candidate = self._candidate_for_storyline(job, storyline)
+            provider = job.provider or self.config.provider
+            cfg = AppConfig(
+                provider=provider,
+                model=job.model or "",
+                base_url=self.config.base_url if provider == self.config.provider else "",
+                n_storylines=job.n_storylines,
+                style=dict(self.config.style),
+            )
+            edl_path = Path(storyline.edl_path)
+            raw_dump = self.store.job_dir(job.id) / f"instagram_caption_raw_s{episode_number}.txt"
+
+        doc = json.loads(edl_path.read_text(encoding="utf-8"))
+        segments = json.loads(segments_path.read_text(encoding="utf-8"))
+        registry = self._process_registries.setdefault(job_id, ProcessRegistry())
+        runner = self.deps.build_runner(cfg)
+
+        def managed_runner(prompt: str) -> str:
+            with use_process_registry(registry):
+                return runner(prompt)
+
+        try:
+            caption = self.deps.generate_instagram_caption(
+                episode_number=episode_number,
+                selected_title=title,
+                candidate=candidate.to_dict() if candidate else None,
+                doc=doc,
+                segments=segments,
+                runner=managed_runner,
+                raw_dump=raw_dump,
+            )
+        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+            raise JobServiceError(str(exc)) from exc
+
+        with self._lock:
+            current = self.store.load(job_id)
+            current_storyline = self._find_storyline(current, storyline_id)
+            current_storyline.instagram_caption = caption
+            return self._save(current)
+
     def _recover_failed_generation(self, job_id: str, storyline_id: str) -> None:
         """저장된 마지막 LLM 응답을 새 파서로 복구해 실패한 후보만 렌더한다."""
         job = self.store.load(job_id)
@@ -449,6 +467,20 @@ class JobService:
             job.message = "내보내기가 완료되었습니다."
             return self._save(job)
 
+    def suggested_export_filename(
+        self,
+        job_id: str,
+        storyline_id: str | None = None,
+    ) -> str:
+        job = self.store.load(job_id)
+        selected_storyline_id = (
+            storyline_id
+            or job.selected_storyline_id
+            or job.export.selected_storyline_id
+        )
+        story = self._find_storyline(job, selected_storyline_id)
+        return _export_filename(job, story)
+
     def export_many(
         self,
         job_id: str,
@@ -491,7 +523,7 @@ class JobService:
         destination_dir.mkdir(parents=True, exist_ok=True)
         try:
             for story, variant in exports:
-                destination = destination_dir / f"storyline-{story.index + 1}.mp4"
+                destination = destination_dir / _export_filename(job, story)
                 self._copy_export_variant(job_id, story, variant, destination)
         except Exception as exc:
             self._record_export_failure(job_id, exc)
@@ -518,36 +550,8 @@ class JobService:
         destination = destination.expanduser()
         destination.parent.mkdir(parents=True, exist_ok=True)
         tmp = destination.with_name(f".{destination.stem}.part{destination.suffix}")
-        isolation_meta: dict[str, Any] = {
-            "voice_isolation": False,
-            "speech_enhancement": False,
-            "voice_isolation_cache_hit": None,
-            "voice_isolation_audio_hash": None,
-        }
         try:
-            if self.store.load(job_id).voice_isolation:
-                api_key = self.deps.resolve_voice_isolation_key()
-                if not api_key:
-                    raise JobServiceError(
-                        "ElevenLabs API key가 없습니다. 설정에서 API 키를 저장하세요."
-                    )
-                try:
-                    result = self.deps.enhance_export_video(
-                        Path(variant.path),
-                        tmp,
-                        cache_dir=self.store.job_dir(job_id) / ".voice-isolation",
-                        api_key=api_key,
-                    )
-                except voice_isolation.VoiceIsolationError as exc:
-                    raise JobServiceError(str(exc)) from exc
-                isolation_meta = {
-                    "voice_isolation": True,
-                    "speech_enhancement": True,
-                    "voice_isolation_cache_hit": result.cache_hit,
-                    "voice_isolation_audio_hash": result.audio_hash,
-                }
-            else:
-                shutil.copy2(variant.path, tmp)
+            shutil.copy2(variant.path, tmp)
             os.replace(tmp, destination)
         finally:
             if tmp.exists():
@@ -562,7 +566,6 @@ class JobService:
                     "title": variant.title_text,
                     "subtitles_on": variant.subtitles_enabled,
                     "output_path": str(destination),
-                    **isolation_meta,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -579,17 +582,13 @@ class JobService:
             job.message = "내보내기에 실패했습니다."
             self._save(job)
 
-    def _validated_duration(self, duration_s: int | None) -> int:
-        selected = self.duration_s if duration_s is None else duration_s
-        if selected not in ALLOWED_DURATIONS:
-            raise JobServiceError(f"duration_s must be one of {sorted(ALLOWED_DURATIONS)}")
-        return selected
-
-    def _validated_storyline_count(self, n_storylines: int | None) -> int:
-        selected = self.config.n_storylines if n_storylines is None else n_storylines
-        if not 1 <= selected <= MAX_DESKTOP_STORYLINES:
-            raise JobServiceError(f"n_storylines must be between 1 and {MAX_DESKTOP_STORYLINES}")
-        return selected
+    def _validated_content_types(self, content_types: list[str] | None) -> list[str]:
+        try:
+            return candidate_analyzer.validate_content_types(
+                content_types or list(candidate_analyzer.CONTENT_TYPES)
+            )
+        except ValueError as exc:
+            raise JobServiceError(str(exc)) from exc
 
     def _validated_provider(self, provider: str | None) -> str:
         selected = self.config.provider if provider is None else provider
@@ -599,34 +598,24 @@ class JobService:
 
     def _create_job(
         self,
-        project_path: str | None,
-        duration_s: int,
-        n_storylines: int,
         provider: str,
-        voice_isolation: bool,
         *,
-        source_type: str = "capcut",
-        source_url: str | None = None,
+        source_url: str,
+        content_types: list[str],
     ) -> Job:
         model = self.config.model if provider == self.config.provider else ""
         job = self.store.create_job(
-            project_path=project_path,
-            source_type=source_type,
             source_url=source_url,
             provider=provider,
             model=model,
-            duration_s=duration_s,
-            n_storylines=n_storylines,
-            voice_isolation=voice_isolation,
+            duration_s=candidate_analyzer.TARGET_DURATION_S,
+            n_storylines=0,
+            content_types=content_types,
         )
         job.status = Status.LOADING
         job.phase = "loading"
         job.progress = 0.02
-        job.message = (
-            "YouTube 영상 정보를 확인하는 중입니다."
-            if source_type == "youtube"
-            else "CapCut 프로젝트를 불러오는 중입니다."
-        )
+        job.message = "YouTube 영상 정보를 확인하는 중입니다."
         job.work_dir = str(self.store.job_dir(job.id))
         return self._save(job)
 
@@ -634,56 +623,48 @@ class JobService:
         registry = self._process_registries.setdefault(job_id, ProcessRegistry())
         try:
             with use_process_registry(registry):
-                self._run_job(job_id)
+                self._analyze_job(job_id)
         except Exception as exc:  # noqa: BLE001 - boundary converts background failures to job state
-            with self._lock:
-                job = self.store.load(job_id)
-                if not self._is_cancelled(job_id) and job.status is not Status.CANCELLED:
-                    job.status = Status.FAILED
-                    job.phase = "failed"
-                    job.error = str(exc)
-                    job.message = "작업이 실패했습니다."
-                    self._save(job)
+            self._record_background_failure(job_id, exc)
         finally:
             with self._lock:
                 self._release_job_operation_locked(job_id)
 
-    def _run_job(self, job_id: str) -> None:
+    def _run_generation_guarded(self, job_id: str) -> None:
+        registry = self._process_registries.setdefault(job_id, ProcessRegistry())
+        try:
+            with use_process_registry(registry):
+                self._generate_job(job_id)
+        except Exception as exc:  # noqa: BLE001 - boundary converts background failures to job state
+            self._record_background_failure(job_id, exc)
+        finally:
+            with self._lock:
+                self._release_job_operation_locked(job_id)
+
+    def _record_background_failure(self, job_id: str, exc: Exception) -> None:
+        with self._lock:
+            job = self.store.load(job_id)
+            if not self._is_cancelled(job_id) and job.status is not Status.CANCELLED:
+                job.status = Status.FAILED
+                job.phase = "failed"
+                job.error = str(exc)
+                job.message = "작업이 실패했습니다."
+                self._save(job)
+
+    def _analyze_job(self, job_id: str) -> None:
         job = self.store.load(job_id)
         provider = job.provider or self.config.provider
         cfg = AppConfig(
             provider=provider,
             model=job.model or "",
             base_url=self.config.base_url if provider == self.config.provider else "",
-            n_storylines=job.n_storylines,
+            n_storylines=candidate_analyzer.CANDIDATE_COUNT,
             style=dict(self.config.style),
         )
-        if job.source_type == "youtube":
-            source = self._prepare_youtube_source(job_id, job)
-            project_name = source.title
-            segments = dict(source.segments)
-            segments.setdefault("source_title", source.title)
-            video = source.video_path
-        else:
-            project_dir = self.deps.find_project(str(job.project_path))
-            self._set_job_progress(
-                job_id,
-                phase="loading",
-                progress=0.05,
-                message="CapCut 프로젝트 폴더와 초안 파일을 확인하는 중입니다.",
-            )
-            draft = self.deps.load_project(project_dir)
-            self._set_job_progress(
-                job_id,
-                phase="transcript",
-                progress=0.08,
-                message="타임라인의 영상·오디오·자막 구간을 분석하는 중입니다.",
-            )
-            segments = self.deps.build_segments(draft)
-            video = Path(segments["video_path"])
-            project_name = project_dir.name
-        style = merged_style(self.deps.load_style(self.style_path), cfg.style)
-        speed = style.speed
+        source = self._prepare_youtube_source(job_id, job)
+        project_name = source.title
+        segments = dict(source.segments)
+        segments.setdefault("source_title", source.title)
         work = self.store.job_dir(job.id)
 
         with self._lock:
@@ -691,12 +672,12 @@ class JobService:
             if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
                 return
             job.project_name = project_name
-            job.input_path = str(video)
+            job.input_path = str(source.video_path)
             job.output_dir = str(work)
             job.status = Status.GENERATING
-            job.phase = "generating"
-            job.progress = 0.20 if job.source_type == "youtube" else 0.12
-            job.message = f"{cfg.provider}로 스토리라인 {job.n_storylines}개를 생성하는 중입니다."
+            job.phase = "analyzing"
+            job.progress = 0.20
+            job.message = f"{cfg.provider}로 서로 다른 콘텐츠 후보 10개를 분석하는 중입니다."
             self._save(job)
         self._raise_if_cancelled(job_id)
 
@@ -707,10 +688,84 @@ class JobService:
             with use_process_registry(registry):
                 return runner(prompt)
 
-        results = self.deps.generate_many(
+        candidates = self.deps.analyze_candidates(
             segments,
-            job.n_storylines,
-            job.duration_s,
+            job.content_types,
+            runner=managed_runner,
+            raw_dump=work / "candidate_analysis_raw.txt",
+        )
+        with self._lock:
+            job = self.store.load(job_id)
+            if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
+                return
+            job.candidates = candidates
+            job.status = Status.AWAITING_SELECTION
+            job.phase = "awaiting_selection"
+            job.progress = 1.0
+            job.error = None
+            job.message = "분석이 끝났습니다. 만들 후보를 선택하세요."
+            self._save(job)
+
+    def _prepare_selected_generation(self, job_id: str, candidate_ids: list[str]) -> Job:
+        job = self.store.load(job_id)
+        if job.status is not Status.AWAITING_SELECTION:
+            raise JobServiceError("콘텐츠 후보 분석이 완료된 작업만 생성할 수 있습니다.")
+        unique_ids = list(dict.fromkeys(candidate_ids))
+        if not unique_ids:
+            raise JobServiceError("생성할 콘텐츠 후보를 하나 이상 선택하세요.")
+        if len(unique_ids) > MAX_DESKTOP_STORYLINES:
+            raise JobServiceError(f"후보는 최대 {MAX_DESKTOP_STORYLINES}개까지 선택할 수 있습니다.")
+        available = {candidate.id for candidate in job.candidates}
+        unknown = [candidate_id for candidate_id in unique_ids if candidate_id not in available]
+        if unknown:
+            raise JobServiceError("존재하지 않는 콘텐츠 후보: " + ", ".join(unknown))
+        job.selected_candidate_ids = unique_ids
+        job.n_storylines = len(unique_ids)
+        job.storylines = []
+        job.status = Status.GENERATING
+        job.phase = "generating"
+        job.progress = 0.20
+        job.error = None
+        job.message = f"선택한 후보 {len(unique_ids)}개의 릴스 대본을 만드는 중입니다."
+        return self._save(job)
+
+    def _generate_job(self, job_id: str) -> None:
+        job = self.store.load(job_id)
+        provider = job.provider or self.config.provider
+        cfg = AppConfig(
+            provider=provider,
+            model=job.model or "",
+            base_url=self.config.base_url if provider == self.config.provider else "",
+            n_storylines=job.n_storylines,
+            style=dict(self.config.style),
+        )
+        work = self.store.job_dir(job.id)
+        if not job.input_path:
+            raise JobServiceError("저장된 YouTube 영상 또는 자막을 찾지 못했습니다. 다시 분석하세요.")
+        segment_candidates = [
+            work / "source" / "segments.json",
+            Path(job.input_path).parent / "segments.json",
+        ]
+        segments_path = next((path for path in segment_candidates if path.is_file()), segment_candidates[0])
+        if not segments_path.is_file():
+            raise JobServiceError("저장된 YouTube 영상 또는 자막을 찾지 못했습니다. 다시 분석하세요.")
+        segments = json.loads(segments_path.read_text(encoding="utf-8"))
+        segments.setdefault("source_title", job.project_name or "")
+        video = Path(job.input_path)
+        style = merged_style(self.deps.load_style(self.style_path), cfg.style)
+        speed = style.speed
+        by_id = {candidate.id: candidate for candidate in job.candidates}
+        selected_candidates = [by_id[candidate_id] for candidate_id in job.selected_candidate_ids]
+        registry = self._process_registries.setdefault(job_id, ProcessRegistry())
+        runner = self.deps.build_runner(cfg)
+
+        def managed_runner(prompt: str) -> str:
+            with use_process_registry(registry):
+                return runner(prompt)
+
+        results = self.deps.generate_selected_candidates(
+            segments,
+            selected_candidates,
             runner=managed_runner,
             raw_dump_dir=work,
             speed=speed,
@@ -720,18 +775,18 @@ class JobService:
             if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
                 return
             job.storylines = [self._storyline_from_result(result) for result in results]
-            if all(story.doc is None for story in results):
+            if all(result.doc is None for result in results):
                 job.status = Status.FAILED
                 job.phase = "failed"
                 job.progress = 1.0
-                job.error = "모든 스토리라인 생성에 실패했습니다."
+                job.error = "선택한 모든 후보의 대본 생성에 실패했습니다."
                 job.message = job.error
                 self._save(job)
                 return
             job.status = Status.RENDERING_BASE
             job.phase = "rendering"
             job.progress = 0.28
-            job.message = f"대표 영상 {job.n_storylines}개를 렌더링하는 중입니다."
+            job.message = f"선택한 릴스 {job.n_storylines}개를 렌더링하는 중입니다."
             self._save(job)
 
         alive = [result for result in results if result.doc is not None]
@@ -757,7 +812,7 @@ class JobService:
             if not ready:
                 job.status = Status.FAILED
                 job.phase = "failed"
-                job.error = "렌더링에 성공한 스토리라인이 없습니다."
+                job.error = "렌더링에 성공한 릴스가 없습니다."
                 job.message = job.error
             else:
                 first = ready[0]
@@ -769,11 +824,11 @@ class JobService:
                     job.status = Status.READY
                     job.phase = "ready"
                     job.error = None
-                    job.message = f"대표 영상 {job.n_storylines}개가 준비되었습니다."
+                    job.message = f"선택한 릴스 {job.n_storylines}개가 준비되었습니다."
                 else:
                     job.status = Status.FAILED
                     job.phase = "partial-failure"
-                    job.error = f"대표 영상 {len(ready)}/{job.n_storylines}개만 준비되었습니다."
+                    job.error = f"선택한 릴스 {len(ready)}/{job.n_storylines}개만 준비되었습니다."
                     job.message = job.error
             self._save(job)
 
@@ -836,7 +891,7 @@ class JobService:
     def _find_cached_youtube_source(self, job_id: str, source_url: str) -> youtube.YouTubeSource | None:
         requested_video_id = youtube.video_id_from_url(source_url)
         for candidate in self.store.list_recent(limit=1000):
-            if candidate.id == job_id or candidate.source_type != "youtube" or not candidate.source_url:
+            if candidate.id == job_id or not candidate.source_url:
                 continue
             candidate_video_id = youtube.video_id_from_url(candidate.source_url)
             same_source = (
@@ -1048,7 +1103,7 @@ class JobService:
                 job.phase = "rendering"
                 job.progress = min(0.96, 0.28 + 0.68 * aggregate)
                 job.message = (
-                    f"스토리라인 {storyline.index + 1}: {detail} "
+                    f"릴스 {storyline.index + 1}: {detail} "
                     f"· 전체 {completed}/{job.n_storylines}개 완료"
                 )
             self._save(job)
@@ -1174,6 +1229,13 @@ class JobService:
                 return storyline
         raise JobServiceError(f"storyline not found: {storyline_id}")
 
+    @staticmethod
+    def _candidate_for_storyline(job: Job, storyline: Storyline) -> ContentCandidate | None:
+        if not 0 <= storyline.index < len(job.selected_candidate_ids):
+            return None
+        candidate_id = job.selected_candidate_ids[storyline.index]
+        return next((item for item in job.candidates if item.id == candidate_id), None)
+
     def _active_variant(self, story: Storyline) -> Variant:
         active_path = story.active_variant_path
         for variant in story.variants:
@@ -1290,3 +1352,43 @@ def _assets_fingerprint(manifest_path: Path, assets: render.RenderAssets) -> str
         digest.update(str(stat.st_size).encode("ascii"))
         digest.update(str(stat.st_mtime_ns).encode("ascii"))
     return digest.hexdigest()[:12]
+
+
+def _export_filename(job: Job, story: Storyline) -> str:
+    founder_name = _story_speaker_name(story)
+    if not founder_name:
+        founder_name = job.project_name
+    if not founder_name:
+        founder_name = "인터뷰 화자"
+    safe_name = _safe_filename_component(founder_name, max_bytes=EXPORT_TITLE_MAX_BYTES)
+    return f"{safe_name} - {story.index + 1}.mp4"
+
+
+def _story_speaker_name(story: Storyline) -> str:
+    if not story.edl_path:
+        return ""
+    try:
+        doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    speaker = doc.get("speaker")
+    if not isinstance(speaker, dict):
+        return ""
+    return " ".join(str(speaker.get("name") or "").split())
+
+
+def _safe_filename_component(value: str, *, max_bytes: int) -> str:
+    cleaned = _INVALID_FILENAME_CHARS.sub(" ", value)
+    cleaned = _FILENAME_WHITESPACE.sub(" ", cleaned).strip(" .")
+    if not cleaned:
+        cleaned = "릴스"
+
+    encoded_size = 0
+    truncated: list[str] = []
+    for char in cleaned:
+        char_size = len(char.encode("utf-8"))
+        if encoded_size + char_size > max_bytes:
+            break
+        truncated.append(char)
+        encoded_size += char_size
+    return "".join(truncated).rstrip(" .") or "릴스"

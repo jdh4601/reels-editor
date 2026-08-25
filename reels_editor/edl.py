@@ -1,7 +1,7 @@
 """EDL(LLM 생성) 검증·해석. 자막 verbatim 원칙의 집행 지점."""
 from __future__ import annotations
 
-from reels_editor.capcut import US
+from reels_editor.timebase import US
 
 
 def _seg_index(segments: dict) -> dict:

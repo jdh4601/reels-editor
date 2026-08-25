@@ -30,7 +30,6 @@ class AppConfig:
     model: str = ""            # 빈 문자열 = 프로바이더 기본 모델
     base_url: str = ""         # custom 프로바이더 전용
     n_storylines: int = 3
-    voice_isolation: bool = False
     style: dict[str, Any] = field(default_factory=dict)
 
 
@@ -81,7 +80,6 @@ def load_config(path: Path | None = None) -> AppConfig:
         model=raw.get("model", defaults.model),
         base_url=raw.get("base_url", defaults.base_url),
         n_storylines=n_storylines,
-        voice_isolation=bool(raw.get("voice_isolation", defaults.voice_isolation)),
         style={k: v for k, v in (raw.get("style") or {}).items()},
     ))
 
@@ -104,7 +102,6 @@ KEY_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "kimi": "MOONSHOT_API_KEY",
     "custom": "REELS_LLM_API_KEY",
-    "elevenlabs": "ELEVENLABS_API_KEY",
 }
 
 

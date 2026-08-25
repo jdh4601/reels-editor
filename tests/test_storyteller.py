@@ -38,6 +38,20 @@ def test_build_prompt_allows_five_second_grace_for_long_reel(segments: dict) -> 
     assert "78초" in p  # 소스 예산 = 65s * speed 1.2
 
 
+def test_build_prompt_can_require_fixed_30_to_40_second_window(segments: dict) -> None:
+    prompt = storyteller.build_prompt(
+        segments,
+        duration_s=35,
+        feedback=None,
+        min_duration_s=30,
+        max_duration_s=40,
+    )
+
+    assert "반드시 30~40초" in prompt
+    assert "목표는 35초" in prompt
+    assert "최대 48초" in prompt
+
+
 def test_build_prompt_requires_korean_captions_for_english_transcript(segments: dict) -> None:
     english_segments = {
         **segments,

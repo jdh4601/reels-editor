@@ -98,7 +98,6 @@ async function assertNoCriticalOverlap(page) {
   const result = await page.evaluate(() => {
     const selectors = [
       ".topbar",
-      ".generation-option",
       ".status-row",
       ".generation-progress",
       ".lane",
@@ -252,15 +251,15 @@ async function assertProductionFailureDoesNotLeakDemo(browser) {
   });
 
   await page.goto("http://127.0.0.1:5179/#token=hash-secret", { waitUntil: "networkidle" });
-  await page.waitForSelector(".lane", { state: "visible" });
+  await page.waitForSelector(".youtube-source", { state: "visible" });
   await page.waitForFunction(() => document.body.innerText.includes("YouTube 링크 없음"));
 
   const bodyText = await page.locator("body").innerText();
   const laneCount = await page.locator(".lane").count();
   const videoCount = await page.locator("video").count();
 
-  if (laneCount !== 3 || videoCount !== 0) {
-    throw new Error(`Expected 3 empty placeholder lanes and no videos, got ${JSON.stringify({ laneCount, videoCount })}`);
+  if (laneCount !== 0 || videoCount !== 0) {
+    throw new Error(`Expected an empty production workspace and no videos, got ${JSON.stringify({ laneCount, videoCount })}`);
   }
   if (bodyText.includes("김현지") || bodyText.includes("대표 인터뷰 원본") || bodyText.includes("숫자보다 중요한 대표의 기준")) {
     throw new Error("Production failure leaked demo content");
@@ -277,7 +276,7 @@ async function assertProductionFailureDoesNotLeakDemo(browser) {
   await page.close();
 }
 
-async function assertEmptySnapshotPadsToThree(browser) {
+async function assertEmptySnapshotStaysEmpty(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   let clearCalled = false;
   await page.route("**/api/snapshot", async (route) => {
@@ -288,8 +287,8 @@ async function assertEmptySnapshotPadsToThree(browser) {
         body: JSON.stringify({
           job_id: "",
           project_name: "Reels Editor",
-          project_path: null,
-          source_label: "프로젝트 없음",
+          source_url: null,
+          source_label: "YouTube 링크 없음",
           storylines: [],
           subtitles_on: true,
         }),
@@ -301,25 +300,26 @@ async function assertEmptySnapshotPadsToThree(browser) {
       body: JSON.stringify({
         job_id: "empty-job",
         project_name: "운영 프로젝트",
-        project_path: "/real/project",
-        source_label: "운영 원본",
+        source_url: "https://youtu.be/empty-job",
+        source_label: "YouTube · 운영 인터뷰",
         storylines: [],
+        n_storylines: 0,
         subtitles_on: true,
       }),
     });
   });
 
   await page.goto("http://127.0.0.1:5179/", { waitUntil: "networkidle" });
-  await page.waitForSelector(".lane", { state: "visible" });
+  await page.waitForSelector(".youtube-source", { state: "visible" });
   const laneCount = await page.locator(".lane").count();
   const videoCount = await page.locator("video").count();
   const bodyText = await page.locator("body").innerText();
-  if (laneCount !== 3 || videoCount !== 0 || !bodyText.includes("YouTube 인터뷰 링크를 넣으면")) {
-    throw new Error(`Expected successful empty snapshot to pad to 3 placeholder lanes, got ${JSON.stringify({ laneCount, videoCount })}`);
+  if (laneCount !== 0 || videoCount !== 0) {
+    throw new Error(`Expected successful empty snapshot to stay empty, got ${JSON.stringify({ laneCount, videoCount })}`);
   }
   await page.getByRole("button", { name: "비우기" }).click();
-  await page.waitForFunction(() => document.body.innerText.includes("프로젝트 없음"));
-  if (!clearCalled) throw new Error("Expected clear project button to call DELETE /api/snapshot");
+  await page.waitForFunction(() => document.body.innerText.includes("YouTube 링크 없음"));
+  if (!clearCalled) throw new Error("Expected clear button to call DELETE /api/snapshot");
   await page.close();
 }
 
@@ -335,10 +335,11 @@ async function assertMediaTokenAndMutationFailures(browser) {
       body: JSON.stringify({
         job_id: "job-42",
         project_name: "운영 프로젝트",
-        project_path: "/real/project",
-        source_label: "운영 원본",
+        source_url: "https://youtu.be/job-42",
+        source_label: "YouTube · 운영 인터뷰",
         selected_storyline_id: "s1",
         subtitles_on: true,
+        n_storylines: 3,
         storylines: [1, 2, 3].map((number) => ({
           storyline_id: `s${number}`,
           index: number,
@@ -426,10 +427,11 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
         JSON.stringify({
           job_id: "heartbeat-job",
           project_name: "하트비트 프로젝트",
-          project_path: "/real/heartbeat",
-          source_label: "하트비트 원본",
+          source_url: "https://youtu.be/heartbeat",
+          source_label: "YouTube · 하트비트 인터뷰",
           selected_storyline_id: "hb1",
           subtitles_on: true,
+          n_storylines: 3,
           event_seq: 4,
           storylines: [1, 2, 3].map((number) => ({
             storyline_id: `hb${number}`,
@@ -486,7 +488,7 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
     await page.waitForTimeout(500);
     const bodyText = await page.locator("body").innerText();
     const exportDisabled = await page.locator(".export-button").isDisabled();
-    const generateButton = page.getByRole("button", { name: /생성 중/ });
+    const generateButton = page.getByRole("button", { name: /처리 중/ });
     const cancelButton = page.getByRole("button", { name: "작업 취소" });
     if (!bodyText.includes("하트비트 훅 1") || !bodyText.includes("하트비트 제목 1-1")) {
       throw new Error("Populated lanes did not survive heartbeat event");
@@ -498,7 +500,7 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
       throw new Error("Export should stay disabled while selected lane is overlaying");
     }
     if (!(await generateButton.isDisabled())) {
-      throw new Error("Generate should be disabled and labeled 생성 중 while selected job is overlaying");
+      throw new Error("Analyze should be disabled and labeled 처리 중 while the selected job is overlaying");
     }
     if (!(await cancelButton.isVisible()) || !(await cancelButton.isEnabled())) {
       throw new Error("Cancel button should be visible and enabled while job is busy");
@@ -513,6 +515,122 @@ async function assertHeartbeatDoesNotReplaceSnapshot(browser) {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => heartbeatServer.close(resolve));
   }
+}
+
+async function assertCandidateSelectionGeneratesOnlyChosenReels(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  let generationBody = null;
+  const candidates = Array.from({ length: 10 }, (_, index) => ({
+    id: `c${index + 1}`,
+    content_type: ["story", "strategy", "failure", "principle"][index % 4],
+    type_label: ["스토리형", "전략형", "실패 분석형", "원칙형"][index % 4],
+    title: `서로 다른 창업 인사이트 ${index + 1}`,
+    summary: `영상에서 확인한 구체적인 실행 과정 ${index + 1}`,
+    takeaway: `1인 창업가가 바로 적용할 행동 ${index + 1}`,
+  }));
+  const analyzedSnapshot = {
+    job_id: "candidate-job",
+    project_name: "후보 선택 프로젝트",
+    source_url: "https://youtu.be/candidates",
+    source_label: "YouTube · 영어 원문 자막",
+    status: "awaiting_selection",
+    phase: "awaiting_selection",
+    progress: 1,
+    event_seq: 12,
+    duration_s: 35,
+    n_storylines: 0,
+    content_types: ["story", "strategy", "failure", "principle"],
+    candidates,
+    selected_candidate_ids: [],
+    storylines: [],
+  };
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(analyzedSnapshot) });
+  });
+  await page.route("**/api/jobs/candidate-job/generate", async (route) => {
+    generationBody = JSON.parse(route.request().postData() ?? "{}");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...analyzedSnapshot,
+        status: "generating",
+        phase: "generating",
+        progress: 0.2,
+        n_storylines: 2,
+        selected_candidate_ids: generationBody.candidate_ids,
+      }),
+    });
+  });
+
+  await page.goto("http://127.0.0.1:5179/#token=candidate-secret", { waitUntil: "networkidle" });
+  await page.waitForSelector(".candidate-item", { state: "visible" });
+  const candidateCount = await page.locator(".candidate-item").count();
+  if (candidateCount !== 10) throw new Error(`Expected exactly 10 candidate cards, got ${candidateCount}`);
+  await page.getByText("서로 다른 창업 인사이트 2", { exact: true }).click();
+  await page.getByText("서로 다른 창업 인사이트 7", { exact: true }).click();
+  const selectedCount = await page.locator(".candidate-item.selected").count();
+  if (selectedCount !== 2) throw new Error(`Expected two selected candidate cards, got ${selectedCount}`);
+  await page.screenshot({ path: path.join(screenshotRoot, "candidate-selection-1280x900.png"), fullPage: true });
+  await page.getByRole("button", { name: "선택한 후보로 릴스 생성" }).click();
+  await page.waitForSelector(".candidate-workspace", { state: "detached" });
+  if (JSON.stringify(generationBody) !== JSON.stringify({ candidate_ids: ["c2", "c7"] })) {
+    throw new Error(`Expected only selected candidate IDs in generation request, got ${JSON.stringify(generationBody)}`);
+  }
+  await page.close();
+}
+
+async function assertInstagramCaptionGeneration(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  let captionCalls = 0;
+  const caption = "Ep 1. 광고 없이 첫 고객을 만든 방법\n\n이 창업가는 제품을 완성하기 전에 잠재 고객을 직접 만났습니다.\n\n반복해서 확인된 문제 하나에 집중해 첫 유료 제안을 만들었습니다.\n\n1인 창업가에게는 기능보다 구매 이유를 먼저 검증하는 순서가 중요합니다.\n\n여러분은 지금 어떤 문제를 먼저 검증하고 있나요?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀";
+  const snapshot = (instagramCaption = "") => ({
+    job_id: "caption-job",
+    project_name: "캡션 프로젝트",
+    source_url: "https://youtu.be/caption",
+    source_label: "YouTube · 영어 원문 자막",
+    status: "ready",
+    phase: "ready",
+    progress: 1,
+    event_seq: 20 + captionCalls,
+    duration_s: 35,
+    n_storylines: 1,
+    selected_storyline_id: "s1",
+    storylines: [{
+      storyline_id: "s1",
+      index: 1,
+      label: "릴스 1",
+      hook: "첫 고객을 만든 가장 작은 실험",
+      summary: "광고보다 문제 검증이 먼저였습니다.",
+      sections: [{ beat: "전략", role: "실행", text: "잠재 고객을 직접 만나 유료 제안을 검증했습니다." }],
+      status: "ready",
+      progress: 100,
+      video_url: null,
+      title_options: ["광고 없이 첫 고객을 만든 방법", "첫 고객은 대화에서 나옵니다", "제품보다 먼저 검증할 것"],
+      selected_title_index: 0,
+      instagram_caption: instagramCaption,
+    }],
+  });
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(snapshot()) });
+  });
+  await page.route("**/api/jobs/caption-job/storylines/s1/caption", async (route) => {
+    captionCalls += 1;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(snapshot(caption)) });
+  });
+
+  await page.goto("http://127.0.0.1:5179/#token=caption-secret", { waitUntil: "networkidle" });
+  const generateButton = page.getByRole("button", { name: "캡션 생성하기" });
+  await generateButton.click();
+  await page.waitForFunction(() => document.body.innerText.includes("다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"));
+  if (captionCalls !== 1) throw new Error(`Expected one caption generation request, got ${captionCalls}`);
+  if (!(await page.getByRole("button", { name: "캡션 복사" }).isVisible())) {
+    throw new Error("Expected copy action after Instagram caption generation");
+  }
+  if (!(await page.getByRole("button", { name: "다시 생성" }).isVisible())) {
+    throw new Error("Expected regenerate action after Instagram caption generation");
+  }
+  await page.screenshot({ path: path.join(screenshotRoot, "instagram-caption-1280x900.png"), fullPage: true });
+  await page.close();
 }
 
 async function assertRegenerateAppliesNewJobAndReconnects(browser) {
@@ -531,25 +649,21 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
         JSON.stringify({
           job_id: "new-job",
           project_name: "새 작업 프로젝트",
-          project_path: "/real/project",
-          source_label: "/real/project",
+          source_url: "https://youtu.be/original",
+          source_label: "YouTube · 기존 인터뷰",
           status: "loading",
           phase: "loading",
           progress: 0.02,
           event_seq: 2,
           storylines: [],
           subtitles_on: true,
-          duration_s: createBody.duration_s,
-          n_storylines: createBody.n_storylines,
+          duration_s: 35,
+          n_storylines: 0,
+          content_types: createBody.content_types,
+          candidates: [],
           provider: createBody.provider,
-          voice_isolation: createBody.voice_isolation,
         }),
       );
-      return;
-    }
-    if (request.url?.startsWith("/api/settings/voice-isolation")) {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ enabled: false, configured: true, masked_key: "xi_••••" }));
       return;
     }
     if (request.url?.startsWith("/api/snapshot")) {
@@ -558,14 +672,16 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
         JSON.stringify({
           job_id: "old-job",
           project_name: "이전 프로젝트",
-          project_path: "/real/project",
-          source_label: "/real/project",
+          source_url: "https://youtu.be/replacement",
+          source_label: "YouTube · 새 인터뷰",
           status: "failed",
           event_seq: 7,
           storylines: [],
           subtitles_on: true,
-          duration_s: 30,
-          n_storylines: 3,
+          duration_s: 35,
+          n_storylines: 0,
+          content_types: ["story", "strategy", "failure", "principle"],
+          candidates: [],
           provider: "codex-cli",
         }),
       );
@@ -609,23 +725,16 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
     await page.goto("http://127.0.0.1:5182/#token=regenerate-secret", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.body.innerText.includes("이전 프로젝트"));
     await page.waitForTimeout(200);
-    const voiceProcessingSwitch = page.getByRole("switch", { name: "다음 생성에 Voice Isolation과 Speech Enhancement 적용" });
-    await page.locator(".generation-option .switch").click();
-    if (!(await voiceProcessingSwitch.isChecked())) {
-      throw new Error("Voice processing choice did not turn on before regeneration");
-    }
     await page.getByRole("tab", { name: "설정" }).click();
-    await page.getByText("60초", { exact: true }).click();
-    await page.getByText("10개", { exact: true }).click();
     await page.getByLabel("모델 프로바이더").selectOption("claude-cli");
-    await page.getByRole("button", { name: "다시 생성" }).click();
-    await page.waitForFunction(() => document.body.innerText.includes("새 작업 프로젝트"));
     await page.getByRole("tab", { name: "대시보드" }).click();
+    await page.getByRole("button", { name: "다시 분석" }).click();
+    await page.waitForFunction(() => document.body.innerText.includes("새 작업 프로젝트"));
     const requestedLaneCount = await page.locator(".lane").count();
-    if (requestedLaneCount !== 10) {
-      throw new Error(`Expected selected 10-storyline layout after regeneration, got ${requestedLaneCount}`);
+    if (requestedLaneCount !== 0) {
+      throw new Error(`Expected analysis to start without reel placeholders, got ${requestedLaneCount}`);
     }
-    const generateButton = page.getByRole("button", { name: "생성 중" });
+    const generateButton = page.getByRole("button", { name: "처리 중" });
     if (!(await generateButton.isDisabled())) {
       throw new Error("Generate should be disabled immediately after a new job starts");
     }
@@ -636,8 +745,8 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
     if (createCalls !== 1) {
       throw new Error(`Expected one regenerate request, got ${createCalls}`);
     }
-    if (createBody?.duration_s !== 60 || createBody?.n_storylines !== 10 || createBody?.provider !== "claude-cli" || createBody?.voice_isolation !== true) {
-      throw new Error(`Expected selected generation settings in regenerate request, got ${JSON.stringify(createBody)}`);
+    if (JSON.stringify(createBody?.content_types) !== JSON.stringify(["story", "strategy", "failure", "principle"]) || createBody?.provider !== "claude-cli" || "duration_s" in createBody || "n_storylines" in createBody) {
+      throw new Error(`Expected only four content types and provider in analysis request, got ${JSON.stringify(createBody)}`);
     }
     if (!websocketUrls.some((url) => new URL(url, "http://127.0.0.1").searchParams.get("after") === "2")) {
       throw new Error(`Expected event reconnect at new job seq 2, got ${JSON.stringify(websocketUrls)}`);
@@ -665,11 +774,13 @@ try {
     const titleRadioCount = await page.locator("fieldset.title-options input[type='radio']").count();
     const selectedVideoCount = await page.locator("input[name='selected-video']:checked").count();
     const switchCount = await page.locator("input[role='switch']").count();
+    const contentTypeCount = await page.locator("input[name='content-type']").count();
+    const selectedContentTypeCount = await page.locator("input[name='content-type']:checked").count();
 
-    if (laneCount !== 3 || videoCount !== 3 || titleRadioCount !== 9 || selectedVideoCount !== 1 || switchCount !== 3) {
+    if (laneCount !== 3 || videoCount !== 3 || titleRadioCount !== 9 || selectedVideoCount !== 1 || switchCount !== 1 || contentTypeCount !== 4 || selectedContentTypeCount !== 4) {
       throw new Error(
         `Unexpected dashboard counts at ${viewport.width}x${viewport.height}: ` +
-          JSON.stringify({ laneCount, videoCount, titleRadioCount, selectedVideoCount, switchCount }),
+          JSON.stringify({ laneCount, videoCount, titleRadioCount, selectedVideoCount, switchCount, contentTypeCount, selectedContentTypeCount }),
       );
     }
 
@@ -690,10 +801,7 @@ try {
     await page.getByRole("tab", { name: "설정" }).click();
     const durationRadioCount = await page.locator("input[name='video-duration']").count();
     const storylineCountRadioCount = await page.locator("input[name='storyline-count']").count();
-    const selectedDuration = await page.locator("input[name='video-duration']:checked").getAttribute("value");
-    const selectedStorylineCount = await page.locator("input[name='storyline-count']:checked").getAttribute("value");
     const selectedProvider = await page.getByLabel("모델 프로바이더").inputValue();
-    const voiceIsolationKeyInputs = await page.getByLabel("ElevenLabs API 키").count();
     const speedControl = page.getByLabel("재생 배속");
     const speedAttributes = {
       min: await speedControl.getAttribute("min"),
@@ -701,13 +809,9 @@ try {
       step: await speedControl.getAttribute("step"),
       value: await speedControl.inputValue(),
     };
-    if (durationRadioCount !== 3 || storylineCountRadioCount !== 10 || selectedDuration !== "30" || selectedStorylineCount !== "3" || selectedProvider !== "codex-cli" || voiceIsolationKeyInputs !== 1 || JSON.stringify(speedAttributes) !== JSON.stringify({ min: "1", max: "1.5", step: "0.05", value: "1.2" })) {
-      throw new Error(`Unexpected settings controls: ${JSON.stringify({ durationRadioCount, storylineCountRadioCount, selectedDuration, selectedStorylineCount, selectedProvider, voiceIsolationKeyInputs, speedAttributes })}`);
+    if (durationRadioCount !== 0 || storylineCountRadioCount !== 0 || selectedProvider !== "codex-cli" || JSON.stringify(speedAttributes) !== JSON.stringify({ min: "1", max: "1.5", step: "0.05", value: "1.2" })) {
+      throw new Error(`Unexpected settings controls: ${JSON.stringify({ durationRadioCount, storylineCountRadioCount, selectedProvider, speedAttributes })}`);
     }
-    const storylineControlOverflows = await page.locator(".storyline-count-control").evaluate(
-      (element) => element.scrollWidth > element.clientWidth + 1,
-    );
-    if (storylineControlOverflows) throw new Error(`Storyline count control overflows at ${viewport.width}px`);
     if (viewport.width === 1280) {
       await page.waitForTimeout(250);
       const settingsScreenshot = path.join(screenshotRoot, "settings-1280x800.png");
@@ -737,9 +841,11 @@ try {
   summary.push({ viewport: "generation-progress-1280x800", screenshot: progressScreenshot });
   await progressPage.close();
   await assertProductionFailureDoesNotLeakDemo(browser);
-  await assertEmptySnapshotPadsToThree(browser);
+  await assertEmptySnapshotStaysEmpty(browser);
   await assertMediaTokenAndMutationFailures(browser);
   await assertHeartbeatDoesNotReplaceSnapshot(browser);
+  await assertCandidateSelectionGeneratesOnlyChosenReels(browser);
+  await assertInstagramCaptionGeneration(browser);
   await assertRegenerateAppliesNewJobAndReconnects(browser);
   await browser.close();
   console.log(JSON.stringify({ ok: true, summary }, null, 2));

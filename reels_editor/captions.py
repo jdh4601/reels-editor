@@ -29,6 +29,15 @@ _DANGLING_KOREAN_ENDING = re.compile(
     r"지만|는데|은데|인데|니까|해서|같고|싶고|했고|였고|됐고|되고"
     r")$"
 )
+_CLAUSE_ENDING = re.compile(
+    r"(?:"
+    r"고|며|면서|지만|는데|은데|인데|다가|거나|든지|"
+    r"면|으면|라면|다면|니까|으니까|므로|으므로|"
+    r"해서|하여|아서|어서|여서|때문에|반면|대신"
+    r")$"
+)
+_CLAUSE_PUNCTUATION = ",;:，；："
+_BOUND_NOUNS = {"것", "수", "때", "점", "만큼", "듯", "데", "바", "줄", "리", "뿐"}
 
 
 def double_quotes_balanced(text: str) -> bool:
@@ -167,6 +176,182 @@ def completeness_errors(groups: list[list[Any]]) -> list[str]:
         elif not is_complete_sentence(normalized):
             errors.append(f"자막 {index}: 문장이 중간에서 끊김")
     return errors
+
+
+def split_display_phrases(
+    groups: list[list[Any]],
+    max_chars: int = 20,
+    min_chars: int = 6,
+) -> list[list[Any]]:
+    """완결 문장을 한 줄에 맞는 의미 절로 나누고 시간을 비례 배분한다."""
+    display_groups: list[list[Any]] = []
+    for start, end, text in groups:
+        chunks = semantic_phrase_chunks(str(text), max_chars=max_chars, min_chars=min_chars)
+        if len(chunks) == 1:
+            display_groups.append([start, end, chunks[0]])
+            continue
+        weights = [max(1, _visible_length(chunk)) for chunk in chunks]
+        total_weight = sum(weights)
+        cursor = float(start)
+        for index, (chunk, weight) in enumerate(zip(chunks, weights)):
+            chunk_end = (
+                float(end)
+                if index == len(chunks) - 1
+                else cursor + (float(end) - float(start)) * weight / total_weight
+            )
+            display_groups.append([round(cursor, 3), round(chunk_end, 3), chunk])
+            cursor = chunk_end
+    return display_groups
+
+
+def semantic_phrase_chunks(text: str, max_chars: int = 20,
+                           min_chars: int = 6) -> list[str]:
+    """쉼표와 연결어미를 우선해 한 문장을 읽기 좋은 한 줄 조각으로 나눈다.
+
+    긴 인용문도 같은 기준으로 나눈다. 의미 경계가 전혀 없는 매우 긴 문장만
+    조사·의존명사 분리를 피한 공백 위치와 글자 경계를 최후 수단으로 사용한다.
+    """
+    normalized = " ".join(str(text).split())
+    if not normalized or _visible_length(normalized) <= max_chars:
+        return [normalized]
+    if _is_outer_double_quote(normalized):
+        normalized = normalized[1:-1].strip()
+
+    semantic, fallback = _phrase_boundaries(normalized)
+    if _visible_length(normalized) <= max_chars + 2 and not semantic:
+        return [normalized]
+    chunks: list[str] = []
+    start = 0
+    while _visible_length(normalized[start:]) > max_chars:
+        semantic_choices = _eligible_boundaries(
+            normalized, start, semantic, max_chars + 2, min_chars
+        )
+        if semantic_choices:
+            boundary = _choose_semantic_boundary(normalized, semantic_choices, min_chars)
+        else:
+            safe_fallback = [
+                boundary
+                for boundary in _eligible_boundaries(
+                    normalized, start, fallback, max_chars, min_chars
+                )
+                if _safe_fallback(normalized, start, boundary)
+            ]
+            choices = safe_fallback or _eligible_boundaries(
+                normalized, start, fallback, max_chars, min_chars
+            )
+            if not choices:
+                boundary = _hard_boundary(normalized, start, max_chars)
+            else:
+                boundary = choices[-1]
+            if boundary <= start:
+                break
+        chunk = normalized[start:boundary].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = boundary
+        while start < len(normalized) and normalized[start].isspace():
+            start += 1
+
+    tail = normalized[start:].strip()
+    if tail:
+        chunks.append(tail)
+    cleaned = [_balance_display_quotes(chunk) for chunk in chunks]
+    return [chunk for chunk in cleaned if chunk] or [normalized]
+
+
+def _phrase_boundaries(text: str) -> tuple[list[int], list[int]]:
+    semantic: list[int] = []
+    fallback: list[int] = []
+    token_start = 0
+    for index, char in enumerate(text):
+        if char in _CLAUSE_PUNCTUATION + _SENTENCE_PUNCTUATION:
+            boundary = index + 1
+            while boundary < len(text) and text[boundary] in _CLOSING_MARKS:
+                boundary += 1
+            semantic.append(boundary)
+        if not char.isspace():
+            continue
+        fallback.append(index)
+        token = text[token_start:index].rstrip(_CLAUSE_PUNCTUATION)
+        if _CLAUSE_ENDING.search(token):
+            semantic.append(index)
+        token_start = index + 1
+    return sorted(set(semantic)), sorted(set(fallback))
+
+
+def _eligible_boundaries(text: str, start: int, boundaries: list[int],
+                         max_chars: int, min_chars: int) -> list[int]:
+    return [
+        boundary
+        for boundary in boundaries
+        if boundary > start
+        and _visible_length(text[start:boundary]) >= min_chars
+        and _visible_length(text[start:boundary]) <= max_chars
+    ]
+
+
+def _choose_semantic_boundary(text: str, choices: list[int], min_chars: int) -> int:
+    for boundary in reversed(choices):
+        tail = text[boundary:].lstrip()
+        if len(choices) > 1 and re.match(r"^(?:이?라고|이?라며|이?라는)", tail):
+            continue
+        if tail and _visible_length(tail) < min_chars:
+            continue
+        return boundary
+    return choices[-1]
+
+
+def _safe_fallback(text: str, start: int, boundary: int) -> bool:
+    left = text[start:boundary].strip().rstrip(_CLAUSE_PUNCTUATION)
+    right = text[boundary:].strip()
+    if not left or not right:
+        return False
+    if _DANGLING_KOREAN_ENDING.search(left):
+        return False
+    first_right = right.split(maxsplit=1)[0].strip(_CLAUSE_PUNCTUATION)
+    return first_right not in _BOUND_NOUNS
+
+
+def _hard_boundary(text: str, start: int, max_chars: int) -> int:
+    """공백이 없는 긴 문자열도 고정 폰트 폭을 넘지 않게 자른다."""
+    boundary = start
+    for index in range(start + 1, len(text) + 1):
+        if _visible_length(text[start:index]) > max_chars:
+            break
+        boundary = index
+    return boundary
+
+
+def _is_outer_double_quote(text: str) -> bool:
+    return (
+        len(text) >= 2
+        and ((text[0] == '"' and text[-1] == '"') or (text[0] == "“" and text[-1] == "”"))
+    )
+
+
+def _balance_display_quotes(text: str) -> str:
+    normalized = text.strip()
+    if double_quotes_balanced(normalized):
+        return normalized
+    open_curly = normalized.count("“")
+    close_curly = normalized.count("”")
+    if open_curly > close_curly:
+        return normalized + "”" * (open_curly - close_curly)
+    if close_curly > open_curly:
+        return "“" * (close_curly - open_curly) + normalized
+    if normalized.count('"') % 2:
+        quote_index = normalized.find('"')
+        before = normalized[:quote_index].rstrip()
+        after = normalized[quote_index + 1:].lstrip()
+        closing_suffix = re.match(r"^(?:이?라고|이?라며|이?라는)", after)
+        if not after or closing_suffix or before.endswith(tuple(_SENTENCE_PUNCTUATION)):
+            return '"' + normalized
+        return normalized + '"'
+    return normalized
+
+
+def _visible_length(text: str) -> int:
+    return len(text.translate(str.maketrans("", "", ",.")).strip())
 
 
 def _is_escaped(text: str, index: int) -> bool:

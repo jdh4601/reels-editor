@@ -1,4 +1,4 @@
-"""합성 영상으로 전체 렌더 검증. ffmpeg 필요 — LLM/CapCut은 fixture로 대체."""
+"""합성 영상으로 전체 렌더 검증. ffmpeg 필요 — 외부 소스와 LLM은 fixture로 대체."""
 import json
 import subprocess
 from pathlib import Path

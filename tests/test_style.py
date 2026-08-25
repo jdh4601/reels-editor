@@ -12,8 +12,8 @@ def test_load_done_preset() -> None:
     assert s.canvas == (1080, 1920)
     assert s.title_highlight == "#FF7A00"
     assert s.title_color == "#FF7A00"
-    assert s.sub_highlight == "#FF3B30"
-    assert s.watermark_text == "D.one"
+    assert s.sub_highlight == "#FFFFFF"
+    assert s.watermark_text == ""
     assert s.title_font.name == "Pretendard-Bold.otf"
     assert s.sub_font.name == "Pretendard-Bold.otf"
     assert s.watermark_font.name == "Pretendard-Bold.otf"
@@ -21,21 +21,24 @@ def test_load_done_preset() -> None:
     assert s.title_emphasis_size is None
     assert s.title_line_gap is None
     assert s.title_max_lines == 1
-    assert s.title_speaker_size == 40
+    assert s.title_speaker_size == 46
     assert s.title_speaker_color == "#FFFFFF"
-    assert s.title_speaker_gap == 10
+    assert s.title_speaker_gap == 40
+    assert s.title_anchor_y == 1185
     assert s.sub_size == 40
     assert s.sub_opacity == 255
     assert s.sub_y == -400
     assert s.watermark_size == 75
-    assert s.watermark_opacity == 128
-    assert s.watermark_y == -1560
-    assert s.episode_text == "[Ep 1 / 1000]"
-    assert s.episode_size == 40
+    assert s.watermark_opacity == 255
+    assert s.watermark_y == -1450
+    assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
+    assert s.watermark_width == 212
+    assert s.episode_text == "에피소드 1 / 1000"
+    assert s.episode_size == 48
     assert s.episode_color == "#FFFFFF"
     assert s.episode_opacity == 255
     assert s.episode_gap == 18
-    assert s.episode_y == -900
+    assert s.episode_y == -1000
     assert s.title_y == 1120
     assert s.video_aspect == (9, 16)
     assert s.video_zoom == 1.0

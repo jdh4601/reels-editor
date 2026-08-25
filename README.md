@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/images/icon.png" alt="Reels Editor" width="128">
+
 # Reels Editor
 
 **Turn a one-hour founder interview into short-form reels — on your own machine.**
@@ -10,8 +12,6 @@
 [![Platform: macOS](https://img.shields.io/badge/Platform-macOS-lightgrey.svg)](#requirements)
 
 [한국어 README](README.ko.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
-
-<img src="docs/images/dashboard.png" alt="The Reels Editor dashboard: a YouTube link field, reel type chips, and a generated reel with its beat-by-beat structure" width="820">
 
 </div>
 
@@ -139,8 +139,6 @@ style: {}
 | OpenAI API | `openai` | `OPENAI_API_KEY` |
 | Kimi | `kimi` | `MOONSHOT_API_KEY` |
 | OpenAI-compatible server | `custom` | `REELS_LLM_API_KEY` |
-
-<img src="docs/images/settings.png" alt="The settings popover, showing playback speed and model provider" width="420">
 
 ## Build a standalone app
 

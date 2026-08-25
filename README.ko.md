@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/images/icon.png" alt="Reels Editor" width="128">
+
 # Reels Editor
 
 **한 시간짜리 창업가 인터뷰를 내 컴퓨터에서 숏폼 릴스로 만듭니다.**
@@ -10,8 +12,6 @@
 [![Platform: macOS](https://img.shields.io/badge/Platform-macOS-lightgrey.svg)](#준비물)
 
 [English README](README.md) · [변경 이력](CHANGELOG.md) · [기여 안내](CONTRIBUTING.md)
-
-<img src="docs/images/dashboard.png" alt="Reels Editor 대시보드. YouTube 링크 입력창, 릴스 유형 칩, 생성된 릴스와 콘텐츠 구성이 보인다" width="820">
 
 </div>
 
@@ -137,8 +137,6 @@ style: {}
 | OpenAI API | `openai` | `OPENAI_API_KEY` |
 | Kimi | `kimi` | `MOONSHOT_API_KEY` |
 | OpenAI 호환 서버 | `custom` | `REELS_LLM_API_KEY` |
-
-<img src="docs/images/settings.png" alt="재생 배속과 모델 제공자를 담은 설정 팝오버" width="420">
 
 ## 앱 파일로 빌드하기
 

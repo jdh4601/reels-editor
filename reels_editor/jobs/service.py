@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+import uuid
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -20,7 +21,7 @@ from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
 from reels_editor.storyteller import StorylineResult, generate_script
 from reels_editor.style import StylePreset, load_style
-from reels_editor.title_rules import validate_title
+from reels_editor.title_rules import normalize_title, validate_title
 
 from .models import ContentCandidate, ExportState, Job, Status, Storyline, Variant
 from .store import JobStore
@@ -217,7 +218,13 @@ class JobService:
             for storyline_id in playable_ids:
                 try:
                     self._ensure_playback_artifact(candidate.id, storyline_id)
-                    self._ensure_durable_export(candidate.id, storyline_id)
+                    self._ensure_durable_export(
+                        candidate.id,
+                        storyline_id,
+                        completed_at_fallback=(
+                            candidate.updated_at or candidate.created_at or None
+                        ),
+                    )
                 except (OSError, ValueError, JobServiceError):
                     pass
             archived.append(self.store.load(candidate.id))
@@ -766,13 +773,16 @@ class JobService:
             if variant.path is None:
                 raise JobServiceError("selected variant has no output path")
             destination = destination.expanduser()
-            destination.parent.mkdir(parents=True, exist_ok=True)
+            if self._is_archive_namespace_path(destination):
+                self._assert_safe_archive_directory(destination.parent)
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
             destination = self._collision_safe_destination(
                 destination,
                 job_id=job_id,
                 storyline_id=story.id,
             )
-            operation_id = f"{os.getpid()}.{threading.get_ident()}"
+            operation_id = f"{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}"
             tmp = destination.with_name(
                 f".{destination.stem}.{operation_id}.part{destination.suffix}"
             )
@@ -786,10 +796,19 @@ class JobService:
             )
             destination_existed = destination.is_file()
             manifest_existed = manifest.is_file()
+            for output in (
+                destination,
+                manifest,
+                tmp,
+                manifest_tmp,
+                destination_backup,
+                manifest_backup,
+            ):
+                self._assert_safe_export_output(output)
             try:
-                shutil.copy2(variant.path, tmp)
-                manifest_tmp.write_text(
-                    json.dumps(
+                self._copy_file_exclusive(Path(variant.path), tmp)
+                with manifest_tmp.open("x", encoding="utf-8") as file:
+                    file.write(json.dumps(
                         {
                             "job_id": job_id,
                             "storyline_id": story.id,
@@ -800,9 +819,7 @@ class JobService:
                         },
                         ensure_ascii=False,
                         indent=2,
-                    ),
-                    encoding="utf-8",
-                )
+                    ))
                 if destination_existed:
                     self._backup_export_file(destination, destination_backup)
                 if manifest_existed:
@@ -828,16 +845,24 @@ class JobService:
                     destination_backup,
                     manifest_backup,
                 ):
-                    if temporary.exists():
+                    if temporary.exists() or temporary.is_symlink():
                         temporary.unlink()
             return destination
+
+    @staticmethod
+    def _copy_file_exclusive(source: Path, destination: Path) -> None:
+        with source.open("rb") as source_file, destination.open("xb") as output_file:
+            shutil.copyfileobj(source_file, output_file)
+        shutil.copystat(source, destination, follow_symlinks=False)
 
     @staticmethod
     def _backup_export_file(source: Path, backup: Path) -> None:
         try:
             os.link(source, backup)
         except OSError:
-            shutil.copy2(source, backup)
+            if backup.exists() or backup.is_symlink():
+                raise
+            JobService._copy_file_exclusive(source, backup)
 
     @staticmethod
     def _restore_export_file(destination: Path, backup: Path, *, existed: bool) -> None:
@@ -846,7 +871,13 @@ class JobService:
         elif not existed and destination.exists():
             destination.unlink()
 
-    def _ensure_durable_export(self, job_id: str, storyline_id: str) -> Path:
+    def _ensure_durable_export(
+        self,
+        job_id: str,
+        storyline_id: str,
+        *,
+        completed_at_fallback: str | None = None,
+    ) -> Path:
         with self._archive_lock:
             job = self.store.load(job_id)
             story = self._find_storyline(job, storyline_id)
@@ -862,8 +893,15 @@ class JobService:
             with self._lock:
                 current = self.store.load(job_id)
                 current_story = self._find_storyline(current, storyline_id)
-                current_story.archive_path = str(actual)
-                self._save(current)
+                changed = False
+                if current_story.archive_path != str(actual):
+                    current_story.archive_path = str(actual)
+                    changed = True
+                if not current_story.completed_at and completed_at_fallback:
+                    current_story.completed_at = completed_at_fallback
+                    changed = True
+                if changed:
+                    self._save(current)
             return actual
 
     def _ensure_playback_artifact(self, job_id: str, storyline_id: str) -> None:
@@ -871,32 +909,44 @@ class JobService:
             job = self.store.load(job_id)
             story = self._find_storyline(job, storyline_id)
             variant = self._active_variant(story)
-            if not variant.path or not Path(variant.path).is_file():
-                raise JobServiceError("storyline has no playable completed variant")
-            if self._artifact_id_for_path(job, Path(variant.path)) is not None:
-                return
-            artifact = self.store.register_artifact(
-                job_id,
-                Path(variant.path),
-                kind="video/mp4",
-            )
-            current = self.store.load(job_id)
+            artifact_id = self._artifact_id_for_path(job, Path(variant.path or ""))
+            if artifact_id is None:
+                artifact = self.store.register_artifact(
+                    job_id,
+                    Path(variant.path or ""),
+                    kind="video/mp4",
+                )
+                artifact_id = artifact.id
+                current = self.store.load(job_id)
+            else:
+                current = job
             current_story = self._find_storyline(current, storyline_id)
             current_variant = next(
                 (item for item in current_story.variants if item.path == variant.path),
                 None,
             )
+            changed = False
+            if current_story.active_variant_path != variant.path:
+                current_story.active_variant_path = variant.path
+                current_story.title = variant.title_text
+                current_story.subtitles_on = variant.subtitles_enabled
+                changed = True
             if current_variant is not None:
-                current_variant.id = artifact.id
-            self._save(current)
+                if current_variant.id != artifact_id:
+                    current_variant.id = artifact_id
+                    changed = True
+            if changed:
+                self._save(current)
 
     @staticmethod
     def _storyline_is_playable(story: Storyline) -> bool:
         if story.status is not Status.READY:
             return False
-        paths = [story.active_variant_path]
-        paths.extend(variant.path for variant in reversed(story.variants))
-        return any(raw and Path(raw).is_file() for raw in paths)
+        try:
+            JobService._active_variant(story)
+        except JobServiceError:
+            return False
+        return True
 
     def _durable_job_directory(self, job: Job) -> Path:
         safe_title = _safe_filename_component(
@@ -910,7 +960,11 @@ class JobService:
                 suffix = "" if collision_index == 1 else f" ({collision_index})"
                 candidate = self.archive_root / f"{base_name}{suffix}"
                 marker = candidate / ".reels-editor-job.json"
+                if candidate.is_symlink():
+                    raise JobServiceError("archive directory is a symlink")
                 if candidate.exists():
+                    self._assert_safe_archive_directory(candidate)
+                    self._assert_safe_export_output(marker)
                     if self._directory_belongs_to_job(candidate, job.id):
                         return candidate
                     try:
@@ -920,12 +974,19 @@ class JobService:
                     if not is_empty:
                         continue
                 candidate.mkdir(parents=True, exist_ok=True)
-                marker_tmp = candidate / f".{marker.name}.{os.getpid()}.part"
-                marker_tmp.write_text(
-                    json.dumps({"job_id": job.id}, ensure_ascii=False),
-                    encoding="utf-8",
+                self._assert_safe_archive_directory(candidate)
+                marker_tmp = candidate / (
+                    f".{marker.name}.{os.getpid()}.{uuid.uuid4().hex}.part"
                 )
-                os.replace(marker_tmp, marker)
+                self._assert_safe_export_output(marker)
+                self._assert_safe_export_output(marker_tmp)
+                try:
+                    with marker_tmp.open("x", encoding="utf-8") as file:
+                        file.write(json.dumps({"job_id": job.id}, ensure_ascii=False))
+                    os.replace(marker_tmp, marker)
+                finally:
+                    if marker_tmp.exists() or marker_tmp.is_symlink():
+                        marker_tmp.unlink()
                 return candidate
         raise JobServiceError("archive directory collision limit exceeded")
 
@@ -968,6 +1029,7 @@ class JobService:
         job_id: str,
         storyline_id: str,
     ) -> Path:
+        self._assert_safe_export_output(destination)
         if not destination.exists() or self._destination_belongs_to_story(
             destination,
             job_id,
@@ -978,6 +1040,7 @@ class JobService:
             candidate = destination.with_name(
                 f"{destination.stem} ({collision_index}){destination.suffix}"
             )
+            self._assert_safe_export_output(candidate)
             if not candidate.exists() or self._destination_belongs_to_story(
                 candidate,
                 job_id,
@@ -986,13 +1049,14 @@ class JobService:
                 return candidate
         raise JobServiceError("export filename collision limit exceeded")
 
-    @staticmethod
     def _destination_belongs_to_story(
+        self,
         destination: Path,
         job_id: str,
         storyline_id: str,
     ) -> bool:
         manifest = destination.with_suffix(destination.suffix + ".manifest.json")
+        self._assert_safe_export_output(manifest)
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -1003,16 +1067,18 @@ class JobService:
             and payload.get("storyline_id") == storyline_id
         )
 
-    @staticmethod
     def _destination_is_current(
+        self,
         destination: Path,
         job_id: str,
         story: Storyline,
         variant: Variant,
     ) -> bool:
+        self._assert_safe_export_output(destination)
         if not destination.is_file():
             return False
         manifest = destination.with_suffix(destination.suffix + ".manifest.json")
+        self._assert_safe_export_output(manifest)
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -1031,6 +1097,27 @@ class JobService:
 
     def _is_archive_directory(self, path: Path) -> bool:
         return self._is_archive_path(path)
+
+    def _is_archive_namespace_path(self, path: Path) -> bool:
+        root = Path(os.path.abspath(self.archive_root.expanduser()))
+        target = Path(os.path.abspath(path.expanduser()))
+        return self._is_relative_to(target, root)
+
+    def _assert_safe_archive_directory(self, directory: Path) -> None:
+        if not self._is_archive_namespace_path(directory):
+            raise JobServiceError("archive directory is outside archive root")
+        if directory.is_symlink():
+            raise JobServiceError("archive directory is a symlink")
+        if not directory.is_dir():
+            raise JobServiceError("archive directory is missing")
+        if not self._is_archive_path(directory):
+            raise JobServiceError("archive directory is outside archive root")
+
+    def _assert_safe_export_output(self, path: Path) -> None:
+        if path.is_symlink():
+            raise JobServiceError("export destination is a symlink")
+        if self._is_archive_namespace_path(path):
+            self._assert_safe_archive_directory(path.parent)
 
     def _record_export_failure(self, job_id: str, exc: Exception) -> None:
         with self._lock:
@@ -1412,9 +1499,9 @@ class JobService:
             progress=0.0,
             error=result.error,
         )
-        storyline.title = result.title or (
+        storyline.title = normalize_title(result.title or (
             _fallback_doc_title(result.doc) if result.doc is not None else ""
-        )
+        ))
         return storyline
 
     def _render_storyline_with_registry(
@@ -1480,7 +1567,7 @@ class JobService:
                 detail="제목·자막 오버레이와 오디오를 합성하는 중입니다.",
             )
             assets_path = assets.write_manifest(sdir / ".render" / "assets.json")
-            title_text = result.title or _fallback_doc_title(result.doc)
+            title_text = normalize_title(result.title or _fallback_doc_title(result.doc))
             speaker_text = render.speaker_label(result.doc)
             key = render.variant_cache_key(
                 storyline_id=story_id,
@@ -1744,14 +1831,24 @@ class JobService:
         candidate_id = job.selected_candidate_ids[storyline.index]
         return next((item for item in job.candidates if item.id == candidate_id), None)
 
-    def _active_variant(self, story: Storyline) -> Variant:
+    @staticmethod
+    def _active_variant(story: Storyline) -> Variant:
         active_path = story.active_variant_path
         for variant in story.variants:
-            if variant.path == active_path:
+            if variant.path == active_path and JobService._variant_is_playable(variant):
                 return variant
-        if story.variants:
-            return story.variants[-1]
-        raise JobServiceError("storyline has no variants")
+        for variant in reversed(story.variants):
+            if JobService._variant_is_playable(variant):
+                return variant
+        raise JobServiceError("storyline has no playable completed variant")
+
+    @staticmethod
+    def _variant_is_playable(variant: Variant) -> bool:
+        return bool(
+            variant.status is Status.READY
+            and variant.path
+            and Path(variant.path).is_file()
+        )
 
     def _invalidate_storyline_variants(self, job: Job, storyline: Storyline) -> None:
         job_root = self.store.job_dir(job.id).resolve()
@@ -1855,7 +1952,7 @@ def _fallback_doc_title(doc: dict[str, Any] | None) -> str:
     for item in doc.get("title_candidates", []):
         text = str(item.get("text", "")).strip() if isinstance(item, dict) else ""
         if text:
-            return text
+            return normalize_title(text)
     return ""
 
 

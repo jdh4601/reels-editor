@@ -1,3 +1,5 @@
+import unicodedata
+
 import pytest
 
 from reels_editor.title_rules import (
@@ -43,3 +45,12 @@ def test_punctuation_latin_and_no_space_strings_are_deterministic() -> None:
     assert title_char_count("A\u0301BC-12") == 6
     assert wrap_title("ABCDEF-GHIJK") == ("ABCDEF-", "GHIJK")
     assert wrap_title("가나다라마바사아자차카타") == ("가나다라마바", "사아자차카타")
+
+
+def test_canonically_equivalent_korean_titles_count_wrap_and_persist_identically() -> None:
+    composed = "가나다라마바"
+    decomposed = unicodedata.normalize("NFD", composed)
+
+    assert title_char_count(decomposed) == title_char_count(composed) == 6
+    assert wrap_title(decomposed) == wrap_title(composed) == (composed,)
+    assert validate_title(decomposed) == composed

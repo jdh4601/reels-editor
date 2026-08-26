@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import threading
+import unicodedata
 
 import pytest
 
@@ -392,16 +393,49 @@ def test_variant_cache_key_changes_by_title_subtitle_and_style() -> None:
     )
 
 
+def test_variant_cache_key_normalizes_canonically_equivalent_titles() -> None:
+    composed = "가나다라마바"
+
+    assert render.variant_cache_key(
+        storyline_id="s1",
+        title_text=composed,
+        subtitles_enabled=True,
+        style_hash_value="style",
+    ) == render.variant_cache_key(
+        storyline_id="s1",
+        title_text=unicodedata.normalize("NFD", composed),
+        subtitles_enabled=True,
+        style_hash_value="style",
+    )
+
+
 def test_speaker_label_formats_name_and_role() -> None:
     assert render.speaker_label({
-        "speaker": {"name": "샘 알트만", "role": "CEO of OpenAI"},
+        "speaker": {
+            "name": "샘 알트만",
+            "company": "OpenAI",
+            "role": "CEO",
+            "evidence": "OpenAI CEO 샘 알트만",
+        },
     }) == "샘 알트만 (OpenAI CEO)"
     assert render.speaker_label({
-        "speaker": {"name": "김지영", "company": "마루", "role": "Founder"},
+        "speaker": {
+            "name": "김지영",
+            "company": "마루",
+            "role": "Founder",
+            "evidence": "마루 창업자 김지영",
+        },
     }) == "김지영 (마루 창업자)"
     assert render.speaker_label({
-        "speaker": {"name": "박민수", "alternate_role": "investor"},
+        "speaker": {
+            "name": "박민수",
+            "alternate_role": "investor",
+            "evidence": "투자자 박민수",
+        },
     }) == "박민수 (투자자)"
+    assert render.speaker_label({
+        "speaker": {"name": "샘 알트만", "role": "CEO of OpenAI"},
+    }) == "샘 알트만"
     assert render.speaker_label({
         "speaker": {"name": "이서준", "role": "visionary"},
     }) == "이서준"

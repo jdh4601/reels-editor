@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from reels_editor.title_rules import normalize_title
+
 SCHEMA_VERSION = 6
 
 
@@ -38,14 +40,15 @@ def _status(value: Any, default: Status = Status.IDLE) -> Status:
 
 def _storyline_title(data: dict[str, Any]) -> str:
     """제목 선택 기능이 있던 시절의 저장본에서도 확정 제목 하나를 읽어낸다."""
-    title = str(data.get("title", "")).strip()
+    title = normalize_title(str(data.get("title", "")))
     if title:
         return title
     candidates = [str(item) for item in data.get("title_candidates", [])]
     if not candidates:
         return ""
     index = int(data.get("selected_title_index", 0))
-    return candidates[index] if 0 <= index < len(candidates) else candidates[0]
+    selected = candidates[index] if 0 <= index < len(candidates) else candidates[0]
+    return normalize_title(selected)
 
 
 @dataclass
@@ -68,7 +71,7 @@ class Variant:
         )
         return {
             "id": self.id,
-            "title_text": self.title_text,
+            "title_text": normalize_title(self.title_text),
             "subtitles_enabled": self.subtitles_enabled,
             "subtitles_on": subtitles_on,
             "style_hash": self.style_hash,
@@ -82,7 +85,7 @@ class Variant:
     def from_dict(cls, data: dict[str, Any]) -> Variant:
         return cls(
             id=str(data.get("id", "")),
-            title_text=str(data.get("title_text", "")),
+            title_text=normalize_title(str(data.get("title_text", ""))),
             subtitles_enabled=bool(
                 data.get("subtitles_enabled", data.get("subtitles_on", True))
             ),
@@ -127,7 +130,7 @@ class Storyline:
             "angle_name": self.angle_name,
             "status": self.status.value,
             "progress": self.progress,
-            "title": self.title,
+            "title": normalize_title(self.title),
             "subtitles_on": self.subtitles_on,
             "variants": [variant.to_dict() for variant in self.variants],
             "base_video_path": self.base_video_path,
@@ -237,7 +240,7 @@ class ContentCandidate:
         return {
             "id": self.id,
             "content_type": self.content_type,
-            "title": self.title,
+            "title": normalize_title(self.title),
             "summary": self.summary,
             "takeaway": self.takeaway,
             "segment_ids": self.segment_ids,
@@ -248,7 +251,7 @@ class ContentCandidate:
         return cls(
             id=str(data.get("id", "")),
             content_type=str(data.get("content_type", "")),
-            title=str(data.get("title", "")),
+            title=normalize_title(str(data.get("title", ""))),
             summary=str(data.get("summary", "")),
             takeaway=str(data.get("takeaway", "")),
             segment_ids=[str(item) for item in data.get("segment_ids", [])],

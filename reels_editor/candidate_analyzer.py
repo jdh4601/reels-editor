@@ -16,6 +16,7 @@ from reels_editor.storyteller import (
     text_hook_principles,
     title_length_error,
 )
+from reels_editor.title_rules import normalize_title
 
 if TYPE_CHECKING:
     from reels_editor.jobs.models import ContentCandidate
@@ -198,7 +199,7 @@ def _parse_candidates(
             errors.append(f"candidates[{index}]는 객체여야 함")
             continue
         content_type = str(item.get("content_type", "")).strip()
-        title = " ".join(str(item.get("title", "")).split())
+        title = normalize_title(str(item.get("title", "")))
         summary = " ".join(str(item.get("summary", "")).split())
         takeaway = " ".join(str(item.get("takeaway", "")).split())
         segment_ids = list(dict.fromkeys(str(value) for value in item.get("segment_ids", [])))

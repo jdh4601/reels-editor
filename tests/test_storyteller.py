@@ -264,10 +264,20 @@ def test_generate_script_normalizes_missing_title_keyword(
 def test_generate_script_normalizes_title_to_one_line_and_speaker_label(
         segments: dict, edl_doc: dict) -> None:
     edl_doc["title_candidates"][0]["text"] = "좋은 아이디어를\n포기하는 법"
-    edl_doc["speaker"] = {"name": " 샘  알트만 ", "role": " CEO of OpenAI "}
+    edl_doc["speaker"] = {
+        "name": " 샘  알트만 ",
+        "company": "OpenAI",
+        "role": "CEO",
+        "alternate_role": "",
+        "evidence": "OpenAI CEO 샘 알트만",
+    }
+    grounded_segments = {
+        **segments,
+        "source_title": "OpenAI CEO 샘 알트만 인터뷰",
+    }
 
     out = storyteller.generate_script(
-        segments,
+        grounded_segments,
         runner=lambda _p: json.dumps(edl_doc, ensure_ascii=False),
     )
 
@@ -277,7 +287,33 @@ def test_generate_script_normalizes_title_to_one_line_and_speaker_label(
         "company": "OpenAI",
         "role": "CEO",
         "alternate_role": "",
+        "evidence": "OpenAI CEO 샘 알트만",
     }
+
+
+def test_fresh_legacy_shaped_speaker_role_still_requires_direct_evidence(
+        segments: dict) -> None:
+    doc = {
+        "speaker": {
+            "name": "Synthetic Person",
+            "role": "CEO of FictionalCo",
+        }
+    }
+    source = {
+        **segments,
+        "source_title": "A generic interview",
+        "source_channel": "Generic Channel",
+    }
+
+    errors = storyteller.validate_and_normalize_speaker(doc, source)
+
+    assert errors == ["speaker의 기업/역할 evidence가 제공된 SEGMENTS 또는 영상 맥락에 직접 존재해야 함"]
+
+
+def test_legacy_persisted_speaker_without_evidence_degrades_to_name_only() -> None:
+    speaker = {"name": "Synthetic Person", "role": "CEO of FictionalCo"}
+
+    assert storyteller.format_speaker_label(speaker) == "Synthetic Person"
 
 
 def test_generate_script_retries_when_youtube_speaker_is_missing(

@@ -248,9 +248,13 @@ def format_speaker_label(speaker: Any) -> str:
     name = normalized["name"]
     if not name:
         return ""
-    if normalized["company"] and normalized["role"]:
+    evidence = normalized.get("evidence", "")
+    evidence_supports_identity = bool(
+        evidence and _speaker_evidence_supports_identity(normalized, evidence)
+    )
+    if evidence_supports_identity and normalized["company"] and normalized["role"]:
         return f"{name} ({normalized['company']} {normalized['role']})"
-    if normalized["alternate_role"]:
+    if evidence_supports_identity and normalized["alternate_role"]:
         return f"{name} ({normalized['alternate_role']})"
     return name
 
@@ -294,11 +298,8 @@ def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]
         if source_context_available:
             return ["speaker.name이 비어있음"]
         name = "인터뷰 화자"
-    uses_grounded_schema = any(key in speaker for key in ("company", "alternate_role", "evidence"))
     normalized = normalize_speaker_data({**speaker, "name": name})
-    if uses_grounded_schema and (
-        normalized["company"] or normalized["role"] or normalized["alternate_role"]
-    ):
+    if normalized["company"] or normalized["role"] or normalized["alternate_role"]:
         evidence = normalized.get("evidence", "")
         source_text = " ".join(
             [

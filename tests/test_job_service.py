@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import reels_editor.jobs.service as job_service_module
-from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceDeps, JobServiceError, JobStore, Status, Storyline
+from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceDeps, JobServiceError, JobStore, Status, Storyline, Variant
 from reels_editor import processes
 from reels_editor.render import RenderAssets
 from reels_editor.storyteller import StorylineResult
@@ -359,6 +359,62 @@ def test_fixed_export_is_collision_safe_and_idempotent(tmp_path: Path) -> None:
     assert len(list(first_path.parent.glob("*.mp4"))) == 1
 
 
+def test_fixed_export_rejects_symlinked_archive_directory(tmp_path: Path) -> None:
+    archive_root = tmp_path / "Movies" / "Reels Editor"
+    outside = tmp_path / "outside"
+    archive_root.mkdir(parents=True)
+    outside.mkdir()
+    (archive_root / "Ep-9_founder").symlink_to(outside, target_is_directory=True)
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=archive_root,
+    )
+
+    ready = _run_ready(service, candidate_count=1, episode_number=9)
+
+    with pytest.raises(JobServiceError, match="symlink|outside archive root"):
+        service.export_selected(ready.id, storyline_id="s1")
+    assert list(outside.iterdir()) == []
+
+
+def test_fixed_export_rejects_symlinked_archive_destination(tmp_path: Path) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+    destination = Path(ready.storylines[0].archive_path or "")
+    outside = tmp_path / "outside.mp4"
+    outside.write_bytes(b"unrelated")
+    destination.unlink()
+    destination.symlink_to(outside)
+
+    with pytest.raises(JobServiceError, match="symlink"):
+        service.export_selected(ready.id, storyline_id="s1")
+    assert outside.read_bytes() == b"unrelated"
+
+
+def test_fixed_export_rejects_symlinked_archive_manifest(tmp_path: Path) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+    destination = Path(ready.storylines[0].archive_path or "")
+    manifest = destination.with_suffix(destination.suffix + ".manifest.json")
+    outside = tmp_path / "outside-manifest.json"
+    outside.write_text('{"owner": "unrelated"}', encoding="utf-8")
+    manifest.unlink()
+    manifest.symlink_to(outside)
+
+    with pytest.raises(JobServiceError, match="symlink"):
+        service.export_selected(ready.id, storyline_id="s1")
+    assert outside.read_text(encoding="utf-8") == '{"owner": "unrelated"}'
+
+
 def test_archive_jobs_filters_non_playable_history(tmp_path: Path) -> None:
     service = JobService(
         store=JobStore(tmp_path / "jobs"),
@@ -374,6 +430,91 @@ def test_archive_jobs_filters_non_playable_history(tmp_path: Path) -> None:
     archived = service.archive_jobs()
 
     assert [job.id for job in archived] == [ready.id]
+
+
+def test_archive_promotes_existing_ready_variant_instead_of_listing_deleted_active(
+    tmp_path: Path,
+) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+    good_path = Path(ready.storylines[0].active_variant_path or "")
+    stale_path = good_path.with_name("deleted-active.mp4")
+    stale_path.write_bytes(b"stale")
+    stale_artifact = service.store.register_artifact(ready.id, stale_path, kind="video/mp4")
+    stale_path.unlink()
+    job = service.store.load(ready.id)
+    story = job.storylines[0]
+    story.variants.append(
+        Variant(
+            id=stale_artifact.id,
+            title_text="삭제된 제목입니다",
+            subtitles_enabled=True,
+            status=Status.READY,
+            path=str(stale_path),
+        )
+    )
+    story.active_variant_path = str(stale_path)
+    service.store.save(job)
+
+    archived = service.archive_jobs()
+
+    assert len(archived) == 1
+    promoted = archived[0].storylines[0]
+    assert promoted.active_variant_path == str(good_path)
+    assert promoted.title == promoted.variants[0].title_text
+    assert Path(promoted.active_variant_path).is_file()
+
+
+def test_archive_reads_are_idempotent_once_artifacts_are_current(tmp_path: Path) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+    snapshot_path = service.store.job_dir(ready.id) / "job.json"
+    before = service.store.load(ready.id)
+    before_bytes = snapshot_path.read_bytes()
+
+    service.archive_jobs()
+    service.archive_jobs()
+
+    after = service.store.load(ready.id)
+    assert snapshot_path.read_bytes() == before_bytes
+    assert after.revision == before.revision
+    assert after.updated_at == before.updated_at
+    assert after.storylines[0].completed_at == before.storylines[0].completed_at
+
+
+def test_first_legacy_archive_migration_persists_stable_completion_date(
+    tmp_path: Path,
+) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+    legacy = service.store.load(ready.id)
+    legacy.storylines[0].completed_at = None
+    legacy.storylines[0].archive_path = None
+    service.store.save(legacy)
+    before_migration = service.store.load(ready.id)
+
+    service.archive_jobs()
+
+    migrated = service.store.load(ready.id)
+    expected_completed_at = before_migration.updated_at
+    migrated_bytes = (service.store.job_dir(ready.id) / "job.json").read_bytes()
+    service.archive_jobs()
+
+    assert migrated.storylines[0].completed_at == expected_completed_at
+    assert service.store.load(ready.id).storylines[0].completed_at == expected_completed_at
+    assert (service.store.job_dir(ready.id) / "job.json").read_bytes() == migrated_bytes
 
 
 def test_title_edit_rerenders_overlay_only_and_invalidates_caption(tmp_path: Path) -> None:

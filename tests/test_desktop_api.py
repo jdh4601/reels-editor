@@ -428,6 +428,62 @@ def test_archive_returns_completed_reel_identity_and_open_reuses_snapshot(tmp_pa
     assert opened.json()["episode_number"] == 37
 
 
+def test_archive_api_uses_existing_ready_variant_when_recorded_active_is_missing(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job(project_name="창업가 인터뷰")
+    good_path = store.job_dir(job.id) / "s1" / "ready.mp4"
+    stale_path = good_path.with_name("missing.mp4")
+    good_path.parent.mkdir(parents=True)
+    good_path.write_bytes(b"ready")
+    good_artifact = store.register_artifact(job.id, good_path, kind="video/mp4")
+    stale_path.write_bytes(b"stale")
+    stale_artifact = store.register_artifact(job.id, stale_path, kind="video/mp4")
+    stale_path.unlink()
+    job = store.load(job.id)
+    job.status = Status.READY
+    job.storylines = [Storyline(
+        id="s1",
+        index=0,
+        status=Status.READY,
+        title="삭제된 제목입니다",
+        active_variant_path=str(stale_path),
+        variants=[
+            Variant(
+                id=good_artifact.id,
+                title_text="재생 가능한 제목",
+                subtitles_enabled=True,
+                status=Status.READY,
+                path=str(good_path),
+            ),
+            Variant(
+                id=stale_artifact.id,
+                title_text="삭제된 제목입니다",
+                subtitles_enabled=True,
+                status=Status.READY,
+                path=str(stale_path),
+            ),
+        ],
+    )]
+    job = store.save(job)
+    service = FakeService(store, job)
+    service.archive_override = [job]
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).get("/api/archive?token=secret")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["video_url"] == (
+        f"/media/{job.id}/{good_artifact.id}"
+    )
+
+
 def test_title_patch_passes_validated_payload_to_service(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
     job = store.create_job()

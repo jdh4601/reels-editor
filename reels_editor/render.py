@@ -555,6 +555,7 @@ def variant_cache_key(
     style_hash_value: str,
     speaker_text: str = "",
 ) -> str:
+    title_text = normalize_title(title_text)
     payload = json.dumps(
         {
             "storyline_id": storyline_id,

@@ -16,8 +16,8 @@ _PHRASE_ENDINGS = frozenset(",.!?;:，。、！？；：·/|—–-")
 
 
 def normalize_title(text: str) -> str:
-    """Collapse all user/model whitespace into ordinary single spaces."""
-    return " ".join(str(text).split())
+    """Compose canonically equivalent text and collapse whitespace."""
+    return " ".join(unicodedata.normalize("NFC", str(text)).split())
 
 
 def grapheme_like_clusters(text: str) -> tuple[str, ...]:
@@ -29,7 +29,7 @@ def grapheme_like_clusters(text: str) -> tuple[str, ...]:
     """
     clusters: list[str] = []
     regional_run = 0
-    for char in str(text):
+    for char in unicodedata.normalize("NFC", str(text)):
         codepoint = ord(char)
         is_regional = codepoint in _REGIONAL_INDICATORS
         extends_previous = (

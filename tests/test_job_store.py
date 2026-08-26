@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import unicodedata
 
 import pytest
 
@@ -116,6 +117,32 @@ def test_set_current_reopens_a_saved_job(tmp_path: Path) -> None:
 
     assert reopened.id == first.id
     assert JobStore(root=tmp_path).current_job().id == first.id
+
+
+def test_job_store_persists_titles_in_nfc(tmp_path: Path) -> None:
+    store = JobStore(root=tmp_path)
+    job = store.create_job()
+    composed = "가나다라마바"
+    decomposed = unicodedata.normalize("NFD", composed)
+    job.storylines = [Storyline(
+        id="s1",
+        index=0,
+        title=decomposed,
+        variants=[Variant(
+            id="v1",
+            title_text=decomposed,
+            subtitles_enabled=True,
+        )],
+    )]
+
+    store.save(job)
+
+    payload = json.loads((store.job_dir(job.id) / "job.json").read_text(encoding="utf-8"))
+    loaded = store.load(job.id)
+    assert payload["storylines"][0]["title"] == composed
+    assert payload["storylines"][0]["variants"][0]["title_text"] == composed
+    assert loaded.storylines[0].title == composed
+    assert loaded.storylines[0].variants[0].title_text == composed
 
 
 def test_job_snapshot_keeps_dashboard_snake_case_fields(tmp_path: Path) -> None:

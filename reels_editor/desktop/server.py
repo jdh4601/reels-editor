@@ -483,20 +483,33 @@ def _archive_items(jobs: list[Job]) -> list[dict[str, Any]]:
 def _active_variant(storyline: Storyline) -> Variant | None:
     if storyline.active_variant_path:
         for variant in storyline.variants:
-            if variant.path == storyline.active_variant_path:
+            if (
+                variant.path == storyline.active_variant_path
+                and _variant_is_playable(variant)
+            ):
                 return variant
-    return storyline.variants[-1] if storyline.variants else None
+    return next(
+        (variant for variant in reversed(storyline.variants) if _variant_is_playable(variant)),
+        None,
+    )
+
+
+def _variant_is_playable(variant: Variant) -> bool:
+    return bool(
+        variant.status is Status.READY
+        and variant.path
+        and Path(variant.path).is_file()
+    )
 
 
 def _artifact_for_variant(job: Job, variant: Variant | None) -> str | None:
-    if variant is None or not variant.path:
+    if variant is None or not _variant_is_playable(variant):
         return None
     target = Path(variant.path).resolve()
     for artifact in job.artifacts.values():
-        if Path(artifact.path).resolve() == target:
+        artifact_path = Path(artifact.path).resolve()
+        if artifact_path == target and artifact_path.is_file():
             return artifact.id
-    if variant.id in job.artifacts:
-        return variant.id
     return None
 
 

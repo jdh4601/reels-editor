@@ -7,7 +7,6 @@ import re
 import shutil
 import subprocess
 import threading
-import unicodedata
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -21,13 +20,7 @@ from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
 from reels_editor.storyteller import StorylineResult, generate_script
 from reels_editor.style import StylePreset, load_style
-
-try:
-    from reels_editor.title_rules import validate_title as _validate_shared_title
-except ModuleNotFoundError as exc:
-    if exc.name != "reels_editor.title_rules":
-        raise
-    _validate_shared_title = None
+from reels_editor.title_rules import validate_title
 
 from .models import ContentCandidate, ExportState, Job, Status, Storyline, Variant
 from .store import JobStore
@@ -38,8 +31,6 @@ MAX_BASE_RENDERS = 2
 DESKTOP_PROVIDERS = frozenset({"codex-cli", "claude-cli", "openai", "kimi"})
 EXPORT_TITLE_MAX_BYTES = 220
 DEFAULT_EPISODE_NUMBER = 1
-TITLE_MIN_DISPLAY_CHARACTERS = 6
-TITLE_MAX_DISPLAY_CHARACTERS = 24
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _FILENAME_WHITESPACE = re.compile(r"\s+")
 
@@ -1470,7 +1461,16 @@ class JobService:
                 status=Status.RENDERING_BASE,
                 detail="선택한 구간을 세로 영상으로 렌더링하는 중입니다.",
             )
-            assets = self.deps.render_base_and_assets(video, segments, result.doc, style, sdir / ".render", speed)
+            job = self.store.load(job_id)
+            assets = self.deps.render_base_and_assets(
+                video,
+                segments,
+                result.doc,
+                style,
+                sdir / ".render",
+                speed,
+                episode_number=job.episode_number,
+            )
             self._raise_if_cancelled(job_id)
             self._set_storyline_render_progress(
                 job_id,
@@ -1918,56 +1918,7 @@ def _safe_filename_component(value: str, *, max_bytes: int) -> str:
 
 
 def validate_reel_title(title: str) -> str:
-    if _validate_shared_title is not None:
-        try:
-            return _validate_shared_title(title)
-        except ValueError as exc:
-            raise JobServiceError(str(exc)) from exc
-    normalized = unicodedata.normalize("NFC", " ".join(str(title).split()))
-    count = _display_character_count(normalized)
-    if not TITLE_MIN_DISPLAY_CHARACTERS <= count <= TITLE_MAX_DISPLAY_CHARACTERS:
-        raise JobServiceError(
-            "화면 제목은 공백을 제외하고 6~24자로 입력하세요. "
-            f"현재 {count}자입니다."
-        )
-    return normalized
-
-
-def _display_character_count(value: str) -> int:
-    """Count visible grapheme-like characters without adding a dependency.
-
-    Korean syllables and ordinary Unicode code points count individually, while
-    combining marks, variation selectors, emoji modifiers, and ZWJ-linked emoji
-    remain part of their preceding displayed character. Whitespace is ignored.
-    """
-    count = 0
-    join_next = False
-    regional_run = 0
-    for char in value:
-        codepoint = ord(char)
-        if char.isspace():
-            join_next = False
-            regional_run = 0
-            continue
-        if char == "\u200d":
-            join_next = True
-            continue
-        if (
-            unicodedata.combining(char)
-            or 0xFE00 <= codepoint <= 0xFE0F
-            or 0xE0100 <= codepoint <= 0xE01EF
-            or 0x1F3FB <= codepoint <= 0x1F3FF
-        ):
-            continue
-        if 0x1F1E6 <= codepoint <= 0x1F1FF:
-            if regional_run % 2 == 0:
-                count += 1
-            regional_run += 1
-            join_next = False
-            continue
-        regional_run = 0
-        if join_next:
-            join_next = False
-            continue
-        count += 1
-    return count
+    try:
+        return validate_title(title)
+    except ValueError as exc:
+        raise JobServiceError(str(exc)) from exc

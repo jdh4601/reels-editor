@@ -39,6 +39,7 @@ class Calls:
     caption_requests: list[dict[str, Any]] = field(default_factory=list)
     overlay_keywords: list[str] = field(default_factory=list)
     episode_texts: list[str] = field(default_factory=list)
+    base_episode_numbers: list[int | None] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -120,6 +121,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
     ]
 
     def render_base(_video, _segments, _doc, _style, work_dir: Path, _speed, **_kwargs):
+        calls.base_episode_numbers.append(_kwargs.get("episode_number"))
         with calls.lock:
             calls.active_base += 1
             calls.max_active_base = max(calls.max_active_base, calls.active_base)
@@ -324,6 +326,7 @@ def test_episode_number_is_job_level_for_render_caption_and_archive(tmp_path: Pa
     captioned = service.generate_instagram_caption(ready.id, "s2")
 
     assert ready.episode_number == 37
+    assert set(calls.base_episode_numbers) == {37}
     assert set(calls.episode_texts) == {"에피소드 37"}
     assert captioned.storylines[1].instagram_caption.startswith("Ep 37. ")
     assert all(
@@ -1054,10 +1057,10 @@ def test_overlay_completion_does_not_release_active_slot_while_base_renders_cont
     deps = _deps(tmp_path, calls, results)
     render_base = deps.render_base_and_assets
 
-    def staged_render_base(video, segments, doc, style, out_dir, speed):
+    def staged_render_base(video, segments, doc, style, out_dir, speed, **kwargs):
         if out_dir.parent.name != "s1":
             release_remaining.wait(3)
-        return render_base(video, segments, doc, style, out_dir, speed)
+        return render_base(video, segments, doc, style, out_dir, speed, **kwargs)
 
     deps = JobServiceDeps(**{**deps.__dict__, "render_base_and_assets": staged_render_base})
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)

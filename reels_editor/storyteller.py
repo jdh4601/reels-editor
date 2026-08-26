@@ -16,7 +16,6 @@ from reels_editor.title_rules import (
     MAX_TITLE_CHARS,
     MIN_TITLE_CHARS,
     normalize_title,
-    title_char_count,
     title_length_error,
 )
 
@@ -167,11 +166,7 @@ def is_declarative_sentence(text: str) -> bool:
     return bool(_DECLARATIVE_ENDING_RE.search(text))
 
 
-def validate_and_normalize_title_candidates(
-    doc: dict[str, Any],
-    *,
-    allow_legacy_short: bool = False,
-) -> list[str]:
+def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
     """Desktop contract: exactly three non-empty AI title choices.
 
     A keyword that is not present in the title is not worth failing the whole
@@ -194,7 +189,7 @@ def validate_and_normalize_title_candidates(
             errors.append(f"title_candidates[{i}].text 비어있음")
             continue
         length_error = title_length_error(text)
-        if length_error and not (allow_legacy_short and title_char_count(text) < MIN_TITLE_CHARS):
+        if length_error:
             errors.append(f"title_candidates[{i}].text가 {length_error}")
         if is_declarative_sentence(text):
             declarative_count += 1
@@ -365,15 +360,7 @@ def generate_script(segments: dict, duration_s: int = 30,
                 "문자열 안의 큰따옴표는 \\\"로 이스케이프한 유효한 JSON 하나만 출력할 것."
             )
             continue
-        raw_speaker = doc.get("speaker")
-        legacy_edl = (
-            isinstance(raw_speaker, dict)
-            and not any(key in raw_speaker for key in ("company", "alternate_role", "evidence"))
-        )
-        title_errs = validate_and_normalize_title_candidates(
-            doc,
-            allow_legacy_short=legacy_edl,
-        )
+        title_errs = validate_and_normalize_title_candidates(doc)
         speaker_errs = validate_and_normalize_speaker(doc, segments)
         translation_errs = validate_subtitle_translations(doc, segments)
         edl_errs = edl_mod.validate_edl(doc, segments)

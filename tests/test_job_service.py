@@ -855,8 +855,8 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
     store.save(job)
     segments = _segments(video)
     (cached_source_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
-    malformed = json.dumps(_doc("복구"), ensure_ascii=False).replace(
-        '"복구 제목 1"', '“복구 제목 1"', 1
+    malformed = json.dumps(_doc("복구 성공"), ensure_ascii=False).replace(
+        '"복구 성공 제목 1"', '“복구 성공 제목 1"', 1
     )
     (store.job_dir(job.id) / "llm_raw_s1.txt").write_text(malformed, encoding="utf-8")
 
@@ -865,7 +865,7 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
 
     assert recovered.status is Status.READY
     assert story.status is Status.READY
-    assert story.title == "복구 제목 1"
+    assert story.title == "복구 성공 제목 1"
     assert story.edl_path is not None
 
 

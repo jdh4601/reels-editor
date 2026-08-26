@@ -554,3 +554,27 @@ def test_generate_script_retries_when_titles_are_too_long(
     assert len(calls) == 2
     assert "24자" in calls[1]
     assert out["title_candidates"][0]["text"] == "대기업을 버린 이유"
+
+
+def test_generate_script_retries_short_titles_with_legacy_speaker_shape(
+        segments: dict, edl_doc: dict) -> None:
+    calls: list[str] = []
+    too_short = {
+        **edl_doc,
+        "speaker": {"name": "김지영", "role": ""},
+        "title_candidates": [
+            {"text": "짧은말", "keyword": ""},
+            {"text": "또짧음", "keyword": ""},
+            {"text": "너무짧다", "keyword": ""},
+        ],
+    }
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(too_short if len(calls) == 1 else edl_doc, ensure_ascii=False)
+
+    out = storyteller.generate_script(segments, runner=runner)
+
+    assert len(calls) == 2
+    assert "최소 6자" in calls[1]
+    assert out["title_candidates"][0]["text"] == "대기업을 버린 이유"

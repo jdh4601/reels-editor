@@ -873,6 +873,13 @@ async function assertCompletedArchiveWorkflow(browser) {
   await page.goto("http://127.0.0.1:5179/", { waitUntil: "networkidle" });
   await page.getByRole("button", { name: "과거 릴스" }).click();
   await page.waitForSelector(".archive-item", { state: "visible" });
+  const archiveViewFocus = await page.evaluate(() => ({
+    tag: document.activeElement?.tagName,
+    text: document.activeElement?.textContent?.trim(),
+  }));
+  if (archiveViewFocus.tag !== "H1" || archiveViewFocus.text !== "과거 릴스") {
+    throw new Error(`Opening the archive should focus its visible heading: ${JSON.stringify(archiveViewFocus)}`);
+  }
   const archiveCount = await page.locator(".archive-item").count();
   if (archiveCount !== 1 || !(await page.locator(".archive-item").innerText()).includes("에피소드 37")) {
     throw new Error(`Archive must display only completed entries, got ${archiveCount}`);
@@ -884,6 +891,13 @@ async function assertCompletedArchiveWorkflow(browser) {
   await page.screenshot({ path: path.join(screenshotRoot, "archive-list-1280x900.png"), fullPage: true });
   await page.getByRole("button", { name: "고객을 먼저 만난 이유 열기" }).click();
   await page.waitForSelector(".lane", { state: "visible" });
+  const openedArchiveFocus = await page.evaluate(() => ({
+    tag: document.activeElement?.tagName,
+    text: document.activeElement?.textContent?.trim(),
+  }));
+  if (openedArchiveFocus.tag !== "H1" || openedArchiveFocus.text !== "김현지 대표 인터뷰") {
+    throw new Error(`Opening an archived reel should focus its visible workspace heading: ${JSON.stringify(openedArchiveFocus)}`);
+  }
   if (openCalls !== 1 || await page.locator(".lane").count() !== 1 || await page.locator("video").count() !== 1) {
     throw new Error(`Opening an archived item should show one playable completed lane: ${JSON.stringify({ openCalls })}`);
   }
@@ -1070,17 +1084,36 @@ try {
     const selectedAfterShortcuts = await page.locator("input[name='selected-video']:checked").count();
     if (selectedAfterShortcuts !== 3) throw new Error(`Expected keyboard shortcuts to add multiple selections, got ${selectedAfterShortcuts}`);
 
+    const subtitleSwitch = page.locator("input[role='switch']");
+    await subtitleSwitch.focus();
+    const switchFocus = await page.locator(".switch-track").evaluate((track) => {
+      const style = getComputedStyle(track);
+      return {
+        inputFocused: document.activeElement?.getAttribute("role") === "switch",
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth,
+        boxShadow: style.boxShadow,
+      };
+    });
+    if (!switchFocus.inputFocused || switchFocus.outlineStyle === "none" || switchFocus.outlineWidth === "0px") {
+      throw new Error(`Subtitle switch focus is not visibly represented on its track: ${JSON.stringify(switchFocus)}`);
+    }
+
     await assertNoCriticalOverlap(page);
     const screenshot = path.join(screenshotRoot, viewport.name);
     await page.screenshot({ path: screenshot, fullPage: true });
     summary.push({ viewport: `${viewport.width}x${viewport.height}`, screenshot });
 
-    await page.getByRole("button", { name: "생성 설정" }).click();
+    const settingsTrigger = page.getByRole("button", { name: "생성 설정" });
+    await settingsTrigger.click();
     await page.waitForSelector(".settings-popover", { state: "visible" });
     const durationRadioCount = await page.locator("input[name='video-duration']").count();
     const storylineCountRadioCount = await page.locator("input[name='storyline-count']").count();
     const selectedProvider = await page.getByLabel("모델 프로바이더").inputValue();
     const speedControl = page.getByLabel("재생 배속");
+    if (!(await speedControl.evaluate((control) => document.activeElement === control))) {
+      throw new Error("Opening generation settings should focus the first meaningful control");
+    }
     const speedAttributes = {
       min: await speedControl.getAttribute("min"),
       max: await speedControl.getAttribute("max"),
@@ -1103,6 +1136,26 @@ try {
     }
     await page.keyboard.press("Escape");
     await page.waitForSelector(".settings-popover", { state: "detached" });
+    if (!(await settingsTrigger.evaluate((trigger) => document.activeElement === trigger))) {
+      throw new Error("Escape should restore focus to the generation settings trigger");
+    }
+    if (viewport.width === 1280) {
+      await settingsTrigger.click();
+      await page.waitForSelector(".settings-popover", { state: "visible" });
+      await page.locator(".project-brand").click();
+      await page.waitForSelector(".settings-popover", { state: "detached" });
+      if (!(await settingsTrigger.evaluate((trigger) => document.activeElement === trigger))) {
+        throw new Error("Clicking outside settings should restore focus to its trigger");
+      }
+
+      await settingsTrigger.click();
+      await page.waitForSelector(".settings-popover", { state: "visible" });
+      await settingsTrigger.click();
+      await page.waitForSelector(".settings-popover", { state: "detached" });
+      if (!(await settingsTrigger.evaluate((trigger) => document.activeElement === trigger))) {
+        throw new Error("Closing settings from its trigger should retain trigger focus");
+      }
+    }
     await page.close();
   }
   const progressPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });

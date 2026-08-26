@@ -112,6 +112,11 @@ h1 {
   line-height: 1.18;
 }
 
+.view-focus-target:focus {
+  outline: 2px solid #2f6a4f;
+  outline-offset: 4px;
+}
+
 h2 {
   font-size: 18px;
   font-weight: 740;
@@ -1202,6 +1207,11 @@ h2 {
 .switch input:checked + .switch-track {
   background: #2f6a4f;
   color: #fbfaf6;
+}
+.switch input:focus-visible + .switch-track {
+  box-shadow: 0 0 0 4px rgba(47, 106, 79, 0.22);
+  outline: 2px solid #214d39;
+  outline-offset: 2px;
 }
 .export-button {
   background: #21362f;

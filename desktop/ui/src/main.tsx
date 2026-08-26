@@ -735,6 +735,13 @@ function App() {
   const [openingArchiveId, setOpeningArchiveId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsMenuRef = useRef<HTMLDivElement | null>(null);
+  const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const settingsDialogRef = useRef<HTMLDivElement | null>(null);
+  const settingsFirstControlRef = useRef<HTMLInputElement | null>(null);
+  const restoreSettingsFocusRef = useRef(false);
+  const archiveHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const workspaceHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const pendingViewFocusRef = useRef<AppView | null>(null);
   const [eventConnectionVersion, setEventConnectionVersion] = useState(0);
   const [liveMessage, setLiveMessage] = useState("대시보드 연결 중");
   const [captionStates, setCaptionStates] = useState<Record<string, CaptionActionState>>({});
@@ -835,6 +842,14 @@ function App() {
   useEffect(() => {
     archiveModeRef.current = archiveMode;
   }, [archiveMode]);
+
+  useEffect(() => {
+    if (pendingViewFocusRef.current !== appView) return;
+    const heading = appView === "archive" ? archiveHeadingRef.current : workspaceHeadingRef.current;
+    if (!heading) return;
+    heading.focus();
+    pendingViewFocusRef.current = null;
+  }, [appView, snapshot?.jobId]);
 
   useEffect(() => {
     if (isDemoMode()) return undefined;
@@ -1052,6 +1067,8 @@ function App() {
   }
 
   async function showArchive() {
+    pendingViewFocusRef.current = "archive";
+    restoreSettingsFocusRef.current = false;
     setAppView("archive");
     setArchiveLoading(true);
     setArchiveError(null);
@@ -1095,6 +1112,7 @@ function App() {
         next = normalizeSnapshot((await response.json()) as ApiSnapshot);
       }
       archiveModeRef.current = true;
+      pendingViewFocusRef.current = "workspace";
       applySnapshot(completedOnlySnapshot(next, item.storylineId));
       setArchiveMode(true);
       setAppView("workspace");
@@ -1361,32 +1379,53 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
+  function closeSettingsPopover() {
+    restoreSettingsFocusRef.current = true;
+    setSettingsOpen(false);
+  }
+
+  useEffect(() => {
+    if (settingsOpen) {
+      const firstControl = settingsFirstControlRef.current;
+      if (firstControl && !firstControl.disabled) firstControl.focus();
+      else settingsDialogRef.current?.focus();
+      return;
+    }
+    if (!restoreSettingsFocusRef.current) return;
+    restoreSettingsFocusRef.current = false;
+    settingsTriggerRef.current?.focus();
+  }, [settingsOpen]);
+
   // 설정은 팝오버 안에서만 열리므로, 바깥을 누르거나 Esc를 눌러 닫는다.
   useEffect(() => {
     if (!settingsOpen) return;
-    function onPointerDown(event: MouseEvent) {
-      if (!settingsMenuRef.current?.contains(event.target as Node)) setSettingsOpen(false);
+    function onOutsideClick(event: MouseEvent) {
+      if (!settingsMenuRef.current?.contains(event.target as Node)) closeSettingsPopover();
     }
     function onEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setSettingsOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSettingsPopover();
+      }
     }
-    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("click", onOutsideClick);
     window.addEventListener("keydown", onEscape);
     return () => {
-      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("click", onOutsideClick);
       window.removeEventListener("keydown", onEscape);
     };
   }, [settingsOpen]);
 
   function SettingsPopover() {
     return (
-      <div className="settings-popover" role="dialog" aria-label="생성 설정">
+      <div ref={settingsDialogRef} className="settings-popover" role="dialog" aria-label="생성 설정" tabIndex={-1}>
         <div className="settings-field">
           <div className="settings-field-heading">
             <h3>재생 배속</h3>
             <strong>{playbackSpeedLabel(playbackSpeed)}×</strong>
           </div>
           <input
+            ref={settingsFirstControlRef}
             type="range"
             min={MIN_PLAYBACK_SPEED}
             max={MAX_PLAYBACK_SPEED}
@@ -1459,11 +1498,16 @@ function App() {
             <img className="brand-mark" src={REELS_EDITOR_LOGO_URL} alt="Reels Editor 로고" />
             <div className="project-block">
               <p className="eyebrow">Reels Editor</p>
-              <h1>과거 릴스</h1>
+              <h1 ref={archiveHeadingRef} className="view-focus-target" tabIndex={-1}>과거 릴스</h1>
             </div>
           </div>
           <div className="workbar-actions" aria-label="과거 릴스 도구">
-            <button type="button" className="ghost-button" onClick={() => { archiveModeRef.current = false; setArchiveMode(false); setAppView("workspace"); }}>
+            <button type="button" className="ghost-button" onClick={() => {
+              archiveModeRef.current = false;
+              pendingViewFocusRef.current = "workspace";
+              setArchiveMode(false);
+              setAppView("workspace");
+            }}>
               작업으로 돌아가기
             </button>
           </div>
@@ -1540,7 +1584,7 @@ function App() {
           <img className="brand-mark" src={REELS_EDITOR_LOGO_URL} alt="Reels Editor 로고" />
           <div className="project-block">
             <p className="eyebrow">Reels Editor</p>
-            <h1>{snapshot.projectName}</h1>
+            <h1 ref={workspaceHeadingRef} className="view-focus-target" tabIndex={-1}>{snapshot.projectName}</h1>
           </div>
         </div>
         <div className="workbar-actions" aria-label="작업 도구">
@@ -1550,13 +1594,21 @@ function App() {
           {!archiveMode ? (
             <div className="settings-menu" ref={settingsMenuRef}>
               <button
+                ref={settingsTriggerRef}
                 type="button"
                 className={settingsOpen ? "icon-button active" : "icon-button"}
                 aria-label="생성 설정"
                 title="생성 설정"
                 aria-haspopup="dialog"
                 aria-expanded={settingsOpen}
-                onClick={() => setSettingsOpen((open) => !open)}
+                onClick={() => {
+                  if (settingsOpen) {
+                    closeSettingsPopover();
+                    return;
+                  }
+                  restoreSettingsFocusRef.current = false;
+                  setSettingsOpen(true);
+                }}
               >
                 <Settings2 size={17} />
               </button>

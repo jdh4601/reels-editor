@@ -7,15 +7,15 @@ from reels_editor import candidate_analyzer
 
 TOPICS = [
     "첫 고객 인터뷰",
-    "가격 실험",
-    "광고비 손실",
-    "기능 삭제",
+    "가격 실험의 결정적 결과",
+    "광고비 손실의 진짜 원인",
+    "기능 삭제로 되찾은 고객",
     "현금흐름 관리",
-    "유료 전환",
-    "창업자 번아웃",
-    "제품 출시",
-    "고객 이탈",
-    "시장 선택",
+    "유료 전환의 결정적 순간",
+    "창업자 번아웃 탈출법",
+    "제품 출시 전에 버린 기능",
+    "고객 이탈을 막은 한마디",
+    "시장 선택이 바꾼 생존",
 ]
 
 
@@ -93,7 +93,7 @@ def _payload_with_titles(titles: list[str]) -> dict:
 
 
 def test_candidate_title_over_length_limit_is_rejected(segments: dict) -> None:
-    long_title = "첫 고객이 없을 때 대표가 가장 먼저 한 일"
+    long_title = "가" * 25
     titles = [long_title, *TOPICS[1:]]
     calls: list[str] = []
 
@@ -105,7 +105,7 @@ def test_candidate_title_over_length_limit_is_rejected(segments: dict) -> None:
     candidate_analyzer.generate_candidates(segments, ["strategy"], runner=runner)
 
     assert len(calls) == 2
-    assert "14자" in calls[1]
+    assert "24자" in calls[1]
 
 
 def test_candidate_titles_all_declarative_are_rejected(segments: dict) -> None:
@@ -127,7 +127,8 @@ def test_candidate_prompt_carries_text_hook_principles(segments: dict) -> None:
     prompt = candidate_analyzer.build_candidate_prompt(segments, ["strategy"])
 
     assert "스타카토" in prompt
-    assert "14자" in prompt
+    assert "6~24자" in prompt
+    assert "12~24자" in prompt
 
 
 def test_selected_candidate_result_carries_candidate_title(segments: dict) -> None:

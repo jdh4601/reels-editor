@@ -112,7 +112,7 @@ def generate_candidates(
         feedback = (
             "이전 후보 목록이 검증에 실패했다. 정확히 10개의 서로 다른 후보를 만들고, "
             "허용된 content_type과 실제 SEGMENTS의 id만 사용하라. title은 릴스 화면에 "
-            "그대로 박히는 텍스트 훅이므로 공백 제외 14자를 넘기지 마라. 오류:\n"
+            "그대로 박히는 텍스트 훅이므로 공백 제외 6~24자로 쓰고 12~24자를 우선하라. 오류:\n"
             + "\n".join(errors)
         )
     if raw_dump is not None:

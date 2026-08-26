@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from reels_editor.style import load_style
+from reels_editor.style import episode_label, load_style
 
 STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
 
@@ -19,8 +19,8 @@ def test_load_done_preset() -> None:
     assert s.watermark_font.name == "Pretendard-Bold.otf"
     assert s.title_size == 105
     assert s.title_emphasis_size is None
-    assert s.title_line_gap is None
-    assert s.title_max_lines == 1
+    assert s.title_line_gap == 12
+    assert s.title_max_lines == 2
     assert s.title_speaker_size == 46
     assert s.title_speaker_color == "#FFFFFF"
     assert s.title_speaker_gap == 40
@@ -33,7 +33,7 @@ def test_load_done_preset() -> None:
     assert s.watermark_y == -1450
     assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
     assert s.watermark_width == 212
-    assert s.episode_text == "에피소드 1 / 1000"
+    assert s.episode_text == "에피소드 1"
     assert s.episode_size == 48
     assert s.episode_color == "#FFFFFF"
     assert s.episode_opacity == 255
@@ -62,3 +62,16 @@ def test_missing_font_raises(tmp_path: Path) -> None:
                    encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         load_style(bad)
+
+
+def test_job_episode_creates_render_style_without_fixed_total() -> None:
+    style = load_style(STYLE)
+
+    episode_style = style.for_episode(37)
+
+    assert episode_label(37) == "에피소드 37"
+    assert episode_style.episode_text == "에피소드 37"
+    assert "/ 1000" not in episode_style.episode_text
+    assert style.episode_text == "에피소드 1"
+    with pytest.raises(ValueError):
+        style.for_episode(0)

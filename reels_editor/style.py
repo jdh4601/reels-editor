@@ -1,10 +1,19 @@
 """스타일 프리셋 로딩. 렌더가 참조하는 모든 시각 파라미터의 단일 출처."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
+
+TITLE_ORANGE = "#FF7A00"
+
+
+def episode_label(episode_number: int) -> str:
+    """Return the product's job-level episode label."""
+    if isinstance(episode_number, bool) or int(episode_number) < 1:
+        raise ValueError("episode_number must be a positive integer")
+    return f"에피소드 {int(episode_number)}"
 
 
 @dataclass(frozen=True)
@@ -42,7 +51,7 @@ class StylePreset:
     title_anchor_y: int | None = None
     watermark_image: Path | None = None
     watermark_width: int | None = None
-    episode_text: str = "에피소드 1 / 1000"
+    episode_text: str = "에피소드 1"
     episode_size: int = 30
     episode_color: str = "#FFFFFF"
     episode_opacity: int = 255
@@ -51,6 +60,10 @@ class StylePreset:
 
     def video_area(self) -> tuple[int, int]:
         return self.canvas[0], self.canvas[1] - self.top_bar - self.bottom_bar
+
+    def for_episode(self, episode_number: int) -> "StylePreset":
+        """Create a render-ready copy carrying one job's episode number."""
+        return replace(self, episode_text=episode_label(episode_number))
 
 
 def _font(font_dir: Path, name: str) -> Path:
@@ -83,7 +96,8 @@ def load_style(path: Path) -> StylePreset:
         canvas=tuple(raw["canvas"]),
         top_bar=raw["top_bar"], bottom_bar=raw["bottom_bar"],
         title_font=_font(font_dir, t["font"]), title_size=t["size"],
-        title_color=t["color"], title_highlight=t["highlight"],
+        title_color=str(t.get("color", TITLE_ORANGE)).upper(),
+        title_highlight=str(t.get("highlight", TITLE_ORANGE)).upper(),
         title_max_lines=t["max_lines"],
         sub_font=_font(font_dir, s["font"]), sub_size=s["size"],
         sub_color=s["color"], sub_highlight=s["highlight"],
@@ -106,7 +120,7 @@ def load_style(path: Path) -> StylePreset:
         title_anchor_y=int(t["anchor_y"]) if "anchor_y" in t else None,
         watermark_image=_asset(path.parent, w.get("image")),
         watermark_width=int(w["width"]) if "width" in w else None,
-        episode_text=str(w.get("episode_text", "에피소드 1 / 1000")),
+        episode_text=str(w.get("episode_text", "에피소드 1")),
         episode_size=int(w.get("episode_size", 30)),
         episode_color=str(w.get("episode_color", "#FFFFFF")),
         episode_opacity=int(w.get("episode_opacity", 255)),

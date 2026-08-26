@@ -20,8 +20,10 @@ from typing import Any, Callable
 from PIL import Image, ImageDraw, ImageFont
 
 from reels_editor import captions, processes
+from reels_editor.storyteller import format_speaker_label
 from reels_editor.style import StylePreset
 from reels_editor.timebase import US
+from reels_editor.title_rules import normalize_title, wrap_title
 
 # 자동자막(STT) 흔한 오인식 보정. 필요 시 확장.
 DEFAULT_TEXT_FIXES = {
@@ -272,6 +274,20 @@ def _fit_single_line_font(
     return best
 
 
+def _fit_title_font(
+    lines: tuple[str, ...],
+    font_path: Path,
+    max_size: int,
+    max_width: int,
+    d: ImageDraw.ImageDraw,
+) -> ImageFont.FreeTypeFont:
+    """Find one font size that keeps every wrapped title line in the safe area."""
+    return min(
+        (_fit_single_line_font(line, font_path, max_size, max_width, d) for line in lines),
+        key=lambda font: font.size,
+    )
+
+
 def render_title_png(
     title: str,
     keyword: str,
@@ -282,18 +298,29 @@ def render_title_png(
     W, H = style.canvas
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    title = " ".join(title.split())
+    title = normalize_title(title)
+    try:
+        lines = wrap_title(title)
+    except ValueError:
+        # Persisted pre-upgrade EDLs can contain shorter/longer titles. New model
+        # output and manual edits are rejected by the shared validator upstream,
+        # while legacy jobs must remain playable.
+        lines = (title,)
     speaker_text = " ".join(speaker_text.split())
     safe_width = W - 120
-    font = _fit_single_line_font(
-        title,
+    font = _fit_title_font(
+        lines,
         style.title_font,
         style.title_size,
         safe_width,
         d,
     )
-    title_left, title_top, title_right, title_bottom = _ink_bbox(d, title, font)
-    title_height = title_bottom - title_top
+    line_heights = []
+    for line in lines:
+        _left, line_top, _right, line_bottom = _ink_bbox(d, line, font)
+        line_heights.append(line_bottom - line_top)
+    line_gap = style.title_line_gap if style.title_line_gap is not None else 12
+    title_height = sum(line_heights) + line_gap * (len(lines) - 1)
     speaker_font = ImageFont.truetype(str(style.title_font), style.title_speaker_size)
     speaker_height = 0
     if speaker_text:
@@ -310,16 +337,20 @@ def render_title_png(
         gap = style.title_speaker_gap if speaker_text else 0
         group_height = title_height + gap + speaker_height
         title_center_y = round(group_center_y - group_height / 2 + title_height / 2)
-    title_origin = _centered_text_origin(d, title, font, (W // 2, title_center_y))
-    _draw_highlighted_line(
-        d,
-        (round(title_origin[0]), round(title_origin[1])),
-        title,
-        [keyword] if keyword else [],
-        font,
-        _hex_rgba(style.title_color),
-        _hex_rgba(style.title_highlight),
-    )
+    line_center_y = title_center_y - title_height / 2
+    for line, line_height in zip(lines, line_heights):
+        center_y = round(line_center_y + line_height / 2)
+        title_origin = _centered_text_origin(d, line, font, (W // 2, center_y))
+        _draw_highlighted_line(
+            d,
+            (round(title_origin[0]), round(title_origin[1])),
+            line,
+            [keyword] if keyword else [],
+            font,
+            _hex_rgba(style.title_color),
+            _hex_rgba(style.title_highlight),
+        )
+        line_center_y += line_height + line_gap
     if speaker_text:
         speaker_center_y = round(
             title_center_y + title_height / 2
@@ -335,7 +366,14 @@ def render_title_png(
     return out
 
 
-def render_watermark_png(style: StylePreset, out: Path) -> Path:
+def render_watermark_png(
+    style: StylePreset,
+    out: Path,
+    *,
+    episode_number: int | None = None,
+) -> Path:
+    if episode_number is not None:
+        style = style.for_episode(episode_number)
     W, H = style.canvas
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -532,16 +570,7 @@ def variant_cache_key(
 
 
 def speaker_label(edl_doc: dict[str, Any]) -> str:
-    speaker = edl_doc.get("speaker")
-    if isinstance(speaker, str):
-        return " ".join(speaker.split())
-    if not isinstance(speaker, dict):
-        return ""
-    name = " ".join(str(speaker.get("name") or "").split())
-    role = " ".join(str(speaker.get("role") or "").split())
-    if name and role:
-        return f"{name} ({role})"
-    return name or role
+    return format_speaker_label(edl_doc.get("speaker"))
 
 
 def parse_progress_line(line: str) -> float | None:
@@ -599,6 +628,7 @@ def _ffmpeg_progress(args: list[str], total_s: float,
 def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
                            style: StylePreset, work_dir: Path, speed: float,
                            progress_cb: Callable[[float], None] | None = None,
+                           episode_number: int | None = None,
                            ) -> RenderAssets:
     from reels_editor import edl as edl_mod
     ordered = edl_mod.ordered_segments(edl_doc, segments)
@@ -616,7 +646,11 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
                       "-map", "[v]", "-map", "[a]", "-c:v", "libx264",
                       "-preset", "veryfast", "-crf", "20", "-c:a", "aac",
                       str(base)], total_s, progress_cb)
-    wm_png = render_watermark_png(style, work_dir / "wm.png")
+    wm_png = render_watermark_png(
+        style,
+        work_dir / "wm.png",
+        episode_number=episode_number,
+    )
     items = [[a, b, apply_text_fixes(t, DEFAULT_TEXT_FIXES)]
              for a, b, t in timeline_items(ordered, speed)]
     groups = group_captions(items)
@@ -672,10 +706,19 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
 
 def render_reel(video_path: Path, segments: dict, edl_doc: dict, style: StylePreset,
                 out_path: Path, speed: float | None = None,
-                work_dir: Path | None = None) -> Path:
+                work_dir: Path | None = None,
+                episode_number: int | None = None) -> Path:
     speed = speed if speed is not None else style.speed
     work = work_dir or Path(tempfile.mkdtemp(prefix="reels_render_"))
-    assets = render_base_and_assets(video_path, segments, edl_doc, style, work, speed)
+    assets = render_base_and_assets(
+        video_path,
+        segments,
+        edl_doc,
+        style,
+        work,
+        speed,
+        episode_number=episode_number,
+    )
     title = edl_doc["title_candidates"][edl_doc.get("selected_title", 0)]
     return render_with_title(assets, title["text"], title.get("keyword", ""),
                              style, out_path,

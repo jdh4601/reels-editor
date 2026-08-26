@@ -12,6 +12,13 @@ from typing import Any, Callable
 from reels_editor import captions
 from reels_editor import edl as edl_mod
 from reels_editor import processes
+from reels_editor.title_rules import (
+    MAX_TITLE_CHARS,
+    MIN_TITLE_CHARS,
+    normalize_title,
+    title_char_count,
+    title_length_error,
+)
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "storytelling-30s.md"
 TEXT_HOOK_PATH = Path(__file__).parent.parent / "prompts" / "text-hook-principles.md"
@@ -19,10 +26,27 @@ DEFAULT_SPEED = 1.2
 MAX_RETRIES = 2
 LONG_REEL_DURATION_S = 60
 LONG_REEL_GRACE_S = 5
-MAX_TITLE_CHARS = 14
-
 # 서술형 종결어미. 완결된 문장보다 명사구가 텍스트 훅으로 더 강하게 읽힌다.
 _DECLARATIVE_ENDING_RE = re.compile(r"[다요죠][.!]?$")
+
+_COMPANY_ROLE_PATTERNS: tuple[tuple[re.Pattern[str], str, int], ...] = (
+    (re.compile(r"^(?:co-?founder|founder)\s+(?:of|at)\s+(.+)$", re.I), "창업자", 1),
+    (re.compile(r"^(.+?)\s+(?:co-?founder|founder)$", re.I), "창업자", 1),
+    (re.compile(r"^ceo\s+(?:of|at)\s+(.+)$", re.I), "CEO", 1),
+    (re.compile(r"^(.+?)\s+ceo$", re.I), "CEO", 1),
+    (re.compile(r"^(.+?)\s*(?:공동\s*)?창업자$"), "창업자", 1),
+    (re.compile(r"^(.+?)\s*대표(?:이사)?$"), "CEO", 1),
+)
+_FOUNDER_ROLES = frozenset({"founder", "co-founder", "cofounder", "창업자", "공동 창업자"})
+_CEO_ROLES = frozenset({"ceo", "chief executive officer", "대표", "대표이사"})
+_ALTERNATE_ROLES = {
+    "investor": "투자자",
+    "venture investor": "투자자",
+    "투자자": "투자자",
+    "serial entrepreneur": "연쇄 창업가",
+    "serial founder": "연쇄 창업가",
+    "연쇄 창업가": "연쇄 창업가",
+}
 
 ANGLES: list[tuple[str, str]] = [
     ("정면승부형", "창업가가 즉시 공감할 현실적인 문제나 결정 한 가지를 훅부터 직진으로 전개한다."),
@@ -33,7 +57,13 @@ ANGLES: list[tuple[str, str]] = [
 _SCHEMA = json.dumps({
     "story": {"five_lines": {"situation": "…", "desire": "…", "conflict": "…",
                              "change": "…", "result": "…"}, "lens": "…"},
-    "speaker": {"name": "한국어 이름", "role": "영문 직함/소속"},
+    "speaker": {
+        "name": "한국어 이름",
+        "company": "근거에 직접 나온 기업명 또는 빈 문자열",
+        "role": "창업자 또는 CEO 또는 빈 문자열",
+        "alternate_role": "투자자/연쇄 창업가 등 근거에 직접 나온 대체 역할 또는 빈 문자열",
+        "evidence": "위 정보를 직접 뒷받침하는 SEGMENTS 원문 일부",
+    },
     "title_candidates": [{"text": "…", "keyword": "…"}],
     "subtitle_keywords": ["…"],
     "subtitle_translations": {"seg_id": "자연스러운 한국어 번역"},
@@ -80,7 +110,7 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             f"- 영상 제목: {source_title or '알 수 없음'}\n"
             f"- 채널: {source_channel or '알 수 없음'}\n"
             "- 선택한 클립에서 실제로 말하는 사람을 speaker에 적는다. 진행자보다 인터뷰 답변자를 우선한다.\n"
-            "- name은 자연스러운 한국어 표기, role은 영상 맥락에 맞는 짧은 영문 직함/소속으로 쓴다.\n"
+            "- 이름·기업·역할은 제공된 영상 맥락이나 SEGMENTS에서 직접 확인되는 정보만 쓴다.\n"
         )
     else:
         source_context = ""
@@ -132,34 +162,22 @@ def text_hook_principles() -> str:
     return TEXT_HOOK_PATH.read_text(encoding="utf-8").strip()
 
 
-def title_char_count(text: str) -> int:
-    """공백을 제외한 글자 수. 화면에서 차지하는 밀도를 기준으로 센다."""
-    return len(re.sub(r"\s+", "", text))
-
-
 def is_declarative_sentence(text: str) -> bool:
     """`~습니다`, `~했다`처럼 서술형으로 끝맺어 힘이 빠지는 제목인지 판별한다."""
     return bool(_DECLARATIVE_ENDING_RE.search(text))
 
 
-def title_length_error(text: str) -> str | None:
-    """길이 상한을 넘긴 제목의 오류 문구. 지키고 있으면 None."""
-    length = title_char_count(text)
-    if length <= MAX_TITLE_CHARS:
-        return None
-    return (
-        f"공백 제외 {length}자로 {MAX_TITLE_CHARS}자를 초과함 — "
-        f"조사와 수식어를 덜어내고 명사구로 줄일 것: {text}"
-    )
-
-
-def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
+def validate_and_normalize_title_candidates(
+    doc: dict[str, Any],
+    *,
+    allow_legacy_short: bool = False,
+) -> list[str]:
     """Desktop contract: exactly three non-empty AI title choices.
 
     A keyword that is not present in the title is not worth failing the whole
     storyline for, so it is downgraded to an empty highlight.
 
-    텍스트 훅은 짧고 명료해야 하므로 길이 상한을 넘긴 후보는 재시도로 되돌리고,
+    텍스트 훅은 짧고 명료해야 하므로 허용 길이를 벗어난 후보는 재시도로 되돌리고,
     세 후보가 모두 서술형 완결 문장이면 최소 한 개를 명사구로 다시 받는다.
     """
     candidates = doc.get("title_candidates")
@@ -171,12 +189,12 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
         if not isinstance(candidate, dict):
             errors.append(f"title_candidates[{i}]: 객체여야 함")
             continue
-        text = " ".join(str(candidate.get("text", "")).split())
+        text = normalize_title(str(candidate.get("text", "")))
         if not text:
             errors.append(f"title_candidates[{i}].text 비어있음")
             continue
         length_error = title_length_error(text)
-        if length_error:
+        if length_error and not (allow_legacy_short and title_char_count(text) < MIN_TITLE_CHARS):
             errors.append(f"title_candidates[{i}].text가 {length_error}")
         if is_declarative_sentence(text):
             declarative_count += 1
@@ -191,6 +209,83 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
     return errors
 
 
+def normalize_speaker_data(speaker: Any) -> dict[str, str]:
+    """Normalize only identity data already present in a script/legacy EDL."""
+    if isinstance(speaker, str):
+        return {"name": " ".join(speaker.split()), "company": "", "role": "", "alternate_role": ""}
+    if not isinstance(speaker, dict):
+        return {"name": "", "company": "", "role": "", "alternate_role": ""}
+
+    name = " ".join(str(speaker.get("name") or "").split())
+    company = " ".join(str(speaker.get("company") or "").split())
+    raw_role = " ".join(str(speaker.get("role") or "").split())
+    raw_alternate = " ".join(str(speaker.get("alternate_role") or "").split())
+    evidence = " ".join(str(speaker.get("evidence") or "").split())
+
+    role_key = raw_role.casefold()
+    canonical_role = "창업자" if role_key in _FOUNDER_ROLES else "CEO" if role_key in _CEO_ROLES else ""
+    if not company and raw_role:
+        for pattern, parsed_role, company_group in _COMPANY_ROLE_PATTERNS:
+            match = pattern.fullmatch(raw_role)
+            if match:
+                company = " ".join(match.group(company_group).split())
+                canonical_role = parsed_role
+                break
+
+    alternate = _ALTERNATE_ROLES.get(raw_alternate.casefold(), "")
+    if not alternate and not company and not canonical_role:
+        alternate = _ALTERNATE_ROLES.get(role_key, "")
+
+    normalized = {
+        "name": name,
+        "company": company if canonical_role else "",
+        "role": canonical_role if company else "",
+        "alternate_role": alternate,
+    }
+    if evidence:
+        normalized["evidence"] = evidence
+    return normalized
+
+
+def format_speaker_label(speaker: Any) -> str:
+    """Format a grounded preferred label, alternate descriptor, or name only."""
+    normalized = normalize_speaker_data(speaker)
+    name = normalized["name"]
+    if not name:
+        return ""
+    if normalized["company"] and normalized["role"]:
+        return f"{name} ({normalized['company']} {normalized['role']})"
+    if normalized["alternate_role"]:
+        return f"{name} ({normalized['alternate_role']})"
+    return name
+
+
+def _speaker_evidence_supports_identity(speaker: dict[str, str], evidence: str) -> bool:
+    evidence_key = evidence.casefold()
+    company = speaker["company"]
+    role = speaker["role"]
+    alternate = speaker["alternate_role"]
+    if company and company.casefold() not in evidence_key:
+        return False
+    if role == "CEO" and not any(
+        token in evidence_key for token in ("ceo", "chief executive officer", "대표", "대표이사")
+    ):
+        return False
+    if role == "창업자" and not any(
+        token in evidence_key for token in ("founder", "co-founder", "cofounder", "창업자", "공동 창업자")
+    ):
+        return False
+    if alternate == "투자자" and not any(
+        token in evidence_key for token in ("investor", "venture investor", "투자자")
+    ):
+        return False
+    if alternate == "연쇄 창업가" and not any(
+        token in evidence_key for token in ("serial entrepreneur", "serial founder", "연쇄 창업가")
+    ):
+        return False
+    return True
+
+
 def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]) -> list[str]:
     speaker = doc.get("speaker")
     source_context_available = bool(segments.get("source_title") or segments.get("source_channel"))
@@ -200,12 +295,31 @@ def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]
         doc["speaker"] = {"name": "인터뷰 화자", "role": ""}
         return []
     name = " ".join(str(speaker.get("name") or "").split())
-    role = " ".join(str(speaker.get("role") or "").split())
     if not name:
         if source_context_available:
             return ["speaker.name이 비어있음"]
         name = "인터뷰 화자"
-    doc["speaker"] = {"name": name, "role": role}
+    uses_grounded_schema = any(key in speaker for key in ("company", "alternate_role", "evidence"))
+    normalized = normalize_speaker_data({**speaker, "name": name})
+    if uses_grounded_schema and (
+        normalized["company"] or normalized["role"] or normalized["alternate_role"]
+    ):
+        evidence = normalized.get("evidence", "")
+        source_text = " ".join(
+            [
+                str(segments.get("source_title") or ""),
+                str(segments.get("source_channel") or ""),
+                *(str(item.get("text") or "") for item in segments.get("segments", []) if isinstance(item, dict)),
+            ]
+        )
+        normalized_evidence = normalize_title(evidence)
+        if (
+            not normalized_evidence
+            or normalized_evidence.casefold() not in normalize_title(source_text).casefold()
+            or not _speaker_evidence_supports_identity(normalized, normalized_evidence)
+        ):
+            return ["speaker의 기업/역할 evidence가 제공된 SEGMENTS 또는 영상 맥락에 직접 존재해야 함"]
+    doc["speaker"] = normalized
     return []
 
 
@@ -251,7 +365,15 @@ def generate_script(segments: dict, duration_s: int = 30,
                 "문자열 안의 큰따옴표는 \\\"로 이스케이프한 유효한 JSON 하나만 출력할 것."
             )
             continue
-        title_errs = validate_and_normalize_title_candidates(doc)
+        raw_speaker = doc.get("speaker")
+        legacy_edl = (
+            isinstance(raw_speaker, dict)
+            and not any(key in raw_speaker for key in ("company", "alternate_role", "evidence"))
+        )
+        title_errs = validate_and_normalize_title_candidates(
+            doc,
+            allow_legacy_short=legacy_edl,
+        )
         speaker_errs = validate_and_normalize_speaker(doc, segments)
         translation_errs = validate_subtitle_translations(doc, segments)
         edl_errs = edl_mod.validate_edl(doc, segments)
@@ -277,7 +399,7 @@ def generate_script(segments: dict, duration_s: int = 30,
             return doc
         last_problem = "; ".join(errs)
         feedback = ("이전 EDL이 검증에 실패했다. 다음 오류를 고쳐라 "
-                    "(title_candidates는 정확히 3개이며 각각 공백 제외 14자 이하의 "
+                    f"(title_candidates는 정확히 3개이며 각각 공백 제외 {MIN_TITLE_CHARS}~{MAX_TITLE_CHARS}자의 "
                     "스타카토 텍스트 훅, seg_ids는 SEGMENTS의 id만, "
                     "영어 원문이면 선택한 모든 seg_id의 한국어 subtitle_translations 포함, "
                     "자막은 큰따옴표를 닫은 완전한 문장 단위, "

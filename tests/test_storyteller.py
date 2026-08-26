@@ -80,7 +80,8 @@ def test_build_prompt_includes_youtube_context_and_speaker_contract(segments: di
     assert "Y Combinator" in prompt
     assert '"speaker"' in prompt
     assert "한국어 이름" in prompt
-    assert "영문 직함" in prompt
+    assert "evidence" in prompt
+    assert "외부 지식으로 보충하지 않는다" in prompt
     assert "{source_context_block}" not in prompt
 
 
@@ -224,9 +225,9 @@ def _ok_doc(segments):
     sid = segments["segments"][0]["id"]
     return {"story": {"five_lines": {}, "lens": "l"},
             "title_candidates": [
-                {"text": "첫 번째 제목", "keyword": "첫"},
-                {"text": "두 번째 제목", "keyword": "두"},
-                {"text": "세 번째 제목", "keyword": "세"},
+                {"text": "첫 번째 후킹 제목", "keyword": "첫"},
+                {"text": "두 번째 후킹 제목", "keyword": "두"},
+                {"text": "세 번째 후킹 제목", "keyword": "세"},
             ],
             "subtitle_keywords": [],
             "cuts": [{"beat": "훅", "seg_ids": [sid]}]}
@@ -271,15 +272,26 @@ def test_generate_script_normalizes_title_to_one_line_and_speaker_label(
     )
 
     assert out["title_candidates"][0]["text"] == "좋은 아이디어를 포기하는 법"
-    assert out["speaker"] == {"name": "샘 알트만", "role": "CEO of OpenAI"}
+    assert out["speaker"] == {
+        "name": "샘 알트만",
+        "company": "OpenAI",
+        "role": "CEO",
+        "alternate_role": "",
+    }
 
 
 def test_generate_script_retries_when_youtube_speaker_is_missing(
         segments: dict, edl_doc: dict) -> None:
-    youtube_segments = {**segments, "source_title": "Sam Altman interview"}
+    youtube_segments = {**segments, "source_title": "OpenAI CEO Sam Altman interview"}
     with_speaker = {
         **edl_doc,
-        "speaker": {"name": "샘 알트만", "role": "CEO of OpenAI"},
+        "speaker": {
+            "name": "샘 알트만",
+            "company": "OpenAI",
+            "role": "CEO",
+            "alternate_role": "",
+            "evidence": "OpenAI CEO Sam Altman interview",
+        },
     }
     calls: list[str] = []
 
@@ -292,6 +304,57 @@ def test_generate_script_retries_when_youtube_speaker_is_missing(
     assert len(calls) == 2
     assert "speaker는 name과 role" in calls[1]
     assert out["speaker"]["name"] == "샘 알트만"
+
+
+def test_speaker_company_role_requires_script_evidence(segments: dict) -> None:
+    grounded_segments = {
+        **segments,
+        "segments": [
+            {**segments["segments"][0], "text": "저는 마루 공동 창업자 김지영입니다"},
+        ],
+    }
+    doc = {
+        "speaker": {
+            "name": "김지영",
+            "company": "마루",
+            "role": "Founder",
+            "alternate_role": "",
+            "evidence": "마루 공동 창업자 김지영입니다",
+        }
+    }
+
+    assert storyteller.validate_and_normalize_speaker(doc, grounded_segments) == []
+    assert storyteller.format_speaker_label(doc["speaker"]) == "김지영 (마루 창업자)"
+
+
+def test_speaker_ungrounded_descriptor_is_rejected(segments: dict) -> None:
+    doc = {
+        "speaker": {
+            "name": "김지영",
+            "company": "마루",
+            "role": "CEO",
+            "alternate_role": "",
+            "evidence": "원문에 없는 설명",
+        }
+    }
+
+    errors = storyteller.validate_and_normalize_speaker(doc, segments)
+
+    assert errors == ["speaker의 기업/역할 evidence가 제공된 SEGMENTS 또는 영상 맥락에 직접 존재해야 함"]
+
+
+def test_speaker_evidence_must_name_the_claimed_company_and_role(segments: dict) -> None:
+    doc = {
+        "speaker": {
+            "name": "김지영",
+            "company": "마루",
+            "role": "CEO",
+            "alternate_role": "",
+            "evidence": "저는 원래 대기업에 합격했어요",
+        }
+    }
+
+    assert storyteller.validate_and_normalize_speaker(doc, segments)
 
 
 def test_generate_script_accepts_long_reel_within_five_second_grace(segments: dict, edl_doc: dict) -> None:
@@ -441,14 +504,14 @@ def test_generate_many_only_indices(segments: dict) -> None:
 
 def test_title_candidate_over_length_limit_is_rejected() -> None:
     doc = {"title_candidates": [
-        {"text": "첫 고객이 없을 때 대표가 가장 먼저 한 일", "keyword": "첫 고객"},
+        {"text": "가" * 25, "keyword": ""},
         {"text": "광고비 0원, 첫 고객", "keyword": "광고비"},
         {"text": "매출보다 먼저 무너진 것", "keyword": "매출"},
     ]}
 
     errors = storyteller.validate_and_normalize_title_candidates(doc)
 
-    assert any("14자" in e for e in errors)
+    assert any("24자" in e for e in errors)
 
 
 def test_title_candidates_that_are_all_declarative_sentences_are_rejected() -> None:
@@ -477,9 +540,9 @@ def test_generate_script_retries_when_titles_are_too_long(
         segments: dict, edl_doc: dict) -> None:
     calls: list[str] = []
     verbose = {**edl_doc, "title_candidates": [
-        {"text": "첫 고객이 없을 때 대표가 가장 먼저 한 일", "keyword": "첫 고객"},
-        {"text": "대기업 합격을 포기하고 창업을 선택한 진짜 이유", "keyword": "대기업"},
-        {"text": "꿈을 포기하지 못해서 결국 바로 시작했습니다", "keyword": "꿈"},
+        {"text": "가" * 25, "keyword": ""},
+        {"text": "나" * 25, "keyword": ""},
+        {"text": "다" * 25, "keyword": ""},
     ]}
 
     def runner(prompt: str) -> str:
@@ -489,5 +552,5 @@ def test_generate_script_retries_when_titles_are_too_long(
     out = storyteller.generate_script(segments, runner=runner)
 
     assert len(calls) == 2
-    assert "14자" in calls[1]
+    assert "24자" in calls[1]
     assert out["title_candidates"][0]["text"] == "대기업을 버린 이유"

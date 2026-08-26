@@ -395,5 +395,14 @@ def test_variant_cache_key_changes_by_title_subtitle_and_style() -> None:
 def test_speaker_label_formats_name_and_role() -> None:
     assert render.speaker_label({
         "speaker": {"name": "샘 알트만", "role": "CEO of OpenAI"},
-    }) == "샘 알트만 (CEO of OpenAI)"
+    }) == "샘 알트만 (OpenAI CEO)"
+    assert render.speaker_label({
+        "speaker": {"name": "김지영", "company": "마루", "role": "Founder"},
+    }) == "김지영 (마루 창업자)"
+    assert render.speaker_label({
+        "speaker": {"name": "박민수", "alternate_role": "investor"},
+    }) == "박민수 (투자자)"
+    assert render.speaker_label({
+        "speaker": {"name": "이서준", "role": "visionary"},
+    }) == "이서준"
     assert render.speaker_label({}) == ""

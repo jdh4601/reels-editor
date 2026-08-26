@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from reels_editor import render
 from reels_editor.style import load_style
@@ -90,6 +90,22 @@ def test_watermark_png_in_bottom_bar(tmp_path: Path) -> None:
     assert episode_bbox[1] > style.canvas[1] - style.bottom_bar
     assert episode_bbox[3] < logo_bbox[1]
     assert img.getchannel("A").getextrema()[1] == 255
+
+
+def test_watermark_accepts_job_episode_number(tmp_path: Path) -> None:
+    style = load_style(STYLE)
+    default = Image.open(
+        render.render_watermark_png(style, tmp_path / "episode-1.png")
+    ).convert("RGBA")
+    episode_37 = Image.open(
+        render.render_watermark_png(
+            style,
+            tmp_path / "episode-37.png",
+            episode_number=37,
+        )
+    ).convert("RGBA")
+
+    assert ImageChops.difference(default, episode_37).getbbox() is not None
 
 
 def test_subtitle_position_mid_canvas(tmp_path: Path) -> None:

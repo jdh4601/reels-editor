@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uiRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(uiRoot, "../..");
 const sampleRoot = path.join(repoRoot, "reels_editor/desktop/sample_media");
+const logoFixture = path.join(repoRoot, "desktop/assets/reels-editor-icon.png");
 const screenshotRoot = path.join(uiRoot, "test-results/dashboard");
 mkdirSync(screenshotRoot, { recursive: true });
 
@@ -75,6 +76,9 @@ async function waitForServer(url, getLog) {
 }
 
 async function routeSampleMedia(page) {
+  await page.route("**/img.youtube.com/vi/**", async (route) => {
+    await route.fulfill({ path: logoFixture, contentType: "image/png" });
+  });
   await page.route("**/api/media?demo=1", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -92,6 +96,40 @@ async function routeSampleMedia(page) {
     if (!existsSync(file)) throw new Error(`Missing sample media: ${file}`);
     await route.fulfill({ path: file, contentType: "video/mp4" });
   });
+}
+
+async function assertBrandAndSourceControls(page) {
+  const result = await page.evaluate(() => {
+    const logo = document.querySelector(".brand-mark");
+    const thumbnail = document.querySelector(".youtube-thumbnail");
+    const sourceEntry = document.querySelector(".youtube-source-entry");
+    const episode = document.querySelector("#episode-number");
+    const topbar = document.querySelector(".topbar");
+    const actions = document.querySelector(".workbar-actions");
+    const rect = (element) => element ? element.getBoundingClientRect() : null;
+    return {
+      logoAlt: logo?.getAttribute("alt"),
+      logoLoaded: logo instanceof HTMLImageElement && logo.complete && logo.naturalWidth > 0,
+      logo: rect(logo),
+      thumbnail: rect(thumbnail),
+      sourceEntry: rect(sourceEntry),
+      episodeValue: episode?.value,
+      episodeMin: episode?.getAttribute("min"),
+      archiveButton: Array.from(document.querySelectorAll("button")).some((button) => button.textContent?.includes("과거 릴스")),
+      topbar: rect(topbar),
+      actions: rect(actions),
+      viewportWidth: window.innerWidth,
+    };
+  });
+  if (result.logoAlt !== "Reels Editor 로고" || !result.logoLoaded || !result.logo || !result.thumbnail || !result.sourceEntry) {
+    throw new Error(`Expected logo and YouTube thumbnail source controls: ${JSON.stringify(result)}`);
+  }
+  if (result.logo.left > 24 || result.thumbnail.right > result.sourceEntry.left + 1 || result.episodeValue !== "37" || result.episodeMin !== "1" || !result.archiveButton) {
+    throw new Error(`Unexpected source identity geometry or values: ${JSON.stringify(result)}`);
+  }
+  if (result.actions && result.actions.right > result.viewportWidth + 1) {
+    throw new Error(`Top actions escaped the viewport: ${JSON.stringify(result)}`);
+  }
 }
 
 async function assertNoCriticalOverlap(page) {
@@ -630,6 +668,245 @@ async function assertInstagramCaptionGeneration(browser) {
   await page.close();
 }
 
+async function assertSourceThumbnailAndEpisodePayload(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  let createBody = null;
+  await page.route("**/img.youtube.com/vi/**", async (route) => {
+    await route.fulfill({ path: logoFixture, contentType: "image/png" });
+  });
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "source-control-job",
+        project_name: "Reels Editor",
+        source_url: null,
+        source_label: "YouTube 링크 없음",
+        status: "idle",
+        n_storylines: 0,
+        storylines: [],
+      }),
+    });
+  });
+  await page.route("**/api/jobs", async (route) => {
+    createBody = JSON.parse(route.request().postData() ?? "{}");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "episode-37-job",
+        project_name: "회차 테스트",
+        source_url: createBody.youtube_url,
+        source_label: "YouTube · 테스트",
+        status: "loading",
+        phase: "loading",
+        episode_number: createBody.episode_number,
+        n_storylines: 0,
+        storylines: [],
+      }),
+    });
+  });
+
+  await page.goto("http://127.0.0.1:5179/", { waitUntil: "networkidle" });
+  const urlInput = page.getByLabel("창업가 인터뷰 YouTube 링크");
+  await urlInput.fill("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=12s");
+  await page.waitForSelector(".youtube-thumbnail", { state: "visible" });
+  let thumbnailSrc = await page.locator(".youtube-thumbnail").getAttribute("src");
+  if (!thumbnailSrc?.includes("/vi/dQw4w9WgXcQ/hqdefault.jpg")) {
+    throw new Error(`Long YouTube URL produced wrong thumbnail: ${thumbnailSrc}`);
+  }
+  await urlInput.fill("https://www.youtube.com/watch?v=dQw4w9");
+  await page.waitForSelector(".youtube-thumbnail", { state: "detached" });
+  await urlInput.fill("https://youtu.be/9bZkp7q19f0");
+  await page.waitForSelector(".youtube-thumbnail", { state: "visible" });
+  thumbnailSrc = await page.locator(".youtube-thumbnail").getAttribute("src");
+  if (!thumbnailSrc?.includes("/vi/9bZkp7q19f0/hqdefault.jpg")) {
+    throw new Error(`Short YouTube URL produced wrong thumbnail: ${thumbnailSrc}`);
+  }
+  await page.getByLabel("회차").fill("37");
+  await page.getByRole("button", { name: "후보 10개 분석" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("회차 테스트"));
+  if (createBody?.youtube_url !== "https://youtu.be/9bZkp7q19f0" || createBody?.episode_number !== 37) {
+    throw new Error(`Expected episode 37 and normalized source payload, got ${JSON.stringify(createBody)}`);
+  }
+  await page.screenshot({ path: path.join(screenshotRoot, "source-thumbnail-episode-1280x800.png"), fullPage: true });
+  await page.close();
+}
+
+async function assertReadyTitleEditing(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  let patchCalls = 0;
+  let patchBody = null;
+  const snapshot = (title = "고객을 먼저 만난 이유", revision = 1) => ({
+    job_id: "title-job",
+    project_name: "제목 수정 프로젝트",
+    source_url: "https://youtu.be/dQw4w9WgXcQ",
+    source_label: "YouTube · 제목 테스트",
+    status: "ready",
+    phase: "ready",
+    progress: 1,
+    episode_number: 37,
+    n_storylines: 1,
+    selected_storyline_id: "title-story",
+    storylines: [{
+      storyline_id: "title-story",
+      index: 1,
+      label: "릴스 1",
+      hook: "검증 순서",
+      summary: "고객 검증을 먼저 한 이유",
+      sections: [{ beat: "훅", role: "문제 제기", text: "제품보다 먼저 고객을 만났습니다." }],
+      status: "ready",
+      progress: 100,
+      video_url: "/media/title-video.mp4",
+      title,
+      revision,
+    }],
+  });
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(snapshot()) });
+  });
+  await page.route("**/media/title-video.mp4**", async (route) => {
+    await route.fulfill({ path: path.join(sampleRoot, "sample-1.mp4"), contentType: "video/mp4" });
+  });
+  await page.route("**/api/jobs/title-job/storylines/title-story/title", async (route) => {
+    if (route.request().method() !== "PATCH") throw new Error(`Title endpoint expected PATCH, got ${route.request().method()}`);
+    patchCalls += 1;
+    patchBody = JSON.parse(route.request().postData() ?? "{}");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(snapshot(patchBody.title, 2)) });
+  });
+
+  await page.goto("http://127.0.0.1:5179/", { waitUntil: "networkidle" });
+  const titleInput = page.getByLabel("화면 제목");
+  await titleInput.fill("짧은제목");
+  await page.getByRole("button", { name: "수정하기" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("6자 이상"));
+  if (patchCalls !== 0) throw new Error("Invalid display title should not call PATCH");
+
+  const revisedTitle = "고객 문제를 먼저 검증한 진짜 이유";
+  await titleInput.fill(revisedTitle);
+  await page.getByRole("button", { name: "수정하기" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("재생 영상에 수정 내용이 반영되었습니다."));
+  if (patchCalls !== 1 || JSON.stringify(patchBody) !== JSON.stringify({ title: revisedTitle })) {
+    throw new Error(`Unexpected title PATCH contract: ${JSON.stringify({ patchCalls, patchBody })}`);
+  }
+  const videoSrc = await page.locator("video").getAttribute("src");
+  if (!videoSrc || !new URL(videoSrc, "http://127.0.0.1").searchParams.has("revision")) {
+    throw new Error(`Updated title did not cache-bust video URL: ${videoSrc}`);
+  }
+  await page.screenshot({ path: path.join(screenshotRoot, "title-edit-1280x900.png"), fullPage: true });
+  await page.close();
+}
+
+async function assertCompletedArchiveWorkflow(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  let openCalls = 0;
+  let captionCalls = 0;
+  let exportCalls = 0;
+  const readyStoryline = (caption = "") => ({
+    storyline_id: "archive-ready",
+    index: 1,
+    label: "릴스 1",
+    hook: "완료된 고객 검증 이야기",
+    summary: "고객을 먼저 만난 과정",
+    sections: [{ beat: "훅", role: "문제 제기", text: "고객을 먼저 만나 답을 찾았습니다." }],
+    status: "ready",
+    progress: 100,
+    video_url: "/media/archive-ready.mp4",
+    title: "고객을 먼저 만난 이유",
+    instagram_caption: caption,
+  });
+  const openedSnapshot = (caption = "") => ({
+    job_id: "archive-job",
+    project_name: "김현지 대표 인터뷰",
+    source_url: "https://youtu.be/dQw4w9WgXcQ",
+    source_label: "YouTube · 보관 인터뷰",
+    status: "ready",
+    phase: "ready",
+    progress: 1,
+    episode_number: 37,
+    n_storylines: 2,
+    selected_storyline_id: "archive-ready",
+    storylines: [
+      readyStoryline(caption),
+      { ...readyStoryline(), storyline_id: "archive-failed", label: "릴스 2", status: "failed", video_url: "/media/archive-failed.mp4", error: "과거 실패" },
+    ],
+  });
+  await page.route("**/img.youtube.com/vi/**", async (route) => {
+    await route.fulfill({ path: logoFixture, contentType: "image/png" });
+  });
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ job_id: "empty", project_name: "Reels Editor", status: "idle", n_storylines: 0, storylines: [] }) });
+  });
+  await page.route("**/api/archive", async (route) => {
+    if (route.request().method() !== "GET") throw new Error(`Archive endpoint expected GET, got ${route.request().method()}`);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ items: [
+        { id: "ready-item", job_id: "archive-job", storyline_id: "archive-ready", status: "ready", episode_number: 37, project_name: "김현지 대표 인터뷰", reel_title: "고객을 먼저 만난 이유", source_url: "https://youtu.be/dQw4w9WgXcQ", source_thumbnail_url: "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg", video_url: "/media/archive-ready.mp4", completed_at: "2026-08-25T12:30:00+09:00" },
+        { id: "failed-item", job_id: "failed-job", storyline_id: "failed", status: "failed", episode_number: 4, project_name: "실패 작업", reel_title: "완료되지 않음" },
+        { id: "analysis-item", job_id: "analysis-job", storyline_id: "analysis", status: "ready", episode_number: 5, project_name: "분석 작업", reel_title: "재생 파일 없음" },
+      ] }),
+    });
+  });
+  await page.route("**/api/jobs/archive-job/open", async (route) => {
+    if (route.request().method() !== "POST") throw new Error(`Open endpoint expected POST, got ${route.request().method()}`);
+    openCalls += 1;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(openedSnapshot()) });
+  });
+  await page.route("**/media/archive-*.mp4**", async (route) => {
+    await route.fulfill({ path: path.join(sampleRoot, "sample-1.mp4"), contentType: "video/mp4" });
+  });
+  await page.route("**/api/jobs/archive-job/storylines/archive-ready/caption", async (route) => {
+    captionCalls += 1;
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(openedSnapshot("Ep 37. 고객을 먼저 만난 이유\n\n완료된 릴스의 캡션입니다.")) });
+  });
+  await page.route("**/api/jobs/archive-job/export-batch", async (route) => {
+    exportCalls += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...openedSnapshot("Ep 37. 고객을 먼저 만난 이유\n\n완료된 릴스의 캡션입니다."),
+        export: { output_path: "/Users/test/Movies/Reels Editor/Ep-37_김현지 대표 인터뷰/reel.mp4" },
+      }),
+    });
+  });
+
+  await page.goto("http://127.0.0.1:5179/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "과거 릴스" }).click();
+  await page.waitForSelector(".archive-item", { state: "visible" });
+  const archiveCount = await page.locator(".archive-item").count();
+  if (archiveCount !== 1 || !(await page.locator(".archive-item").innerText()).includes("에피소드 37")) {
+    throw new Error(`Archive must display only completed entries, got ${archiveCount}`);
+  }
+  const archiveThumbnailSrc = await page.locator(".archive-thumbnail").getAttribute("src");
+  if (!archiveThumbnailSrc?.includes("/vi/dQw4w9WgXcQ/hqdefault.jpg")) {
+    throw new Error(`Archive did not normalize source_thumbnail_url: ${archiveThumbnailSrc}`);
+  }
+  await page.screenshot({ path: path.join(screenshotRoot, "archive-list-1280x900.png"), fullPage: true });
+  await page.getByRole("button", { name: "고객을 먼저 만난 이유 열기" }).click();
+  await page.waitForSelector(".lane", { state: "visible" });
+  if (openCalls !== 1 || await page.locator(".lane").count() !== 1 || await page.locator("video").count() !== 1) {
+    throw new Error(`Opening an archived item should show one playable completed lane: ${JSON.stringify({ openCalls })}`);
+  }
+  for (const forbidden of ["비우기", "다시 분석", "다시 시도", "생성 설정"]) {
+    if (await page.getByRole("button", { name: forbidden, exact: true }).count()) throw new Error(`Archive mode exposed forbidden action: ${forbidden}`);
+  }
+  if (await page.locator("input[role='switch']").count()) throw new Error("Archive mode exposed subtitle re-render control");
+  if (await page.getByRole("button", { name: "수정하기", exact: true }).count() !== 1) {
+    throw new Error("Archive mode must keep the completed reel title editor available");
+  }
+
+  await page.getByRole("button", { name: "캡션 생성하기" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("완료된 릴스의 캡션입니다."));
+  if (captionCalls !== 1 || !(await page.getByRole("button", { name: "캡션 복사" }).isVisible())) {
+    throw new Error("Archived reel caption generation/copy actions are not available");
+  }
+  await page.getByRole("button", { name: "보관 영상 다시 내보내기" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("Ep-37_김현지 대표 인터뷰/reel.mp4"));
+  if (exportCalls !== 1) throw new Error("Archived reel did not call fixed-path re-export");
+  await page.screenshot({ path: path.join(screenshotRoot, "archive-opened-1280x900.png"), fullPage: true });
+  await page.close();
+}
+
 async function assertRegenerateAppliesNewJobAndReconnects(browser) {
   const sockets = new Set();
   const websocketUrls = [];
@@ -744,8 +1021,8 @@ async function assertRegenerateAppliesNewJobAndReconnects(browser) {
     if (createCalls !== 1) {
       throw new Error(`Expected one regenerate request, got ${createCalls}`);
     }
-    if (JSON.stringify(createBody?.content_types) !== JSON.stringify(["story", "strategy", "failure", "principle"]) || createBody?.provider !== "claude-cli" || "duration_s" in createBody || "n_storylines" in createBody) {
-      throw new Error(`Expected only four content types and provider in analysis request, got ${JSON.stringify(createBody)}`);
+    if (JSON.stringify(createBody?.content_types) !== JSON.stringify(["story", "strategy", "failure", "principle"]) || createBody?.provider !== "claude-cli" || createBody?.episode_number !== 1 || "duration_s" in createBody || "n_storylines" in createBody) {
+      throw new Error(`Expected four content types, provider, and episode number in analysis request, got ${JSON.stringify(createBody)}`);
     }
     if (!websocketUrls.some((url) => new URL(url, "http://127.0.0.1").searchParams.get("after") === "2")) {
       throw new Error(`Expected event reconnect at new job seq 2, got ${JSON.stringify(websocketUrls)}`);
@@ -770,7 +1047,7 @@ try {
 
     const laneCount = await page.locator(".lane").count();
     const videoCount = await page.locator("video").count();
-    const laneTitleCount = await page.locator(".lane-title strong").count();
+    const laneTitleCount = await page.locator(".title-editor input").count();
     const selectedVideoCount = await page.locator("input[name='selected-video']:checked").count();
     const switchCount = await page.locator("input[role='switch']").count();
     const contentTypeCount = await page.locator("input[name='content-type']").count();
@@ -784,6 +1061,7 @@ try {
     }
 
     await assertVideosReady(page);
+    await assertBrandAndSourceControls(page);
     await assertPortraitPreviewGeometry(page);
     await assertStoryStructureReadable(page);
     await assertVerticalLaneLayout(page, 470, 630, 900);
@@ -847,6 +1125,9 @@ try {
   await assertHeartbeatDoesNotReplaceSnapshot(browser);
   await assertCandidateSelectionGeneratesOnlyChosenReels(browser);
   await assertInstagramCaptionGeneration(browser);
+  await assertSourceThumbnailAndEpisodePayload(browser);
+  await assertReadyTitleEditing(browser);
+  await assertCompletedArchiveWorkflow(browser);
   await assertRegenerateAppliesNewJobAndReconnects(browser);
   await browser.close();
   console.log(JSON.stringify({ ok: true, summary }, null, 2));

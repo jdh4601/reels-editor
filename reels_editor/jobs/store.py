@@ -28,6 +28,8 @@ class JobStore:
         output_dir: str | None = None,
         project_name: str | None = None,
         source_url: str | None = None,
+        source_thumbnail_url: str | None = None,
+        episode_number: int = 1,
         work_dir: str | None = None,
         provider: str | None = None,
         model: str | None = None,
@@ -45,6 +47,8 @@ class JobStore:
             output_dir=output_dir,
             project_name=project_name,
             source_url=source_url,
+            source_thumbnail_url=source_thumbnail_url,
+            episode_number=episode_number if episode_number > 0 else 1,
             work_dir=work_dir,
             provider=provider,
             model=model,
@@ -75,6 +79,11 @@ class JobStore:
 
     def clear_current(self) -> None:
         self._write_current(None)
+
+    def set_current(self, job_id: str) -> Job:
+        job = self.load(job_id)
+        self._write_current(job.id)
+        return job
 
     def save(self, job: Job, *, bump_revision: bool = True) -> Job:
         if bump_revision:

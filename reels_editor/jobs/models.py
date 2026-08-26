@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class Status(StrEnum):
@@ -115,6 +115,8 @@ class Storyline:
     segments_path: str | None = None
     revision: int = 0
     instagram_caption: str = ""
+    archive_path: str | None = None
+    completed_at: str | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,6 +140,8 @@ class Storyline:
             "segments_path": self.segments_path,
             "revision": self.revision,
             "instagram_caption": self.instagram_caption,
+            "archive_path": self.archive_path,
+            "completed_at": self.completed_at,
             "error": self.error,
         }
 
@@ -166,6 +170,8 @@ class Storyline:
             segments_path=data.get("segments_path"),
             revision=int(data.get("revision", 0)),
             instagram_caption=str(data.get("instagram_caption", "")),
+            archive_path=data.get("archive_path"),
+            completed_at=data.get("completed_at"),
             error=data.get("error"),
         )
 
@@ -259,6 +265,8 @@ class Job:
     output_dir: str | None = None
     project_name: str | None = None
     source_url: str | None = None
+    source_thumbnail_url: str | None = None
+    episode_number: int = 1
     transcript_language: str | None = None
     transcript_kind: str | None = None
     work_dir: str | None = None
@@ -293,6 +301,8 @@ class Job:
             "output_dir": self.output_dir,
             "project_name": self.project_name,
             "source_url": self.source_url,
+            "source_thumbnail_url": self.source_thumbnail_url,
+            "episode_number": self.episode_number,
             "transcript_language": self.transcript_language,
             "transcript_kind": self.transcript_kind,
             "work_dir": self.work_dir,
@@ -336,6 +346,8 @@ class Job:
             output_dir=data.get("output_dir"),
             project_name=data.get("project_name"),
             source_url=data.get("source_url"),
+            source_thumbnail_url=data.get("source_thumbnail_url"),
+            episode_number=_positive_int(data.get("episode_number"), default=1),
             transcript_language=data.get("transcript_language"),
             transcript_kind=data.get("transcript_kind"),
             work_dir=data.get("work_dir"),
@@ -367,3 +379,11 @@ class Job:
             error=data.get("error"),
             schema_version=int(data.get("schema_version", SCHEMA_VERSION)),
         )
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default

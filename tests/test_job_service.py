@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+import reels_editor.jobs.service as job_service_module
 from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceDeps, JobServiceError, JobStore, Status, Storyline
 from reels_editor import processes
 from reels_editor.render import RenderAssets
@@ -37,6 +38,7 @@ class Calls:
     base_version: int = 0
     caption_requests: list[dict[str, Any]] = field(default_factory=list)
     overlay_keywords: list[str] = field(default_factory=list)
+    episode_texts: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -141,6 +143,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
     def render_overlay(_assets, *, title_text: str, out_path: Path, subtitles_enabled: bool, **_kwargs):
         calls.overlay += 1
         calls.overlay_keywords.append(str(_kwargs.get("keyword", "")))
+        calls.episode_texts.append(str(_kwargs["style"].episode_text))
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(f"{Path(_assets.base).read_text(encoding='utf-8')}:{title_text}:{subtitles_enabled}".encode())
         return out_path
@@ -170,7 +173,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
 
     def generate_caption(**kwargs: Any) -> str:
         calls.caption_requests.append(kwargs)
-        return "Ep 2. 첫 고객을 만든 방법\n\n맥락\n\n전략\n\n교훈\n\n여러분은 무엇을 먼저 검증하고 있나요?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
+        return f"Ep {kwargs['episode_number']}. 첫 고객을 만든 방법\n\n맥락\n\n전략\n\n교훈\n\n여러분은 무엇을 먼저 검증하고 있나요?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
 
     return JobServiceDeps(
         analyze_candidates=lambda _segments, _types, **_kwargs: _candidates(),
@@ -199,11 +202,13 @@ def _run_ready(
     candidate_count: int = 3,
     provider: str | None = None,
     content_types: list[str] | None = None,
+    episode_number: int = 1,
 ):
     analyzed = service.run_youtube_job_sync(
         url,
         provider=provider,
         content_types=content_types,
+        episode_number=episode_number,
     )
     return service.generate_selected_sync(
         analyzed.id,
@@ -292,18 +297,194 @@ def test_job_service_uses_fixed_35_second_target(tmp_path: Path) -> None:
 def test_job_service_generates_and_persists_caption_for_selected_reel(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
-    ready = _run_ready(service, candidate_count=2)
+    ready = _run_ready(service, candidate_count=2, episode_number=37)
 
     updated = service.generate_instagram_caption(ready.id, "s2")
 
     caption = updated.storylines[1].instagram_caption
-    assert caption.startswith("Ep 2. ")
+    assert caption.startswith("Ep 37. ")
     assert service.store.load(ready.id).storylines[1].instagram_caption == caption
     assert len(calls.caption_requests) == 1
     request = calls.caption_requests[0]
-    assert request["episode_number"] == 2
+    assert request["episode_number"] == 37
     assert request["candidate"]["id"] == "c2"
     assert request["selected_title"].endswith("제목 1")
+
+
+def test_episode_number_is_job_level_for_render_caption_and_archive(tmp_path: Path) -> None:
+    calls = Calls()
+    archive_root = tmp_path / "Movies" / "Reels Editor"
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, calls),
+        archive_root=archive_root,
+    )
+
+    ready = _run_ready(service, candidate_count=2, episode_number=37)
+    captioned = service.generate_instagram_caption(ready.id, "s2")
+
+    assert ready.episode_number == 37
+    assert set(calls.episode_texts) == {"에피소드 37"}
+    assert captioned.storylines[1].instagram_caption.startswith("Ep 37. ")
+    assert all(
+        Path(story.archive_path or "").parent.name.startswith("Ep-37_")
+        for story in ready.storylines
+    )
+    assert all(Path(story.archive_path or "").is_file() for story in ready.storylines)
+
+
+def test_fixed_export_is_collision_safe_and_idempotent(tmp_path: Path) -> None:
+    calls = Calls()
+    archive_root = tmp_path / "Movies" / "Reels Editor"
+    unrelated = archive_root / "Ep-9_founder"
+    unrelated.mkdir(parents=True)
+    (unrelated / "keep.txt").write_text("unrelated", encoding="utf-8")
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, calls),
+        archive_root=archive_root,
+    )
+
+    ready = _run_ready(service, candidate_count=1, episode_number=9)
+    first_path = Path(ready.storylines[0].archive_path or "")
+    exported = service.export_selected(ready.id, storyline_id="s1")
+    second_path = Path(exported.export.output_path or "")
+
+    assert first_path.parent.name == "Ep-9_founder (2)"
+    assert first_path == second_path
+    assert (unrelated / "keep.txt").read_text(encoding="utf-8") == "unrelated"
+    assert len(list(first_path.parent.glob("*.mp4"))) == 1
+
+
+def test_archive_jobs_filters_non_playable_history(tmp_path: Path) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+    failed = service.store.create_job(source_url="https://youtu.be/failed")
+    failed.status = Status.FAILED
+    service.store.save(failed)
+    service.store.create_job(source_url="https://youtu.be/analysis-only")
+
+    archived = service.archive_jobs()
+
+    assert [job.id for job in archived] == [ready.id]
+
+
+def test_title_edit_rerenders_overlay_only_and_invalidates_caption(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, calls),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1, episode_number=12)
+    captioned = service.generate_instagram_caption(ready.id, "s1")
+    before = (calls.generate, calls.base, calls.overlay)
+    old_path = captioned.storylines[0].active_variant_path
+
+    updated = service.update_storyline_title(ready.id, "s1", " 새로운 제목이다 ")
+    story = updated.storylines[0]
+
+    assert story.title == "새로운 제목이다"
+    assert story.instagram_caption == ""
+    assert story.active_variant_path != old_path
+    assert (calls.generate, calls.base) == before[:2]
+    assert calls.overlay == before[2] + 1
+    assert "새로운 제목이다" in Path(story.active_variant_path or "").read_text(encoding="utf-8")
+    assert Path(story.archive_path or "").read_bytes() == Path(story.active_variant_path or "").read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("title", "expected_limit"),
+    [("다섯글자", "6"), ("가" * 25, "24")],
+)
+def test_title_edit_rejects_titles_outside_display_bounds(
+    tmp_path: Path,
+    title: str,
+    expected_limit: str,
+) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+
+    with pytest.raises(JobServiceError, match=expected_limit):
+        service.update_storyline_title(ready.id, "s1", title)
+
+
+def test_failed_title_render_preserves_previous_playable_and_archive_mp4(tmp_path: Path) -> None:
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    original_overlay = deps.render_overlay_variant
+
+    def fail_title(assets, *, title_text: str, **kwargs):
+        if title_text == "실패하는 제목입니다":
+            raise RuntimeError("overlay exploded")
+        return original_overlay(assets, title_text=title_text, **kwargs)
+
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=replace(deps, render_overlay_variant=fail_title),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+    before_story = ready.storylines[0]
+    active_path = Path(before_story.active_variant_path or "")
+    archive_path = Path(before_story.archive_path or "")
+    active_bytes = active_path.read_bytes()
+    archive_bytes = archive_path.read_bytes()
+
+    with pytest.raises(JobServiceError, match="overlay exploded"):
+        service.update_storyline_title(ready.id, "s1", "실패하는 제목입니다")
+
+    failed = service.store.load(ready.id).storylines[0]
+    assert failed.title == before_story.title
+    assert failed.active_variant_path == str(active_path)
+    assert failed.status is Status.READY
+    assert "다시 시도" in (failed.error or "")
+    assert active_path.read_bytes() == active_bytes
+    assert archive_path.read_bytes() == archive_bytes
+
+
+def test_failed_title_archive_install_restores_previous_mp4_and_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+    before_story = ready.storylines[0]
+    archive_path = Path(before_story.archive_path or "")
+    manifest_path = archive_path.with_suffix(archive_path.suffix + ".manifest.json")
+    archive_bytes = archive_path.read_bytes()
+    manifest_bytes = manifest_path.read_bytes()
+    original_replace = job_service_module.os.replace
+
+    def fail_manifest_install(source: Path | str, destination: Path | str) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if destination_path == manifest_path and source_path.name.endswith(".part"):
+            raise OSError("manifest install exploded")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(job_service_module.os, "replace", fail_manifest_install)
+
+    with pytest.raises(JobServiceError, match="manifest install exploded"):
+        service.update_storyline_title(ready.id, "s1", "새로운 제목이다")
+
+    failed = service.store.load(ready.id).storylines[0]
+    assert failed.title == before_story.title
+    assert failed.active_variant_path == before_story.active_variant_path
+    assert archive_path.read_bytes() == archive_bytes
+    assert manifest_path.read_bytes() == manifest_bytes
 
 
 def test_job_service_validates_storyline_length_with_configured_playback_speed(tmp_path: Path) -> None:
@@ -592,13 +773,15 @@ def test_batch_export_rejects_empty_selection(tmp_path: Path) -> None:
         service.export_many(job.id, tmp_path / "exports", storyline_ids=[])
 
 
-def test_export_rejects_unselected_storyline_request(tmp_path: Path) -> None:
+def test_export_accepts_explicit_completed_storyline_for_archive_reexport(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
     job = _run_ready(service)
 
-    with pytest.raises(JobServiceError, match="not selected"):
-        service.export_selected(job.id, tmp_path / "wrong.mp4", storyline_id="s2")
+    exported = service.export_selected(job.id, tmp_path / "second.mp4", storyline_id="s2")
+
+    assert exported.export.selected_storyline_id == "s2"
+    assert (tmp_path / "second.mp4").is_file()
 
 
 def test_stale_overlay_request_is_suppressed(tmp_path: Path) -> None:

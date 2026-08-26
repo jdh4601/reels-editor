@@ -23,7 +23,9 @@ class FakeService:
         self.export_args: dict | None = None
         self.batch_export_args: dict | None = None
         self.clear_current_called = False
+        self.title_args: dict | None = None
         self.config = AppConfig(provider="codex-cli")
+        self.archive_override: list[Job] | None = None
 
     def snapshot(self, job_id: str | None = None) -> Job | None:
         return self.job
@@ -38,14 +40,26 @@ class FakeService:
         *,
         content_types: list[str] | None = None,
         provider: str | None = None,
+        episode_number: int = 1,
     ) -> Job:
         self.youtube_start_args = {
             "youtube_url": youtube_url,
             "content_types": content_types,
             "provider": provider,
+            "episode_number": episode_number,
         }
         assert self.job is not None
         self.job.source_url = youtube_url
+        self.job.episode_number = episode_number
+        return self.job
+
+    def archive_jobs(self) -> list[Job]:
+        if self.archive_override is not None:
+            return self.archive_override
+        return [self.job] if self.job is not None else []
+
+    def open_job(self, job_id: str) -> Job:
+        assert self.job is not None and self.job.id == job_id
         return self.job
 
     def start_selected_generation(self, job_id: str, candidate_ids: list[str]) -> Job:
@@ -69,6 +83,12 @@ class FakeService:
         story.instagram_caption = "Ep 1. 첫 고객을 만든 방법\n\n본문\n\n질문?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
         return self.job
 
+    def update_storyline_title(self, job_id: str, storyline_id: str, title: str) -> Job:
+        self.title_args = {"job_id": job_id, "storyline_id": storyline_id, "title": title}
+        assert self.job is not None
+        next(item for item in self.job.storylines if item.id == storyline_id).title = title
+        return self.job
+
     def suggested_export_filename(
         self,
         job_id: str,
@@ -81,13 +101,14 @@ class FakeService:
     def export_selected(
         self,
         job_id: str,
-        destination: Path,
+        destination: Path | None = None,
         *,
         storyline_id: str | None = None,
         subtitles_on: bool | None = None,
     ) -> Job:
         self.export_args = {"job_id": job_id, "storyline_id": storyline_id, "subtitles_on": subtitles_on}
         assert self.job is not None
+        destination = destination or self.store.root.parent / "archive" / "reel.mp4"
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"exported")
         self.job.export.output_path = str(destination)
@@ -97,11 +118,12 @@ class FakeService:
     def export_many(
         self,
         job_id: str,
-        destination_dir: Path,
+        destination_dir: Path | None = None,
         *,
         storyline_ids: list[str],
         subtitles_on: bool | None = None,
     ) -> Job:
+        destination_dir = destination_dir or self.store.root.parent / "archive"
         self.batch_export_args = {
             "job_id": job_id,
             "destination_dir": destination_dir,
@@ -160,6 +182,8 @@ def test_snapshot_returns_no_reels_when_no_job(tmp_path: Path) -> None:
     assert payload["storylines"] == []
     assert payload["n_storylines"] == 0
     assert payload["duration_s"] == 35
+    assert payload["episode_number"] == 1
+    assert payload["source_thumbnail_url"] is None
 
 
 def test_clear_snapshot_releases_current_job_without_deleting_history(tmp_path: Path) -> None:
@@ -217,6 +241,7 @@ def test_create_youtube_job_passes_url_and_selected_content_types_to_service(tmp
         "/api/jobs?token=secret",
         json={
             "youtube_url": "https://youtu.be/abc123",
+            "episode_number": 37,
             "content_types": ["strategy", "failure"],
             "provider": "codex-cli",
         },
@@ -228,6 +253,7 @@ def test_create_youtube_job_passes_url_and_selected_content_types_to_service(tmp
         "youtube_url": "https://youtu.be/abc123",
         "content_types": ["strategy", "failure"],
         "provider": "codex-cli",
+        "episode_number": 37,
     }
 
 
@@ -349,6 +375,85 @@ def test_registered_artifact_range_and_snapshot_url_stays_tokenless(tmp_path: Pa
     assert invalid.status_code == 416
 
 
+def test_archive_returns_completed_reel_identity_and_open_reuses_snapshot(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job(
+        project_name="창업가 인터뷰",
+        source_url="https://youtu.be/archive123",
+        episode_number=37,
+    )
+    artifact_path = store.job_dir(job.id) / "s1" / "ready.mp4"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"ready")
+    artifact = store.register_artifact(job.id, artifact_path, kind="video/mp4")
+    job = store.load(job.id)
+    job.status = Status.READY
+    job.storylines = [Storyline(
+        id="s1",
+        index=0,
+        status=Status.READY,
+        title="끝까지 버틴 이유",
+        active_variant_path=str(artifact_path),
+        archive_path=str(tmp_path / "Movies" / "Reels Editor" / "saved.mp4"),
+        variants=[Variant(
+            id=artifact.id,
+            title_text="끝까지 버틴 이유",
+            subtitles_enabled=True,
+            status=Status.READY,
+            path=str(artifact_path),
+        )],
+    )]
+    job = store.save(job)
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+    client = TestClient(app)
+
+    archive = client.get("/api/archive?token=secret")
+    opened = client.post(f"/api/jobs/{job.id}/open?token=secret")
+
+    assert archive.status_code == 200
+    item = archive.json()["items"][0]
+    assert item["job_id"] == job.id
+    assert item["storyline_id"] == "s1"
+    assert item["episode_number"] == 37
+    assert item["source_thumbnail_url"].endswith("/archive123/hqdefault.jpg")
+    assert item["reel_title"] == "끝까지 버틴 이유"
+    assert item["video_url"] == f"/media/{job.id}/{artifact.id}"
+    assert opened.json()["job_id"] == job.id
+    assert opened.json()["episode_number"] == 37
+
+
+def test_title_patch_passes_validated_payload_to_service(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    job.storylines = [Storyline(id="s1", index=0, status=Status.READY, title="이전 제목입니다")]
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).patch(
+        f"/api/jobs/{job.id}/storylines/s1/title?token=secret",
+        json={"title": "새로운 제목이다"},
+    )
+
+    assert response.status_code == 200
+    assert service.title_args == {
+        "job_id": job.id,
+        "storyline_id": "s1",
+        "title": "새로운 제목이다",
+    }
+    assert response.json()["storylines"][0]["title"] == "새로운 제목이다"
+
+
 def test_selection_request_passes_selected_for_export(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
     job = store.create_job()
@@ -415,16 +520,15 @@ def test_export_request_passes_requested_subtitle_state(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert service.export_args == {"job_id": job.id, "storyline_id": "s2", "subtitles_on": False}
-    assert Path(service.job.export.output_path or "").name == "릴스 - 2.mp4"
-    assert dialogs.opened_directories == [tmp_path]
+    assert Path(service.job.export.output_path or "").name == "reel.mp4"
+    assert dialogs.opened_directories == [tmp_path / "archive"]
 
 
 def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
     job = store.create_job()
     service = FakeService(store, job)
-    destination = tmp_path / "exports"
-    dialogs = FakeDialogProvider(folder=str(destination))
+    dialogs = FakeDialogProvider(folder=str(tmp_path / "ignored-destination"))
     app = create_app(
         static_dir=_static(tmp_path),
         media_dir=tmp_path,
@@ -442,11 +546,11 @@ def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Pa
     assert response.status_code == 200
     assert service.batch_export_args == {
         "job_id": job.id,
-        "destination_dir": destination,
+        "destination_dir": tmp_path / "archive",
         "storyline_ids": storyline_ids,
         "subtitles_on": False,
     }
-    assert dialogs.opened_directories == [destination]
+    assert dialogs.opened_directories == [tmp_path / "archive"]
 
 
 def test_playback_speed_settings_persist_and_update_service(tmp_path: Path) -> None:

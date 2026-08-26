@@ -18,6 +18,8 @@ def test_job_store_persists_and_lists_recent_jobs(tmp_path: Path) -> None:
     job = store.create_job(
         input_path="/clips/interview.mp4",
         source_url="https://youtu.be/abc123",
+        source_thumbnail_url="https://i.ytimg.com/vi/abc123/hqdefault.jpg",
+        episode_number=37,
     )
     job.status = Status.GENERATING
     job.storylines.append(
@@ -49,6 +51,8 @@ def test_job_store_persists_and_lists_recent_jobs(tmp_path: Path) -> None:
     assert loaded.storylines[0].variants[0].subtitles_enabled is True
     assert loaded.storylines[0].instagram_caption == "Ep 1. 첫 번째 캡션"
     assert loaded.source_url == "https://youtu.be/abc123"
+    assert loaded.source_thumbnail_url.endswith("/abc123/hqdefault.jpg")
+    assert loaded.episode_number == 37
     assert [item.id for item in store.list_recent(limit=5)] == [job.id]
 
 
@@ -99,6 +103,19 @@ def test_job_decode_is_backward_tolerant(tmp_path: Path) -> None:
     assert loaded.status is Status.READY
     assert loaded.storylines[0].status is Status.IDLE
     assert loaded.export.selected_variant_id is None
+    assert loaded.episode_number == 1
+    assert loaded.source_thumbnail_url is None
+
+
+def test_set_current_reopens_a_saved_job(tmp_path: Path) -> None:
+    store = JobStore(root=tmp_path)
+    first = store.create_job(source_url="https://youtu.be/first")
+    store.create_job(source_url="https://youtu.be/second")
+
+    reopened = store.set_current(first.id)
+
+    assert reopened.id == first.id
+    assert JobStore(root=tmp_path).current_job().id == first.id
 
 
 def test_job_snapshot_keeps_dashboard_snake_case_fields(tmp_path: Path) -> None:

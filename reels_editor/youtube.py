@@ -40,6 +40,7 @@ class YouTubeSource:
     transcript_path: Path
     transcript_language: str
     transcript_kind: str
+    thumbnail_url: str = ""
 
 
 def validate_youtube_url(url: str) -> str:
@@ -74,6 +75,27 @@ def video_id_from_url(url: str) -> str | None:
     if len(parts) >= 2 and parts[0] in {"embed", "live", "shorts"}:
         return parts[1]
     return None
+
+
+def thumbnail_url_for_video(video_id: str | None) -> str | None:
+    normalized = str(video_id or "").strip()
+    if not normalized:
+        return None
+    return f"https://i.ytimg.com/vi/{normalized}/hqdefault.jpg"
+
+
+def _thumbnail_url(info: dict[str, Any], video_id: str) -> str:
+    direct = str(info.get("thumbnail") or "").strip()
+    if direct:
+        return direct
+    thumbnails = info.get("thumbnails")
+    if isinstance(thumbnails, list):
+        for item in reversed(thumbnails):
+            if isinstance(item, dict):
+                candidate = str(item.get("url") or "").strip()
+                if candidate:
+                    return candidate
+    return thumbnail_url_for_video(video_id) or ""
 
 
 def load_cached_youtube_source(
@@ -125,6 +147,7 @@ def load_cached_youtube_source(
             transcript_path=transcript_path,
             transcript_language=language,
             transcript_kind=kind,
+            thumbnail_url=_thumbnail_url(info, cached_video_id),
         )
     except (OSError, ValueError, json.JSONDecodeError, YouTubeSourceError):
         return None
@@ -319,6 +342,7 @@ def download_youtube_source(
         transcript_path=transcript_path,
         transcript_language=track.language,
         transcript_kind=track.kind,
+        thumbnail_url=_thumbnail_url(info, video_id),
     )
 
 

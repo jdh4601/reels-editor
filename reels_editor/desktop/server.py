@@ -25,7 +25,7 @@ from reels_editor.config import (
     save_config,
 )
 from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
-from reels_editor.youtube import YouTubeSourceError
+from reels_editor.youtube import YouTubeSourceError, thumbnail_url_for_video, video_id_from_url
 
 from .dialogs import DialogProvider, FakeDialogProvider
 from .tools import probe_required_tools
@@ -37,6 +37,7 @@ class SaveDialogRequest(BaseModel):
 
 class CreateJobRequest(BaseModel):
     youtube_url: str | None = Field(default=None, max_length=2048)
+    episode_number: int = Field(default=1, ge=1)
     content_types: list[Literal["story", "strategy", "failure", "principle"]] = Field(
         default_factory=lambda: ["story", "strategy", "failure", "principle"],
         min_length=1,
@@ -63,6 +64,10 @@ class BatchExportRequest(BaseModel):
 
 class GenerateCandidatesRequest(BaseModel):
     candidate_ids: list[str] = Field(min_length=1, max_length=10)
+
+
+class StorylineTitleRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
 
 
 class PlaybackSpeedSettingsRequest(BaseModel):
@@ -149,11 +154,26 @@ def create_app(
                     request.youtube_url,
                     content_types=request.content_types,
                     provider=request.provider,
+                    episode_number=request.episode_number,
                 )
             else:
                 raise HTTPException(status_code=422, detail="YouTube URL이 필요합니다.")
         except YouTubeSourceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except JobServiceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _snapshot_from_job(job)
+
+    @app.get("/api/archive")
+    def archive(_auth: None = Depends(require_token)) -> dict[str, Any]:
+        return {"items": _archive_items(service.archive_jobs())}
+
+    @app.post("/api/jobs/{job_id}/open")
+    def open_job(job_id: str, _auth: None = Depends(require_token)) -> dict[str, Any]:
+        try:
+            job = service.open_job(job_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
         except JobServiceError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _snapshot_from_job(job)
@@ -207,45 +227,45 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _snapshot_from_job(job)
 
+    @app.patch("/api/jobs/{job_id}/storylines/{storyline_id}/title")
+    def update_storyline_title(
+        job_id: str,
+        storyline_id: str,
+        request: StorylineTitleRequest,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        try:
+            job = service.update_storyline_title(job_id, storyline_id, request.title)
+        except JobServiceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _snapshot_from_job(job)
+
     @app.post("/api/jobs/{job_id}/export")
     def export_job(job_id: str, request: ExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:
         try:
-            suggested_name = service.suggested_export_filename(
-                job_id,
-                request.storyline_id,
-            )
-        except JobServiceError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        destination = dialogs.choose_save_file(suggested_name)
-        if not destination:
-            raise HTTPException(status_code=400, detail="export cancelled")
-        try:
             job = service.export_selected(
                 job_id,
-                Path(destination),
                 storyline_id=request.storyline_id,
                 subtitles_on=request.subtitles_on,
             )
         except JobServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        dialogs.show_in_file_manager(Path(destination).expanduser().parent)
+        if job.export.output_path:
+            dialogs.show_in_file_manager(Path(job.export.output_path).expanduser().parent)
         return _snapshot_from_job(job)
 
     @app.post("/api/jobs/{job_id}/export-batch")
     def export_batch(job_id: str, request: BatchExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:
-        destination = dialogs.choose_folder()
-        if not destination:
-            raise HTTPException(status_code=400, detail="export cancelled")
         try:
             job = service.export_many(
                 job_id,
-                Path(destination),
                 storyline_ids=request.storyline_ids,
                 subtitles_on=request.subtitles_on,
             )
         except JobServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        dialogs.show_in_file_manager(Path(destination).expanduser())
+        if job.export.output_path:
+            dialogs.show_in_file_manager(Path(job.export.output_path).expanduser())
         return _snapshot_from_job(job)
 
     @app.post("/api/jobs/{job_id}/cancel")
@@ -334,6 +354,9 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
             "job_id": "",
             "project_name": "Reels Editor",
             "source_url": None,
+            "source_thumbnail_url": None,
+            "thumbnail_url": None,
+            "episode_number": 1,
             "source_label": "YouTube 링크 없음",
             "connection": "connected",
             "generated_at": "",
@@ -353,6 +376,9 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "job_id": job.id,
         "project_name": job.project_name or "Reels Editor",
         "source_url": job.source_url,
+        "source_thumbnail_url": _source_thumbnail_url(job),
+        "thumbnail_url": _source_thumbnail_url(job),
+        "episode_number": job.episode_number,
         "transcript_language": job.transcript_language,
         "transcript_kind": job.transcript_kind,
         "source_label": _source_label(job),
@@ -403,6 +429,8 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
         "video_url": _media_url(job.id, artifact_id) if artifact_id else None,
         "title": storyline.title,
         "instagram_caption": storyline.instagram_caption,
+        "archive_path": storyline.archive_path,
+        "completed_at": storyline.completed_at,
         "error": _storyline_error_message(storyline.error),
         "revision": storyline.revision,
     }
@@ -413,6 +441,43 @@ def _source_label(job: Job) -> str:
         kind = "수동" if job.transcript_kind == "manual" else "자동"
         return f"YouTube · {job.transcript_language} {kind} 자막"
     return job.source_url or "YouTube 인터뷰"
+
+
+def _source_thumbnail_url(job: Job) -> str | None:
+    return job.source_thumbnail_url or thumbnail_url_for_video(
+        video_id_from_url(job.source_url or "")
+    )
+
+
+def _archive_items(jobs: list[Job]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for job in jobs:
+        for storyline in job.storylines:
+            snapshot = _storyline_snapshot(job, storyline)
+            if snapshot["status"] != "ready" or not snapshot["video_url"]:
+                continue
+            items.append(
+                {
+                    "job_id": job.id,
+                    "storyline_id": storyline.id,
+                    "episode_number": job.episode_number,
+                    "project_name": job.project_name or "YouTube 인터뷰",
+                    "source_title": job.project_name or "YouTube 인터뷰",
+                    "source_url": job.source_url,
+                    "source_thumbnail_url": _source_thumbnail_url(job),
+                    "thumbnail_url": _source_thumbnail_url(job),
+                    "reel_title": storyline.title or storyline.angle_name or "대표 영상",
+                    "title": storyline.title or storyline.angle_name or "대표 영상",
+                    "completed_at": storyline.completed_at or job.updated_at,
+                    "generated_at": job.updated_at,
+                    "video_url": snapshot["video_url"],
+                    "instagram_caption": storyline.instagram_caption,
+                    "archive_path": storyline.archive_path,
+                    "export_path": storyline.archive_path,
+                    "status": "ready",
+                }
+            )
+    return items
 
 
 def _active_variant(storyline: Storyline) -> Variant | None:

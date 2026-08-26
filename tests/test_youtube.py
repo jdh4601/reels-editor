@@ -11,6 +11,7 @@ from reels_editor.youtube import (
     load_cached_youtube_source,
     parse_json3_transcript,
     select_caption_track,
+    thumbnail_url_for_video,
     validate_youtube_url,
     video_id_from_url,
 )
@@ -30,6 +31,7 @@ def test_video_id_from_url_normalizes_common_youtube_link_variants() -> None:
     assert video_id_from_url("https://youtube.com/shorts/abc123?feature=share") == "abc123"
     assert video_id_from_url("https://youtube.com/live/abc123") == "abc123"
     assert video_id_from_url("https://example.com/watch?v=abc123") is None
+    assert thumbnail_url_for_video("abc123") == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
 
 
 def test_load_cached_youtube_source_requires_complete_video_and_transcript(tmp_path: Path) -> None:
@@ -59,6 +61,7 @@ def test_load_cached_youtube_source_requires_complete_video_and_transcript(tmp_p
     assert source.segments["video_path"] == str(video)
     assert source.transcript_path == transcript
     assert source.title == "Founder interview"
+    assert source.thumbnail_url == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
     assert load_cached_youtube_source(
         tmp_path,
         "https://youtu.be/different",
@@ -178,6 +181,7 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
         "duration": 3600,
         "language": "en",
         "channel": "Y Combinator",
+        "thumbnail": "https://i.ytimg.com/vi/abc123/maxresdefault.jpg",
         "subtitles": {"en": [{"ext": "json3"}]},
         "automatic_captions": {},
     }
@@ -199,6 +203,7 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
     assert source.title == "창업가 인터뷰"
     assert source.transcript_language == "en"
     assert source.transcript_kind == "manual"
+    assert source.thumbnail_url.endswith("/abc123/maxresdefault.jpg")
     assert source.segments["transcript_language"] == "en"
     assert source.segments["source_title"] == "창업가 인터뷰"
     assert source.segments["source_channel"] == "Y Combinator"

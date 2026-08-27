@@ -14,13 +14,17 @@ from typing import Any
 from reels_editor import processes
 from reels_editor.timebase import US
 
-SAMPLE_WIDTH = 640
-MIN_SAMPLES = 3
-MAX_SAMPLES = 7
+# 와이드 2인 샷의 얼굴 폭은 화면의 0.045 수준까지 내려간다.
+# 640px 샘플에서는 입술 영역이 10px에 그쳐 개폐 비율이 랜드마크 잡음에 지배된다.
+SAMPLE_WIDTH = 1280
+SAMPLE_QUALITY = 2
+SAMPLES_PER_SECOND = 5.0
+MIN_SAMPLES = 6
+MAX_SAMPLES = 48
 TRACK_DISTANCE = 0.22
 WIDE_SHOT_FACE_WIDTH = 0.14
 WIDE_SHOT_ZOOM = 1.4
-ANALYSIS_CACHE_VERSION = 1
+ANALYSIS_CACHE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,12 @@ def build_focus_windows(ordered: list[dict[str, Any]], cut_sizes: list[int]) -> 
     return windows
 
 
+def sample_count_for(duration_s: float) -> int:
+    """구간 길이에 비례해 입술 움직임을 잴 수 있는 표본 수를 정한다."""
+    target = round(max(0.0, duration_s) * SAMPLES_PER_SECOND)
+    return min(MAX_SAMPLES, max(MIN_SAMPLES, target))
+
+
 def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
     """프레임 사이 얼굴을 x좌표로 묶고 입 벌림·움직임이 큰 얼굴을 고른다."""
     tracks: list[list[tuple[int, FaceSignal]]] = []
@@ -105,8 +115,14 @@ def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
     def score(track: list[tuple[int, FaceSignal]]) -> float:
         openness = [signal.mouth_open for _index, signal in track]
         coverage = len({frame_index for frame_index, _signal in track}) / max(1, len(frames))
-        motion = statistics.pstdev(openness) if len(openness) > 1 else 0.0
-        return statistics.fmean(openness) + motion * 1.5 + coverage * 0.08
+        # 한 프레임의 입술 랜드마크 오검출이 점수를 지배하지 못하도록
+        # 평균과 표준편차 대신 중앙값과 중앙값 절대편차로 발화량을 잰다.
+        center = statistics.median(openness)
+        motion = (
+            statistics.median([abs(value - center) for value in openness])
+            if len(openness) > 1 else 0.0
+        )
+        return center + motion * 1.5 + coverage * 0.08
 
     chosen = max(viable, key=score)
     chosen_signals = [signal for _index, signal in chosen]
@@ -204,7 +220,7 @@ def _extract_sample_frames(video_path: Path, window: FocusWindow, out_dir: Path)
     for old in out_dir.glob("frame-*.jpg"):
         old.unlink()
     duration = max(0.25, window.end_s - window.start_s)
-    sample_count = min(MAX_SAMPLES, max(MIN_SAMPLES, round(duration * 1.5)))
+    sample_count = sample_count_for(duration)
     fps = sample_count / duration
     output_pattern = out_dir / "frame-%02d.jpg"
     result = processes.run(
@@ -213,6 +229,8 @@ def _extract_sample_frames(video_path: Path, window: FocusWindow, out_dir: Path)
             "-ss", f"{window.start_s:.3f}", "-t", f"{duration:.3f}",
             "-i", str(video_path),
             "-vf", f"fps={fps:.6f},scale={SAMPLE_WIDTH}:-2",
+            # 기본 압축은 작은 입술 영역을 뭉개서 다문 입을 벌어진 것으로 만든다.
+            "-q:v", str(SAMPLE_QUALITY),
             "-frames:v", str(sample_count),
             str(output_pattern),
         ],
@@ -243,7 +261,8 @@ def _window_cache_path(
             "source_size": source_size,
             "content_crop": content_crop,
             "sample_width": SAMPLE_WIDTH,
-            "sample_range": [MIN_SAMPLES, MAX_SAMPLES],
+            "sample_quality": SAMPLE_QUALITY,
+            "sample_range": [MIN_SAMPLES, MAX_SAMPLES, SAMPLES_PER_SECOND],
         },
         sort_keys=True,
     )
@@ -252,14 +271,21 @@ def _window_cache_path(
 
 
 def _read_cached_window(path: Path) -> dict[str, Any] | None:
+    """필수 항목을 모두 갖춘 캐시만 재사용한다. 이전 스키마는 폐기한다."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        focus = data.get("focus")
-        if not isinstance(focus, dict):
-            return None
-        return data
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, TypeError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
+    focus = data.get("focus")
+    if not isinstance(focus, dict):
+        return None
+    if any(not isinstance(focus.get(key), (int, float)) for key in ("x", "y", "zoom")):
+        return None
+    if not isinstance(data.get("detected_faces"), int):
+        return None
+    return data
 
 
 def _write_cached_window(path: Path, data: dict[str, Any]) -> None:

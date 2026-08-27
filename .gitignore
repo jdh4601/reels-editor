@@ -8,6 +8,7 @@ build/
 dist/
 desktop/ui/node_modules/
 desktop/ui/test-results/
+.playwright-cli/
 
 # Python
 __pycache__/

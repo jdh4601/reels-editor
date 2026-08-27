@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from reels_editor.config import AppConfig, load_config
+from reels_editor import speaker_focus
 from reels_editor.jobs import JobService, JobStore
 from reels_editor.storyteller import build_prompt
 
@@ -97,6 +98,7 @@ def smoke_payload(base_url: str, *, session_token: str, service: JobService) -> 
         "prompt": _prompt_smoke(),
         "engine": {
             "style_loaded": True,
+            "speaker_focus_available": speaker_focus.vision_available(),
             "provider": service.config.provider,
             "model": service.config.model,
         },

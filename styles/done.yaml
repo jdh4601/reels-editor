@@ -14,11 +14,13 @@ title:
   color: "#FF7A00"       # 상단 후킹 제목 전체 오렌지
   highlight: "#FF7A00"
   max_lines: 2
-  line_gap: 12
+  line_gap: 24         # 흰색 첫째 줄과 주황색 둘째 줄 사이에 읽기 쉬운 여백
   speaker_size: 46      # 제목 아래 화자 이름·직함을 더 크게 표시
   speaker_color: "#FFFFFF"
   speaker_gap: 40       # 주황 제목은 고정하고 흰색 화자 정보만 아래로 이동
   anchor_y: 1185        # 화자 정보가 있을 때 주황 제목 중심, 캔버스 y≈368px
+  upper_size: 70        # 2줄 제목의 첫 줄은 작은 흰색 전제 문구
+  upper_color: "#FFFFFF"
 subtitle:
   font: Pretendard-Bold.otf
   size: 40              # 편집기 표기 8 × 5
@@ -36,7 +38,7 @@ watermark:
   size: 75              # 편집기 표기 15 × 5
   opacity: 255          # SVG에 지정된 60% 투명도를 그대로 사용
   y: -1450              # 새 로고 중심 위치 유지, 캔버스 y=1685px
-  episode_text: "에피소드 1"
+  episode_text: "에피소드 1 / 1000"
   episode_size: 48      # 에피소드 문구를 더 크고 선명하게 표시
   episode_color: "#FFFFFF"
   episode_opacity: 255

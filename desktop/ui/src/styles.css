@@ -160,12 +160,12 @@ h2 {
   align-items: stretch;
   display: grid;
   gap: 9px;
-  grid-template-columns: minmax(0, 1fr) 84px;
+  grid-template-columns: minmax(0, 1fr) 160px;
   width: 100%;
 }
 
 .youtube-source-controls:has(.youtube-thumbnail) {
-  grid-template-columns: 96px minmax(0, 1fr) 84px;
+  grid-template-columns: 96px minmax(0, 1fr) 160px;
 }
 
 .youtube-thumbnail {
@@ -239,7 +239,7 @@ h2 {
   border-radius: 9px;
   display: grid;
   gap: 1px;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(34px, 1fr) auto;
   padding: 5px 8px 5px 10px;
 }
 
@@ -252,6 +252,13 @@ h2 {
   color: #756e66;
   font-size: 11px;
   font-weight: 760;
+}
+
+.episode-field .episode-total {
+  color: #21362f;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .episode-field input {
@@ -1007,10 +1014,51 @@ h2 {
 }
 
 .title-editor-controls {
-  align-items: stretch;
+  align-items: end;
   display: grid;
   gap: 7px;
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.title-editor-fields {
+  display: grid;
+  gap: 9px;
+}
+
+.title-editor-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.title-editor-field > span {
+  align-items: center;
+  color: #4e5752;
+  display: flex;
+  font-size: 11px;
+  font-weight: 760;
+  gap: 6px;
+}
+
+.title-editor-field > span i {
+  background: #fff;
+  border: 1px solid #bfb8ad;
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.title-editor-field.lower > span i {
+  background: #f57900;
+  border-color: #f57900;
+}
+
+.title-editor-field > span small {
+  color: #8b8984;
+  font-size: 10px;
+  font-weight: 620;
+  margin-left: auto;
 }
 
 .title-editor-controls input {
@@ -1024,6 +1072,8 @@ h2 {
   outline: 0;
   padding: 8px 10px;
 }
+
+.title-editor-field.upper input { color: #414a45; }
 
 .title-editor-controls input:focus {
   border-color: #df6b12;
@@ -1256,7 +1306,7 @@ h2 {
   .workbar-actions { justify-content: flex-start; }
   .status-row { grid-template-columns: 1fr 120px 120px 120px; }
   .youtube-source { max-width: none; }
-  .youtube-source-controls:has(.youtube-thumbnail) { grid-template-columns: 88px minmax(0, 1fr) 82px; }
+  .youtube-source-controls:has(.youtube-thumbnail) { grid-template-columns: 88px minmax(0, 1fr) 150px; }
   .youtube-thumbnail { width: 88px; }
   .candidate-workspace { margin-bottom: 120px; }
   .generation-steps li small { display: none; }

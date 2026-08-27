@@ -19,12 +19,14 @@ def test_load_done_preset() -> None:
     assert s.watermark_font.name == "Pretendard-Bold.otf"
     assert s.title_size == 105
     assert s.title_emphasis_size is None
-    assert s.title_line_gap == 12
+    assert s.title_line_gap == 24
     assert s.title_max_lines == 2
     assert s.title_speaker_size == 46
     assert s.title_speaker_color == "#FFFFFF"
     assert s.title_speaker_gap == 40
     assert s.title_anchor_y == 1185
+    assert s.title_upper_size == 70
+    assert s.title_upper_color == "#FFFFFF"
     assert s.sub_size == 40
     assert s.sub_opacity == 255
     assert s.sub_y == -400
@@ -33,7 +35,7 @@ def test_load_done_preset() -> None:
     assert s.watermark_y == -1450
     assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
     assert s.watermark_width == 212
-    assert s.episode_text == "에피소드 1"
+    assert s.episode_text == "에피소드 1 / 1000"
     assert s.episode_size == 48
     assert s.episode_color == "#FFFFFF"
     assert s.episode_opacity == 255
@@ -64,14 +66,13 @@ def test_missing_font_raises(tmp_path: Path) -> None:
         load_style(bad)
 
 
-def test_job_episode_creates_render_style_without_fixed_total() -> None:
+def test_job_episode_creates_render_style_with_fixed_total() -> None:
     style = load_style(STYLE)
 
     episode_style = style.for_episode(37)
 
-    assert episode_label(37) == "에피소드 37"
-    assert episode_style.episode_text == "에피소드 37"
-    assert "/ 1000" not in episode_style.episode_text
-    assert style.episode_text == "에피소드 1"
+    assert episode_label(37) == "에피소드 37 / 1000"
+    assert episode_style.episode_text == "에피소드 37 / 1000"
+    assert style.episode_text == "에피소드 1 / 1000"
     with pytest.raises(ValueError):
         style.for_episode(0)

@@ -2,6 +2,7 @@ import subprocess
 import sys
 import threading
 import unicodedata
+from types import SimpleNamespace
 
 import pytest
 
@@ -205,6 +206,56 @@ def test_video_crop_box_fits_source_to_nine_sixteen_canvas_without_extra_zoom() 
         1920, 1080, *style.video_area())
 
 
+def test_video_crop_box_moves_and_zooms_toward_left_speaker() -> None:
+    style = load_style(STYLE)
+
+    crop = render.video_crop_box((1920, 1080), style, focus_x=0.14, zoom=1.4)
+
+    assert crop[0] < render.video_crop_box((1920, 1080), style)[0]
+    assert crop[2] == 0
+
+
+def test_video_crop_box_moves_up_to_preserve_speaker_headroom() -> None:
+    style = load_style(STYLE)
+
+    centered = render.video_crop_box((1920, 1080), style, zoom=1.4)
+    speaker_safe = render.video_crop_box(
+        (1920, 1080), style, focus_y=0.28, zoom=1.4
+    )
+
+    assert speaker_safe[3] < centered[3]
+    assert speaker_safe[3] == 0
+
+
+def test_build_base_filter_applies_focus_per_segment(edl_doc: dict, segments: dict) -> None:
+    from reels_editor.speaker_focus import FocusPoint
+
+    style = load_style(STYLE)
+    ordered = edl.ordered_segments(edl_doc, segments)
+    points = [
+        FocusPoint(x=0.14, y=0.28, zoom=1.4),
+        FocusPoint(x=0.86, y=0.42, zoom=1.4),
+    ]
+
+    filt = render.build_base_filter(
+        ordered,
+        1.2,
+        style,
+        in_size=(1920, 1080),
+        focus_points=points,
+    )
+
+    left_crop = render.video_crop_box(
+        (1920, 1080), style, focus_x=0.14, focus_y=0.28, zoom=1.4
+    )
+    right_crop = render.video_crop_box(
+        (1920, 1080), style, focus_x=0.86, focus_y=0.42, zoom=1.4
+    )
+    assert f"crop={left_crop[0]}:{left_crop[1]}:{left_crop[2]}:{left_crop[3]}" in filt
+    assert f"crop={right_crop[0]}:{right_crop[1]}:{right_crop[2]}:{right_crop[3]}" in filt
+    assert "concat=n=2:v=1:a=1[v][a]" in filt
+
+
 def test_parse_cropdetect_picks_most_common() -> None:
     lines = [
         "[Parsed_cropdetect_0] x1:656 ... crop=608:1080:656:0",
@@ -237,6 +288,68 @@ def test_parse_progress_line() -> None:
     assert render.parse_progress_line("out_time_us=1500000") == 1.5
     assert render.parse_progress_line("frame=42") is None
     assert render.parse_progress_line("out_time_us=N/A") is None
+
+
+def test_select_video_encoder_enables_videotoolbox_on_supported_macos(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    render.select_video_encoder.cache_clear()
+    monkeypatch.setenv("REELS_EDITOR_VIDEO_ENCODER", "h264_videotoolbox")
+    monkeypatch.setattr(render.sys, "platform", "darwin")
+    monkeypatch.setattr(render.shutil, "which", lambda name: "/opt/homebrew/bin/ffmpeg")
+    monkeypatch.setattr(
+        render.processes,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=" V....D h264_videotoolbox VideoToolbox H.264 Encoder",
+        ),
+    )
+
+    encoder = render.select_video_encoder()
+
+    assert encoder.name == "h264_videotoolbox"
+    assert "-allow_sw" in encoder.args
+    render.select_video_encoder.cache_clear()
+
+
+def test_select_video_encoder_can_force_software(monkeypatch: pytest.MonkeyPatch) -> None:
+    render.select_video_encoder.cache_clear()
+    monkeypatch.setenv("REELS_EDITOR_VIDEO_ENCODER", "libx264")
+
+    assert render.select_video_encoder().name == "libx264"
+    render.select_video_encoder.cache_clear()
+
+
+def test_select_video_encoder_defaults_to_measured_fast_software(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    render.select_video_encoder.cache_clear()
+    monkeypatch.delenv("REELS_EDITOR_VIDEO_ENCODER", raising=False)
+
+    assert render.select_video_encoder().name == "libx264"
+    render.select_video_encoder.cache_clear()
+
+
+def test_encode_video_retries_with_libx264_when_videotoolbox_fails(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        render,
+        "select_video_encoder",
+        lambda: render.VideoEncoder("h264_videotoolbox", ("-c:v", "h264_videotoolbox")),
+    )
+
+    def fake_ffmpeg(args: list[str]) -> None:
+        calls.append(args)
+        if len(calls) == 1:
+            raise RuntimeError("VideoToolbox unavailable")
+
+    monkeypatch.setattr(render, "_ffmpeg", fake_ffmpeg)
+
+    used = render._encode_video(["-i", "source.mp4"], ["out.mp4"])
+
+    assert used.name == "libx264"
+    assert "h264_videotoolbox" in calls[0]
+    assert "libx264" in calls[1]
 
 
 # stdout 파이프를 라인 단위로 소비하는 동안, stderr에 OS 파이프 버퍼(약 64KB)를
@@ -356,6 +469,60 @@ def test_overlay_variant_subtitle_off_reuses_base_without_sub_inputs(
     assert str(sub) not in args
     assert args[-1].endswith(".part.mp4")
     assert not (tmp_path / ".variant.part.mp4").exists()
+
+
+def test_overlay_variant_single_pass_uses_source_crop_audio_and_hardware_encoder(
+        tmp_path: Path, style_preset, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    base_filter = tmp_path / "base-filter.txt"
+    base_filter.write_text("[0:v]null[v];[0:a]anull[a]", encoding="utf-8")
+    title = tmp_path / "title.png"
+    watermark = tmp_path / "wm.png"
+    title.write_bytes(b"title")
+    watermark.write_bytes(b"watermark")
+    assets = render.RenderAssets(
+        base=source,
+        wm_png=watermark,
+        sub_pngs=[],
+        groups=[],
+        work=tmp_path,
+        keywords=[],
+        source=source,
+        base_filter=base_filter,
+        total_s=1.0,
+    )
+    calls: dict[str, list[str]] = {}
+
+    monkeypatch.setattr(render, "render_title_png", lambda *_args, **_kwargs: title)
+    monkeypatch.setattr(
+        render,
+        "select_video_encoder",
+        lambda: render.VideoEncoder("h264_videotoolbox", ("-c:v", "h264_videotoolbox")),
+    )
+
+    def fake_ffmpeg(args: list[str]) -> None:
+        calls["args"] = args
+        Path(args[-1]).write_bytes(b"variant")
+
+    monkeypatch.setattr(render, "_ffmpeg", fake_ffmpeg)
+
+    out = render.render_overlay_variant(
+        assets,
+        title_text="새 제목",
+        keyword="",
+        style=style_preset,
+        out_path=tmp_path / "single-pass.mp4",
+        subtitles_enabled=False,
+    )
+
+    args = calls["args"]
+    assert out.read_bytes() == b"variant"
+    assert args.count(str(source)) == 1
+    assert "[0:v]null[v];[0:a]anull[a]" in args[args.index("-filter_complex") + 1]
+    assert args[args.index("-map") + 1] == "[vout]"
+    assert "[a]" in args
+    assert "h264_videotoolbox" in args
 
 
 def test_variant_cache_key_changes_by_title_subtitle_and_style() -> None:

@@ -25,6 +25,7 @@ a = Analysis(
         "websockets.asyncio.server",
         "websockets.legacy.server",
         "uvicorn.lifespan.on",
+        "Vision",
     ],
     hookspath=[],
     hooksconfig={},

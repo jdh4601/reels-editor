@@ -109,6 +109,32 @@ def wrap_title(text: str) -> tuple[str, ...]:
     return "".join(clusters[:split_at]), "".join(clusters[split_at:])
 
 
+def editor_title_lines(text: str) -> tuple[str, str]:
+    """Return the editable white upper line and orange lower line.
+
+    Older one-line titles remain orange by leaving the optional upper line empty.
+    """
+    try:
+        lines = wrap_title(text)
+    except ValueError:
+        # Legacy/test fixtures can predate the current 6–24 character contract.
+        # Keep those playable and editable as a single orange line.
+        return "", normalize_title(text)
+    if len(lines) == 1:
+        return "", lines[0]
+    return lines[0], lines[1]
+
+
+def validate_editor_title_lines(upper: str, lower: str) -> tuple[str, str, str]:
+    """Normalize explicit editor lines and validate their combined display title."""
+    normalized_upper = normalize_title(upper)
+    normalized_lower = normalize_title(lower)
+    if not normalized_lower:
+        raise ValueError("두 번째 제목을 입력하세요.")
+    combined = validate_title(" ".join(part for part in (normalized_upper, normalized_lower) if part))
+    return normalized_upper, normalized_lower, combined
+
+
 def _balance_key(lines: tuple[str, str]) -> tuple[int, int, int]:
     left_count = title_char_count(lines[0])
     right_count = title_char_count(lines[1])

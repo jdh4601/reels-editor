@@ -7,13 +7,14 @@ from pathlib import Path
 import yaml
 
 TITLE_ORANGE = "#FF7A00"
+EPISODE_TOTAL = 1000
 
 
 def episode_label(episode_number: int) -> str:
     """Return the product's job-level episode label."""
     if isinstance(episode_number, bool) or int(episode_number) < 1:
         raise ValueError("episode_number must be a positive integer")
-    return f"에피소드 {int(episode_number)}"
+    return f"에피소드 {int(episode_number)} / {EPISODE_TOTAL}"
 
 
 @dataclass(frozen=True)
@@ -49,9 +50,11 @@ class StylePreset:
     title_speaker_color: str = "#FFFFFF"
     title_speaker_gap: int = 18
     title_anchor_y: int | None = None
+    title_upper_size: int = 70
+    title_upper_color: str = "#FFFFFF"
     watermark_image: Path | None = None
     watermark_width: int | None = None
-    episode_text: str = "에피소드 1"
+    episode_text: str = "에피소드 1 / 1000"
     episode_size: int = 30
     episode_color: str = "#FFFFFF"
     episode_opacity: int = 255
@@ -118,9 +121,11 @@ def load_style(path: Path) -> StylePreset:
         title_speaker_color=str(t.get("speaker_color", "#FFFFFF")),
         title_speaker_gap=int(t.get("speaker_gap", 18)),
         title_anchor_y=int(t["anchor_y"]) if "anchor_y" in t else None,
+        title_upper_size=int(t.get("upper_size", 70)),
+        title_upper_color=str(t.get("upper_color", "#FFFFFF")),
         watermark_image=_asset(path.parent, w.get("image")),
         watermark_width=int(w["width"]) if "width" in w else None,
-        episode_text=str(w.get("episode_text", "에피소드 1")),
+        episode_text=str(w.get("episode_text", "에피소드 1 / 1000")),
         episode_size=int(w.get("episode_size", 30)),
         episode_color=str(w.get("episode_color", "#FFFFFF")),
         episode_opacity=int(w.get("episode_opacity", 255)),

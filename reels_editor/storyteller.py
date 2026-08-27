@@ -6,6 +6,7 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable
 
@@ -110,6 +111,7 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             f"- 채널: {source_channel or '알 수 없음'}\n"
             "- 선택한 클립에서 실제로 말하는 사람을 speaker에 적는다. 진행자보다 인터뷰 답변자를 우선한다.\n"
             "- 이름·기업·역할은 제공된 영상 맥락이나 SEGMENTS에서 직접 확인되는 정보만 쓴다.\n"
+            "- 기업과 역할을 확인할 수 있으면 둘 다 반드시 채우고, evidence에는 그 기업명과 역할이 함께 드러난 원문을 인용한다.\n"
         )
     else:
         source_context = ""
@@ -474,6 +476,66 @@ class StorylineResult:
     doc: dict | None
     error: str | None = None
     title: str = ""
+
+
+def harmonize_speaker_metadata(results: list[StorylineResult]) -> None:
+    """같은 화자의 병렬 EDL 사이에서 가장 풍부한 검증 완료 신원 정보를 공유한다.
+
+    각 EDL은 독립적으로 생성되므로 한 후보만 기업·직함 근거를 길게 인용하고
+    다른 후보는 이름만 남기는 경우가 있다. 이름 또는 겹치는 소개 원문으로 같은
+    화자임이 확인될 때만, 회사·직함·근거를 함께 복사한다.
+    """
+    entries: list[tuple[dict[str, Any], dict[str, str]]] = []
+    for result in results:
+        if result.doc is None:
+            continue
+        normalized = normalize_speaker_data(result.doc.get("speaker"))
+        if normalized["name"]:
+            entries.append((result.doc, normalized))
+
+    rich = [
+        speaker
+        for _doc, speaker in entries
+        if speaker.get("evidence")
+        and ((speaker["company"] and speaker["role"]) or speaker["alternate_role"])
+        and format_speaker_label(speaker) != speaker["name"]
+    ]
+    for doc, current in entries:
+        matches = [speaker for speaker in rich if _same_speaker(current, speaker)]
+        if not matches:
+            continue
+        best = max(matches, key=_speaker_metadata_score)
+        if _speaker_metadata_score(best) > _speaker_metadata_score(current):
+            doc["speaker"] = dict(best)
+
+
+def _speaker_metadata_score(speaker: dict[str, str]) -> tuple[int, int]:
+    identity = (
+        3
+        if speaker["company"] and speaker["role"]
+        else 1
+        if speaker["alternate_role"]
+        else 0
+    )
+    return identity, len(speaker.get("evidence", ""))
+
+
+def _same_speaker(left: dict[str, str], right: dict[str, str]) -> bool:
+    left_name = re.sub(r"[^0-9a-z가-힣]", "", left["name"].casefold())
+    right_name = re.sub(r"[^0-9a-z가-힣]", "", right["name"].casefold())
+    if left_name and left_name == right_name:
+        return True
+    left_evidence = normalize_title(left.get("evidence", "")).casefold()
+    right_evidence = normalize_title(right.get("evidence", "")).casefold()
+    evidence_matches = bool(
+        min(len(left_evidence), len(right_evidence)) >= 24
+        and (left_evidence in right_evidence or right_evidence in left_evidence)
+    )
+    return bool(
+        evidence_matches
+        and min(len(left_name), len(right_name)) >= 3
+        and SequenceMatcher(None, left_name, right_name).ratio() >= 0.65
+    )
 
 
 def generate_many(segments: dict, n: int, duration_s: int = 30, *,

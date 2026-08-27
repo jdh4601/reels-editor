@@ -10,7 +10,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -19,9 +19,18 @@ from reels_editor import candidate_analyzer, edl, export, instagram_caption, ren
 from reels_editor.config import AppConfig, merged_style
 from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
-from reels_editor.storyteller import StorylineResult, generate_script
+from reels_editor.storyteller import (
+    StorylineResult,
+    generate_script,
+    harmonize_speaker_metadata,
+)
 from reels_editor.style import StylePreset, load_style
-from reels_editor.title_rules import normalize_title, validate_title
+from reels_editor.title_rules import (
+    editor_title_lines,
+    normalize_title,
+    validate_editor_title_lines,
+    validate_title,
+)
 
 from .models import ContentCandidate, ExportState, Job, Status, Storyline, Variant
 from .store import JobStore
@@ -401,15 +410,30 @@ class JobService:
         self,
         job_id: str,
         storyline_id: str,
-        title: str,
+        title: str | None = None,
+        *,
+        title_upper: str | None = None,
+        title_lower: str | None = None,
     ) -> Job:
-        normalized = validate_reel_title(title)
+        if title_upper is None and title_lower is None:
+            normalized = validate_reel_title(title or "")
+            normalized_upper, normalized_lower = editor_title_lines(normalized)
+        else:
+            try:
+                normalized_upper, normalized_lower, normalized = validate_editor_title_lines(
+                    title_upper or "",
+                    title_lower or "",
+                )
+            except ValueError as exc:
+                raise JobServiceError(str(exc)) from exc
         with self._lock:
             job = self.store.load(job_id)
             story = self._find_storyline(job, storyline_id)
             if not self._storyline_is_playable(story) or not story.assets_path:
                 raise JobServiceError("완성된 릴스의 제목만 수정할 수 있습니다.")
             previous_title = story.title
+            previous_title_upper = story.title_upper
+            previous_title_lower = story.title_lower
             previous_caption = story.instagram_caption
             previous_story_status = story.status
             previous_story_progress = story.progress
@@ -417,6 +441,8 @@ class JobService:
             previous_job_phase = job.phase
             previous_job_progress = job.progress
             story.title = normalized
+            story.title_upper = normalized_upper
+            story.title_lower = normalized_lower
             story.instagram_caption = ""
             story.status = Status.RENDERING_OVERLAY
             story.progress = 0.94
@@ -437,11 +463,7 @@ class JobService:
                     current.episode_number,
                 )
                 assets = render.RenderAssets.read_manifest(Path(story.assets_path or ""))
-                doc = (
-                    json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
-                    if story.edl_path
-                    else {}
-                )
+                doc = self._harmonized_storyline_doc(current, story)
                 speaker_text = render.speaker_label(doc)
                 key = render.variant_cache_key(
                     storyline_id=storyline_id,
@@ -452,6 +474,8 @@ class JobService:
                         f"{_assets_fingerprint(Path(story.assets_path or ''), assets)}"
                     ),
                     speaker_text=speaker_text,
+                    title_upper=normalized_upper,
+                    title_lower=normalized_lower,
                 )
                 out = Path(story.assets_path or "").parent.parent / f"{key}.mp4"
                 if not out.is_file():
@@ -467,6 +491,8 @@ class JobService:
                             out_path=render_tmp,
                             subtitles_enabled=story.subtitles_on,
                             speaker_text=speaker_text,
+                            title_upper=normalized_upper,
+                            title_lower=normalized_lower,
                         )
                         if not render_tmp.is_file():
                             raise JobServiceError("overlay renderer produced no MP4")
@@ -482,6 +508,8 @@ class JobService:
                     style_hash=render.style_hash(style),
                     status=Status.READY,
                     path=str(out),
+                    title_upper=normalized_upper,
+                    title_lower=normalized_lower,
                 )
                 with self._lock:
                     latest = self.store.load(job_id)
@@ -515,6 +543,8 @@ class JobService:
                     latest_story.active_variant_path = str(out)
                     latest_story.archive_path = str(archive_path)
                     latest_story.title = normalized
+                    latest_story.title_upper = normalized_upper
+                    latest_story.title_lower = normalized_lower
                     latest_story.instagram_caption = ""
                     latest_story.status = Status.READY
                     latest_story.progress = 1.0
@@ -545,6 +575,8 @@ class JobService:
                 failed = self.store.load(job_id)
                 failed_story = self._find_storyline(failed, storyline_id)
                 failed_story.title = previous_title
+                failed_story.title_upper = previous_title_upper
+                failed_story.title_lower = previous_title_lower
                 failed_story.instagram_caption = previous_caption
                 failed_story.status = previous_story_status
                 failed_story.progress = previous_story_progress
@@ -929,6 +961,8 @@ class JobService:
             if current_story.active_variant_path != variant.path:
                 current_story.active_variant_path = variant.path
                 current_story.title = variant.title_text
+                current_story.title_upper = variant.title_upper
+                current_story.title_lower = variant.title_lower
                 current_story.subtitles_on = variant.subtitles_enabled
                 changed = True
             if current_variant is not None:
@@ -1330,6 +1364,9 @@ class JobService:
             raw_dump_dir=work,
             speed=speed,
         )
+        # 의존성을 대체한 호출 경로까지 포함해 렌더 직전 한 번 더 정규화한다.
+        # 함수는 멱등이므로 기본 candidate_analyzer 경로와 중복 호출해도 안전하다.
+        harmonize_speaker_metadata(results)
         with self._lock:
             job = self.store.load(job_id)
             if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
@@ -1546,7 +1583,7 @@ class JobService:
                 story_id,
                 progress=0.45,
                 status=Status.RENDERING_BASE,
-                detail="선택한 구간을 세로 영상으로 렌더링하는 중입니다.",
+                detail="세로 영상용 화자 위치와 크롭·자막 에셋을 준비하는 중입니다.",
             )
             job = self.store.load(job_id)
             assets = self.deps.render_base_and_assets(
@@ -1564,10 +1601,11 @@ class JobService:
                 story_id,
                 progress=0.78,
                 status=Status.RENDERING_OVERLAY,
-                detail="제목·자막 오버레이와 오디오를 합성하는 중입니다.",
+                detail="크롭·제목·자막·로고를 합쳐 최종 영상을 인코딩하는 중입니다.",
             )
             assets_path = assets.write_manifest(sdir / ".render" / "assets.json")
             title_text = normalize_title(result.title or _fallback_doc_title(result.doc))
+            title_upper, title_lower = editor_title_lines(title_text)
             speaker_text = render.speaker_label(result.doc)
             key = render.variant_cache_key(
                 storyline_id=story_id,
@@ -1575,6 +1613,8 @@ class JobService:
                 subtitles_enabled=True,
                 style_hash_value=f"{render.style_hash(style)}-{_assets_fingerprint(assets_path, assets)}",
                 speaker_text=speaker_text,
+                title_upper=title_upper,
+                title_lower=title_lower,
             )
             out = sdir / f"{key}.mp4"
             self.deps.render_overlay_variant(
@@ -1585,6 +1625,8 @@ class JobService:
                 out_path=out,
                 subtitles_enabled=True,
                 speaker_text=speaker_text,
+                title_upper=title_upper,
+                title_lower=title_lower,
             )
             with self._lock:
                 job = self.store.load(job_id)
@@ -1603,6 +1645,8 @@ class JobService:
                 storyline.edl_path = str(sdir / "edl.json")
                 storyline.active_variant_path = str(out)
                 storyline.title = title_text
+                storyline.title_upper = title_upper
+                storyline.title_lower = title_lower
                 storyline.subtitles_on = True
                 storyline.variants = [
                     Variant(
@@ -1613,6 +1657,8 @@ class JobService:
                         style_hash=render.style_hash(style),
                         status=Status.READY,
                         path=str(out),
+                        title_upper=title_upper,
+                        title_lower=title_lower,
                     )
                 ]
                 storyline.completed_at = (
@@ -1696,7 +1742,7 @@ class JobService:
         if not story.edl_path:
             raise JobServiceError("storyline has no persisted EDL")
         segments = json.loads((Path(story.edl_path).parent / "segments.json").read_text(encoding="utf-8"))
-        doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
+        doc = self._harmonized_storyline_doc(job, story)
         style = self._style_for_episode(
             merged_style(self.deps.load_style(self.style_path), self.config.style),
             job.episode_number,
@@ -1724,7 +1770,12 @@ class JobService:
         )
         assets = render.RenderAssets.read_manifest(Path(story.assets_path))
         title_text = story.title
-        doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8")) if story.edl_path else {}
+        title_upper, title_lower = (
+            (story.title_upper, story.title_lower)
+            if story.title_lower
+            else editor_title_lines(title_text)
+        )
+        doc = self._harmonized_storyline_doc(job, story)
         speaker_text = render.speaker_label(doc)
         key = render.variant_cache_key(
             storyline_id=storyline_id,
@@ -1732,6 +1783,8 @@ class JobService:
             subtitles_enabled=story.subtitles_on,
             style_hash_value=f"{render.style_hash(style)}-{_assets_fingerprint(Path(story.assets_path), assets)}",
             speaker_text=speaker_text,
+            title_upper=title_upper,
+            title_lower=title_lower,
         )
         out = Path(story.assets_path).parent.parent / f"{key}.mp4"
         if not out.is_file():
@@ -1743,6 +1796,8 @@ class JobService:
                 out_path=out,
                 subtitles_enabled=story.subtitles_on,
                 speaker_text=speaker_text,
+                title_upper=title_upper,
+                title_lower=title_lower,
             )
         with self._lock:
             job = self.store.load(job_id)
@@ -1761,6 +1816,8 @@ class JobService:
                 style_hash=render.style_hash(style),
                 status=Status.READY,
                 path=str(out),
+                title_upper=title_upper,
+                title_lower=title_lower,
             )
             story.variants = [item for item in story.variants if item.path != str(out)]
             story.variants.append(variant)
@@ -1773,6 +1830,7 @@ class JobService:
             job.progress = 1.0
             job.message = "선택한 자막 버전이 준비되었습니다."
             self._save(job)
+
             should_select_for_export = selected_for_export or job.selected_storyline_id == story.id
             if should_select_for_export:
                 job = self.store.load(job_id)
@@ -1787,6 +1845,27 @@ class JobService:
                 current_story = self._find_storyline(current, storyline_id)
                 current_story.error = f"보관용 MP4 저장에 실패했습니다: {exc}"
                 self._save(current)
+
+    def _harmonized_storyline_doc(self, job: Job, story: Storyline) -> dict[str, Any]:
+        """Load one persisted EDL with grounded speaker identity shared by sibling reels."""
+        if not story.edl_path:
+            return {}
+        target_doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
+        target = StorylineResult(story.index, story.angle_name, target_doc)
+        results = [target]
+        for sibling in job.storylines:
+            if sibling.id == story.id or not sibling.edl_path:
+                continue
+            sibling_path = Path(sibling.edl_path)
+            if not sibling_path.is_file():
+                continue
+            try:
+                sibling_doc = json.loads(sibling_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            results.append(StorylineResult(sibling.index, sibling.angle_name, sibling_doc))
+        harmonize_speaker_metadata(results)
+        return target.doc or target_doc
 
     def _write_storyline_outputs_once(
         self,
@@ -1901,7 +1980,7 @@ class JobService:
 
     @staticmethod
     def _style_for_episode(style: StylePreset, episode_number: int) -> StylePreset:
-        return replace(style, episode_text=f"에피소드 {episode_number}")
+        return style.for_episode(episode_number)
 
     def _save(self, job: Job) -> Job:
         saved = self.store.save(job)
@@ -1962,7 +2041,12 @@ def _assets_fingerprint(manifest_path: Path, assets: render.RenderAssets) -> str
         digest.update(manifest_path.read_bytes())
     except OSError:
         digest.update(str(manifest_path).encode("utf-8"))
-    for path in [assets.base, assets.wm_png, *assets.sub_pngs]:
+    asset_paths = [assets.base, assets.wm_png, *assets.sub_pngs]
+    if assets.source is not None and assets.source not in asset_paths:
+        asset_paths.append(assets.source)
+    if assets.base_filter is not None:
+        asset_paths.append(assets.base_filter)
+    for path in asset_paths:
         try:
             stat = path.stat()
         except OSError:

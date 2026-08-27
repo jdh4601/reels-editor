@@ -31,6 +31,7 @@ type ModelProvider = "codex-cli" | "claude-cli" | "openai" | "kimi";
 type SettingsSaveState = "idle" | "saving" | "saved" | "error";
 type CaptionActionState = "idle" | "generating" | "error" | "copied";
 type TitleActionState = "idle" | "saving" | "error" | "saved";
+type TitleDraft = { upper: string; lower: string };
 type AppView = "workspace" | "archive";
 type PlaybackSpeedSettings = {
   speed: number;
@@ -60,6 +61,8 @@ type Storyline = {
   progress: number;
   videoUrl: string | null;
   title: string;
+  titleUpper: string;
+  titleLower: string;
   instagramCaption: string;
   error?: string;
   revision: number;
@@ -131,6 +134,10 @@ type ApiArchiveItem = {
   storyline_title?: string;
   storylineTitle?: string;
   title?: string;
+  title_upper?: string;
+  titleUpper?: string;
+  title_lower?: string;
+  titleLower?: string;
   source_url?: string | null;
   sourceUrl?: string | null;
   source_thumbnail_url?: string | null;
@@ -159,6 +166,10 @@ type ApiStoryline = {
   video_url?: string | null;
   videoUrl?: string | null;
   title?: string;
+  title_upper?: string;
+  titleUpper?: string;
+  title_lower?: string;
+  titleLower?: string;
   instagram_caption?: string;
   instagramCaption?: string;
   error?: string;
@@ -222,9 +233,9 @@ type EventPayload =
   | { event: "heartbeat"; seq?: number; event_seq?: number };
 
 const DEMO_TITLES = [
-  "숫자보다 앞선 고객 한마디",
-  "완벽한 계획, 못 쓴 1년",
-  "기능 절반, 이탈 절반",
+  "숫자보다 앞선 고객의 한마디",
+  "완벽한 계획보다 빠른 첫 실행",
+  "기능을 덜어내 이탈을 막은 방법",
 ];
 
 const DEMO_SUMMARIES = [
@@ -339,8 +350,33 @@ function titleDisplayLength(title: string): number {
   return Array.from(new Intl.Segmenter("ko", { granularity: "grapheme" }).segment(compact)).length;
 }
 
-function titleValidationMessage(title: string): string | null {
-  const length = titleDisplayLength(title);
+function combineTitleLines(draft: TitleDraft): string {
+  return [draft.upper.trim(), draft.lower.trim()].filter(Boolean).join(" ");
+}
+
+function splitTitleForEditor(title: string): TitleDraft {
+  const normalized = title.trim().replace(/\s+/gu, " ");
+  if (titleDisplayLength(normalized) <= 11) return { upper: "", lower: normalized };
+  const words = normalized.split(" ");
+  if (words.length > 1) {
+    const choices = words.slice(1).map((_, index) => ({
+      upper: words.slice(0, index + 1).join(" "),
+      lower: words.slice(index + 1).join(" "),
+    }));
+    return choices.reduce((best, candidate) => {
+      const bestDifference = Math.abs(titleDisplayLength(best.upper) - titleDisplayLength(best.lower));
+      const candidateDifference = Math.abs(titleDisplayLength(candidate.upper) - titleDisplayLength(candidate.lower));
+      return candidateDifference < bestDifference ? candidate : best;
+    });
+  }
+  const graphemes = Array.from(new Intl.Segmenter("ko", { granularity: "grapheme" }).segment(normalized), (item) => item.segment);
+  const midpoint = Math.ceil(graphemes.length / 2);
+  return { upper: graphemes.slice(0, midpoint).join(""), lower: graphemes.slice(midpoint).join("") };
+}
+
+function titleValidationMessage(draft: TitleDraft): string | null {
+  if (!draft.lower.trim()) return "두 번째 제목을 입력하세요.";
+  const length = titleDisplayLength(combineTitleLines(draft));
   if (length < 6) return "공백을 제외한 화면 제목을 6자 이상 입력하세요.";
   if (length > 24) return "공백을 제외한 화면 제목은 24자까지 입력할 수 있습니다.";
   return null;
@@ -511,6 +547,8 @@ function makePlaceholderStoryline(index: number): Storyline {
     progress: 0,
     videoUrl: null,
     title: EMPTY_TITLE,
+    titleUpper: "",
+    titleLower: EMPTY_TITLE,
     instagramCaption: "",
     revision: 0,
   };
@@ -586,6 +624,8 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
       progress: showGenerationProgress ? [100, 78, 45][index] : 100,
       videoUrl: mediaUrl(items[index]?.url ?? `/media/sample-${index + 1}.mp4`),
       title: DEMO_TITLES[index],
+      titleUpper: splitTitleForEditor(DEMO_TITLES[index]).upper,
+      titleLower: splitTitleForEditor(DEMO_TITLES[index]).lower,
       instagramCaption: "",
       revision: 1,
     })),
@@ -596,6 +636,7 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
   const targetStorylineCount = Math.max(0, Math.min(10, payload.n_storylines ?? payload.nStorylines ?? 0));
   const storylines: Storyline[] = (payload.storylines ?? []).slice(0, targetStorylineCount).map((storyline, index) => {
     const title = storyline.title ?? EMPTY_TITLE;
+    const fallbackLines = splitTitleForEditor(title);
     const serverId = storyline.storyline_id ?? storyline.id ?? `storyline-${index + 1}`;
     return {
       id: serverId,
@@ -611,6 +652,8 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
       progress: storyline.progress ?? 0,
       videoUrl: mediaUrl(storyline.video_url ?? storyline.videoUrl ?? null),
       title,
+      titleUpper: storyline.title_upper ?? storyline.titleUpper ?? fallbackLines.upper,
+      titleLower: storyline.title_lower ?? storyline.titleLower ?? fallbackLines.lower,
       instagramCaption: storyline.instagram_caption ?? storyline.instagramCaption ?? "",
       error: storyline.error,
       revision: storyline.revision ?? 1,
@@ -745,7 +788,7 @@ function App() {
   const [eventConnectionVersion, setEventConnectionVersion] = useState(0);
   const [liveMessage, setLiveMessage] = useState("대시보드 연결 중");
   const [captionStates, setCaptionStates] = useState<Record<string, CaptionActionState>>({});
-  const [titleDrafts, setTitleDrafts] = useState<Record<string, string>>({});
+  const [titleDrafts, setTitleDrafts] = useState<Record<string, TitleDraft>>({});
   const [titleStates, setTitleStates] = useState<Record<string, TitleActionState>>({});
   const [titleErrors, setTitleErrors] = useState<Record<string, string | null>>({});
   const [exportPath, setExportPath] = useState<string | null>(null);
@@ -769,7 +812,7 @@ function App() {
       const drafts = jobChanged ? {} : { ...current };
       next.storylines.forEach((storyline) => {
         if (jobChanged || drafts[storyline.id] === undefined) {
-          drafts[storyline.id] = storyline.title;
+          drafts[storyline.id] = { upper: storyline.titleUpper, lower: storyline.titleLower };
         }
       });
       return drafts;
@@ -1126,7 +1169,7 @@ function App() {
 
   async function updateTitle(storyline: Storyline) {
     if (!snapshot || storyline.status !== "ready") return;
-    const draft = titleDrafts[storyline.id] ?? storyline.title;
+    const draft = titleDrafts[storyline.id] ?? { upper: storyline.titleUpper, lower: storyline.titleLower };
     const validationError = titleValidationMessage(draft);
     if (validationError) {
       setTitleStates((current) => ({ ...current, [storyline.id]: "error" }));
@@ -1144,7 +1187,9 @@ function App() {
           ...snapshot,
           storylines: snapshot.storylines.map((item) => item.id === storyline.id ? {
             ...item,
-            title: draft.trim(),
+            title: combineTitleLines(draft),
+            titleUpper: draft.upper.trim(),
+            titleLower: draft.lower.trim(),
             instagramCaption: "",
             revision: item.revision + 1,
             videoUrl: cacheBustedMediaUrl(item.videoUrl, Date.now()),
@@ -1154,7 +1199,7 @@ function App() {
         const response = await apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/title`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: draft.trim() }),
+          body: JSON.stringify({ title_upper: draft.upper.trim(), title_lower: draft.lower.trim() }),
         });
         const normalized = normalizeSnapshot((await response.json()) as ApiSnapshot);
         next = {
@@ -1165,7 +1210,10 @@ function App() {
         };
       }
       applySnapshot(archiveModeRef.current ? completedOnlySnapshot(next, storyline.id) : next);
-      setTitleDrafts((current) => ({ ...current, [storyline.id]: draft.trim() }));
+      setTitleDrafts((current) => ({
+        ...current,
+        [storyline.id]: { upper: draft.upper.trim(), lower: draft.lower.trim() },
+      }));
       setTitleStates((current) => ({ ...current, [storyline.id]: "saved" }));
       setLiveMessage(`${storyline.label} 화면 제목과 영상 오버레이를 수정했습니다.`);
     } catch (error) {
@@ -1688,7 +1736,7 @@ function App() {
             </button>
           </div>
           <label className="episode-field" htmlFor="episode-number">
-            <span>회차</span>
+            <span>에피소드</span>
             <input
               id="episode-number"
               type="number"
@@ -1697,6 +1745,7 @@ function App() {
               step="1"
               value={episodeInput}
               disabled={jobBusy}
+              aria-label="에피소드 번호"
               aria-invalid={!episodeValid}
               aria-describedby="youtube-source-help"
               onChange={(event) => {
@@ -1704,6 +1753,7 @@ function App() {
                 setYoutubeError(null);
               }}
             />
+            <span className="episode-total">/ 1000</span>
           </label>
         </div>
         <fieldset className="content-type-picker" disabled={jobBusy}>
@@ -1854,7 +1904,12 @@ function App() {
 
       <section className="lane-scroller" aria-label="생성된 릴스 비교" hidden={storylines.length === 0}>
         <div className="lanes">
-          {storylines.map((storyline) => (
+          {storylines.map((storyline) => {
+            const titleDraft = titleDrafts[storyline.id]
+              ?? { upper: storyline.titleUpper, lower: storyline.titleLower };
+            const titleChanged = titleDraft.upper.trim() !== storyline.titleUpper
+              || titleDraft.lower.trim() !== storyline.titleLower;
+            return (
             <article className={`lane ${selectedExportIds.includes(storyline.id) ? "selected-lane" : ""}`} key={storyline.id} aria-labelledby={`${storyline.id}-title`}>
               <header className="lane-header">
                 <div>
@@ -1919,27 +1974,37 @@ function App() {
               {storyline.status === "ready" ? (
                 <div className="lane-title title-editor">
                   <div className="title-editor-heading">
-                    <label htmlFor={`${storyline.id}-title-input`} className="eyebrow">화면 제목</label>
-                    <span>{titleDisplayLength(titleDrafts[storyline.id] ?? storyline.title)}/24자</span>
+                    <p className="eyebrow">화면 제목</p>
+                    <span>{titleDisplayLength(combineTitleLines(titleDraft))}/24자</span>
                   </div>
                   <div className="title-editor-controls">
-                    <input
-                      id={`${storyline.id}-title-input`}
-                      type="text"
-                      value={titleDrafts[storyline.id] ?? storyline.title}
-                      disabled={titleStates[storyline.id] === "saving"}
-                      aria-invalid={Boolean(titleErrors[storyline.id])}
-                      aria-describedby={`${storyline.id}-title-help`}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setTitleDrafts((current) => ({ ...current, [storyline.id]: value }));
-                        setTitleStates((current) => ({ ...current, [storyline.id]: "idle" }));
-                        setTitleErrors((current) => ({ ...current, [storyline.id]: titleValidationMessage(value) }));
-                      }}
-                    />
+                    <div className="title-editor-fields">
+                      {([
+                        { key: "upper", label: "첫 번째 제목", tone: "흰색" },
+                        { key: "lower", label: "두 번째 제목", tone: "주황색" },
+                      ] as const).map(({ key, label, tone }) => (
+                        <label className={`title-editor-field ${key}`} key={key} htmlFor={`${storyline.id}-title-${key}`}>
+                          <span><i aria-hidden="true" />{label}<small>{tone}</small></span>
+                          <input
+                            id={`${storyline.id}-title-${key}`}
+                            type="text"
+                            value={titleDraft[key]}
+                            disabled={titleStates[storyline.id] === "saving"}
+                            aria-invalid={Boolean(titleErrors[storyline.id])}
+                            aria-describedby={`${storyline.id}-title-help`}
+                            onChange={(event) => {
+                              const nextDraft = { ...titleDraft, [key]: event.target.value };
+                              setTitleDrafts((current) => ({ ...current, [storyline.id]: nextDraft }));
+                              setTitleStates((current) => ({ ...current, [storyline.id]: "idle" }));
+                              setTitleErrors((current) => ({ ...current, [storyline.id]: titleValidationMessage(nextDraft) }));
+                            }}
+                          />
+                        </label>
+                      ))}
+                    </div>
                     <button
                       type="button"
-                      disabled={titleStates[storyline.id] === "saving" || (titleDrafts[storyline.id] ?? storyline.title).trim() === storyline.title}
+                      disabled={titleStates[storyline.id] === "saving" || !titleChanged}
                       onClick={() => { void updateTitle(storyline); }}
                     >
                       {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}
@@ -1956,7 +2021,7 @@ function App() {
                         ? "기존 영상은 유지한 채 제목 오버레이를 다시 렌더링합니다."
                         : titleStates[storyline.id] === "saved"
                           ? "화면 제목과 재생 영상에 수정 내용이 반영되었습니다."
-                          : "공백 제외 6–24자 · 12자부터 두 줄로 표시됩니다.")}
+                          : "두 입력창의 문구가 영상의 흰색·주황색 제목에 각각 반영됩니다.")}
                   </p>
                 </div>
               ) : (
@@ -2014,7 +2079,8 @@ function App() {
               </div>
               {storyline.error ? <p className="lane-error" role="alert">{storyline.error}</p> : null}
             </article>
-          ))}
+            );
+          })}
         </div>
       </section>
 

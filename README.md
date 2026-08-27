@@ -47,11 +47,19 @@ only text the model writes is the title.
 transcript segments it is built from, so a claim can be checked before you spend
 a render on it.
 
-**Titles are text hooks, not summaries.** Titles are capped at 14 characters
-excluding spaces and pushed toward noun phrases, because a full sentence with
-every particle intact reads slower than the viewer scrolls. The rules live in
+**Titles are text hooks, not summaries.** The ten generated candidates must use
+12–24 visible characters and at least three naturally spaced Korean words, so
+they stay specific and readable instead of collapsing into short, unspaced
+phrases. The rules live in
 [`prompts/text-hook-principles.md`](prompts/text-hook-principles.md) and are
-enforced in validation — a title that runs long is sent back for a rewrite.
+enforced in validation — a title that misses the contract is sent back for a rewrite.
+
+**Two-line titles have a clear hierarchy.** The first line is a smaller white
+setup; the second line stays large and orange as the actual hook.
+
+**Wide shots follow the speaker.** On macOS, Apple Vision detects faces and
+mouth movement locally. The crop moves toward the active speaker and adds a
+restrained zoom when a two-person shot would otherwise cut that person off.
 
 **Your model, your choice.** Codex CLI, Claude Code CLI, the OpenAI API, Kimi,
 or any OpenAI-compatible server.
@@ -110,7 +118,22 @@ Then start the app:
    written from that reel's actual script.
 6. Select what you want and click **선택 영상 내보내기** (Export selected).
 
-Toggling subtitles re-renders only the overlay, not the whole video.
+The first render crops, composites the title, subtitles, and logo, and encodes
+the final MP4 in one FFmpeg pass. Title and subtitle edits reuse the downloaded
+source, crop plan, face analysis, and generated PNG assets; no intermediate
+H.264 video is encoded and decoded again.
+
+On the reference M4 Pro, the app keeps `libx264 -preset veryfast` as the default
+because the complete 1080×1920 CPU-filtered graph benchmarked faster than
+VideoToolbox. You can compare the hardware encoder on another Mac with:
+
+```bash
+REELS_EDITOR_VIDEO_ENCODER=h264_videotoolbox .venv/bin/reels-editor-desktop
+```
+
+If VideoToolbox is unavailable at runtime, rendering retries with `libx264`.
+Final hardware encodes are serialized so multiple reel analyses can still run
+in parallel without oversubscribing Apple's video encoder.
 
 ### Transcripts
 
@@ -160,7 +183,7 @@ refuse; Control-click the app in Finder and choose **Open**.
 
 | What | Where |
 | --- | --- |
-| Jobs, downloaded video, transcripts, render intermediates | `~/Library/Application Support/reels-editor/jobs/` |
+| Jobs, downloaded video, transcripts, render assets and local face-analysis cache | `~/Library/Application Support/reels-editor/jobs/` |
 | Configuration | `~/.config/reels-editor/config.yaml` |
 | Exported MP4 | Wherever you choose in the save dialog |
 

@@ -722,7 +722,7 @@ async function assertSourceThumbnailAndEpisodePayload(browser) {
   if (!thumbnailSrc?.includes("/vi/9bZkp7q19f0/hqdefault.jpg")) {
     throw new Error(`Short YouTube URL produced wrong thumbnail: ${thumbnailSrc}`);
   }
-  await page.getByLabel("회차").fill("37");
+  await page.getByLabel("에피소드 번호").fill("37");
   await page.getByRole("button", { name: "후보 10개 분석" }).click();
   await page.waitForFunction(() => document.body.innerText.includes("회차 테스트"));
   if (createBody?.youtube_url !== "https://youtu.be/9bZkp7q19f0" || createBody?.episode_number !== 37) {
@@ -736,7 +736,12 @@ async function assertReadyTitleEditing(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   let patchCalls = 0;
   let patchBody = null;
-  const snapshot = (title = "고객을 먼저 만난 이유", revision = 1) => ({
+  const snapshot = (
+    title = "고객을 먼저 만난 이유",
+    revision = 1,
+    titleUpper = "고객을 먼저",
+    titleLower = "만난 이유",
+  ) => ({
     job_id: "title-job",
     project_name: "제목 수정 프로젝트",
     source_url: "https://youtu.be/dQw4w9WgXcQ",
@@ -758,6 +763,8 @@ async function assertReadyTitleEditing(browser) {
       progress: 100,
       video_url: "/media/title-video.mp4",
       title,
+      title_upper: titleUpper,
+      title_lower: titleLower,
       revision,
     }],
   });
@@ -771,21 +778,32 @@ async function assertReadyTitleEditing(browser) {
     if (route.request().method() !== "PATCH") throw new Error(`Title endpoint expected PATCH, got ${route.request().method()}`);
     patchCalls += 1;
     patchBody = JSON.parse(route.request().postData() ?? "{}");
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify(snapshot(patchBody.title, 2)) });
+    const nextTitle = [patchBody.title_upper, patchBody.title_lower].filter(Boolean).join(" ");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(snapshot(nextTitle, 2, patchBody.title_upper, patchBody.title_lower)),
+    });
   });
 
   await page.goto("http://127.0.0.1:5179/", { waitUntil: "networkidle" });
-  const titleInput = page.getByLabel("화면 제목");
-  await titleInput.fill("짧은제목");
+  const upperTitleInput = page.locator("#title-story-title-upper");
+  const lowerTitleInput = page.locator("#title-story-title-lower");
+  await upperTitleInput.fill("");
+  await lowerTitleInput.fill("짧은제목");
   await page.getByRole("button", { name: "수정하기" }).click();
   await page.waitForFunction(() => document.body.innerText.includes("6자 이상"));
   if (patchCalls !== 0) throw new Error("Invalid display title should not call PATCH");
 
-  const revisedTitle = "고객 문제를 먼저 검증한 진짜 이유";
-  await titleInput.fill(revisedTitle);
+  const revisedUpper = "고객 문제를 먼저";
+  const revisedLower = "검증한 진짜 이유";
+  await upperTitleInput.fill(revisedUpper);
+  await lowerTitleInput.fill(revisedLower);
   await page.getByRole("button", { name: "수정하기" }).click();
   await page.waitForFunction(() => document.body.innerText.includes("재생 영상에 수정 내용이 반영되었습니다."));
-  if (patchCalls !== 1 || JSON.stringify(patchBody) !== JSON.stringify({ title: revisedTitle })) {
+  if (patchCalls !== 1 || JSON.stringify(patchBody) !== JSON.stringify({
+    title_upper: revisedUpper,
+    title_lower: revisedLower,
+  })) {
     throw new Error(`Unexpected title PATCH contract: ${JSON.stringify({ patchCalls, patchBody })}`);
   }
   const videoSrc = await page.locator("video").getAttribute("src");
@@ -1067,7 +1085,7 @@ try {
     const contentTypeCount = await page.locator("input[name='content-type']").count();
     const selectedContentTypeCount = await page.locator("input[name='content-type']:checked").count();
 
-    if (laneCount !== 3 || videoCount !== 3 || laneTitleCount !== 3 || selectedVideoCount !== 1 || switchCount !== 1 || contentTypeCount !== 4 || selectedContentTypeCount !== 4) {
+    if (laneCount !== 3 || videoCount !== 3 || laneTitleCount !== 6 || selectedVideoCount !== 1 || switchCount !== 1 || contentTypeCount !== 4 || selectedContentTypeCount !== 4) {
       throw new Error(
         `Unexpected dashboard counts at ${viewport.width}x${viewport.height}: ` +
           JSON.stringify({ laneCount, videoCount, laneTitleCount, selectedVideoCount, switchCount, contentTypeCount, selectedContentTypeCount }),

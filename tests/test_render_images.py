@@ -16,23 +16,77 @@ def test_title_png_canvas_size_with_highlight(tmp_path: Path) -> None:
     assert img.size == style.canvas
     colors = {c for _n, c in img.getcolors(maxcolors=1_000_000)}
     assert (255, 122, 0, 255) in colors      # #FF7A00 오렌지 후킹 제목
-    assert (255, 255, 255, 255) not in colors
+    assert (255, 255, 255, 255) in colors    # 2줄 제목의 작은 흰색 첫 줄
 
     orange = img.getchannel("A").point(lambda _a: 0)
+    white = img.getchannel("A").point(lambda _a: 0)
     pixels = list(img.get_flattened_data())
     orange.putdata([255 if pixel[:3] == (255, 122, 0) else 0 for pixel in pixels])
+    white.putdata([255 if pixel[:3] == (255, 255, 255) else 0 for pixel in pixels])
     orange_bbox = orange.getbbox()
-    assert orange_bbox is not None
+    white_bbox = white.getbbox()
+    assert orange_bbox is not None and white_bbox is not None
     assert orange_bbox[0] >= 60
     assert orange_bbox[2] <= style.canvas[0] - 60
-    assert abs((orange_bbox[1] + orange_bbox[3]) / 2 - 400) <= 2
+    assert white_bbox[3] < orange_bbox[1]
+    assert white_bbox[3] - white_bbox[1] < orange_bbox[3] - orange_bbox[1]
+
+
+def test_two_line_title_keeps_large_orange_second_line_anchored(tmp_path: Path) -> None:
+    style = load_style(STYLE)
+    p = render.render_title_png(
+        "남의 성격 따라 하다 낭비한 창업의 몇 년",
+        "",
+        style,
+        tmp_path / "two-line-speaker.png",
+        speaker_text="데이비드 센라",
+    )
+    img = Image.open(p).convert("RGBA")
+    pixels = list(img.get_flattened_data())
+    orange = img.getchannel("A").point(lambda _a: 0)
+    white = img.getchannel("A").point(lambda _a: 0)
+    orange.putdata([255 if pixel[:3] == (255, 122, 0) else 0 for pixel in pixels])
+    white.putdata([255 if pixel[:3] == (255, 255, 255) else 0 for pixel in pixels])
+    orange_bbox = orange.getbbox()
+    upper_white_bbox = white.crop((0, 0, style.canvas[0], 368)).getbbox()
+    speaker_white_bbox = white.crop((0, 368, style.canvas[0], style.canvas[1])).getbbox()
+
+    assert orange_bbox is not None and upper_white_bbox is not None and speaker_white_bbox is not None
+    assert abs((orange_bbox[1] + orange_bbox[3]) / 2 - 368) <= 2
+    assert upper_white_bbox[3] < orange_bbox[1]
+    assert orange_bbox[1] - upper_white_bbox[3] >= 20
+    assert upper_white_bbox[3] - upper_white_bbox[1] < orange_bbox[3] - orange_bbox[1]
+
+
+def test_title_png_uses_explicit_editor_line_boundary(tmp_path: Path) -> None:
+    style = load_style(STYLE)
+    automatic = render.render_title_png(
+        "고객이 떠난 진짜 이유 기능보다 복잡한 첫 화면",
+        "",
+        style,
+        tmp_path / "automatic.png",
+    )
+    explicit = render.render_title_png(
+        "고객이 떠난 진짜 이유 기능보다 복잡한 첫 화면",
+        "",
+        style,
+        tmp_path / "explicit.png",
+        title_upper="고객이 떠난 진짜",
+        title_lower="이유 기능보다 복잡한 첫 화면",
+    )
+
+    difference = ImageChops.difference(
+        Image.open(automatic).convert("RGBA"),
+        Image.open(explicit).convert("RGBA"),
+    )
+    assert difference.getbbox() is not None
 
 
 def test_title_png_uses_one_safe_line_and_white_speaker_label(tmp_path: Path) -> None:
     style = load_style(STYLE)
     p = render.render_title_png(
-        "좋은 아이디어를 포기하는 창업가의 가장 어려운 결정",
-        "가장 어려운 결정",
+        "좋은 아이디어의 함정",
+        "아이디어",
         style,
         tmp_path / "title-speaker.png",
         speaker_text="샘 알트만 (CEO of OpenAI)",

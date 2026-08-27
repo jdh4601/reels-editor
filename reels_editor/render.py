@@ -6,11 +6,14 @@ ffmpeg/Pillow 오케스트레이션(Task 5)을 분리한다.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from collections import Counter
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -19,7 +22,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageDraw, ImageFont
 
-from reels_editor import captions, processes
+from reels_editor import captions, processes, speaker_focus
 from reels_editor.storyteller import format_speaker_label
 from reels_editor.style import StylePreset
 from reels_editor.timebase import US
@@ -31,6 +34,68 @@ DEFAULT_TEXT_FIXES = {
     "임플란서": "인플루언서", "바이러를": "바이럴을", "서법": "서버비",
 }
 _SUBTITLE_PUNCTUATION_TO_HIDE = str.maketrans("", "", ",.")
+_VIDEOTOOLBOX_ENCODER = "h264_videotoolbox"
+_SOFTWARE_ENCODER = "libx264"
+_VIDEOTOOLBOX_SLOTS = threading.BoundedSemaphore(1)
+
+
+@dataclass(frozen=True)
+class VideoEncoder:
+    name: str
+    args: tuple[str, ...]
+
+    @property
+    def hardware_accelerated(self) -> bool:
+        return self.name == _VIDEOTOOLBOX_ENCODER
+
+
+def _software_encoder() -> VideoEncoder:
+    return VideoEncoder(
+        _SOFTWARE_ENCODER,
+        (
+            "-c:v", _SOFTWARE_ENCODER,
+            "-preset", "veryfast",
+            "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            "-tag:v", "avc1",
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
+def select_video_encoder() -> VideoEncoder:
+    """Select the measured-fast default and keep VideoToolbox as an opt-in.
+
+    On this app's 1080x1920 CPU-filtered graph, M4 Pro benchmarks favor
+    ``libx264 -preset veryfast``. Set
+    ``REELS_EDITOR_VIDEO_ENCODER=h264_videotoolbox`` to compare or use the
+    hardware path on another Mac; an unavailable encoder falls back safely.
+    """
+    forced = os.environ.get("REELS_EDITOR_VIDEO_ENCODER", "").strip().lower()
+    if forced != _VIDEOTOOLBOX_ENCODER:
+        return _software_encoder()
+    if sys.platform == "darwin" and shutil.which("ffmpeg"):
+        result = processes.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and _VIDEOTOOLBOX_ENCODER in result.stdout:
+            return VideoEncoder(
+                _VIDEOTOOLBOX_ENCODER,
+                (
+                    "-c:v", _VIDEOTOOLBOX_ENCODER,
+                    "-profile:v", "high",
+                    "-b:v", "8M",
+                    "-maxrate", "12M",
+                    "-bufsize", "16M",
+                    "-pix_fmt", "yuv420p",
+                    "-tag:v", "avc1",
+                    "-allow_sw", "0",
+                    "-realtime", "0",
+                ),
+            )
+    return _software_encoder()
 
 
 def apply_text_fixes(text: str, fixes: dict[str, str]) -> str:
@@ -139,19 +204,27 @@ def _center_crop_box(in_w: int, in_h: int,
     return crop_w, crop_h, (in_w - crop_w) // 2, (in_h - crop_h) // 2
 
 
-def video_crop_box(in_size: tuple[int, int],
-                   style: StylePreset) -> tuple[int, int, int, int]:
-    """9:16 캔버스의 영상창에 맞춘 원본 중앙 크롭 영역."""
+def video_crop_box(
+    in_size: tuple[int, int],
+    style: StylePreset,
+    *,
+    focus_x: float = 0.5,
+    focus_y: float = 0.5,
+    zoom: float | None = None,
+) -> tuple[int, int, int, int]:
+    """영상창에 맞춘 크롭 영역. 화자의 얼굴을 안전 영역으로 이동시킨다."""
     in_w, in_h = in_size
     video_w, video_h = style.video_area()
     frame_w, frame_h, frame_x, frame_y = _center_crop_box(
         in_w, in_h, video_w, video_h)
 
-    zoom = max(style.video_zoom, 1.0)
-    crop_w = _even_crop_size(frame_w / zoom, frame_w)
-    crop_h = _even_crop_size(frame_h / zoom, frame_h)
-    crop_x = frame_x + (frame_w - crop_w) // 2
-    crop_y = frame_y + (frame_h - crop_h) // 2
+    effective_zoom = max(style.video_zoom, zoom or 1.0, 1.0)
+    crop_w = _even_crop_size(frame_w / effective_zoom, frame_w)
+    crop_h = _even_crop_size(frame_h / effective_zoom, frame_h)
+    desired_x = round(max(0.0, min(1.0, focus_x)) * in_w - crop_w / 2)
+    crop_x = min(in_w - crop_w, max(0, desired_x))
+    desired_y = round(max(0.0, min(1.0, focus_y)) * in_h - crop_h / 2)
+    crop_y = min(in_h - crop_h, max(0, desired_y))
     return crop_w, crop_h, crop_x, crop_y
 
 
@@ -176,45 +249,72 @@ def detect_content_crop(video_path: Path, at_s: float,
 
 def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
                       in_size: tuple[int, int],
-                      content_crop: tuple[int, int, int, int] | None = None) -> str:
+                      content_crop: tuple[int, int, int, int] | None = None,
+                      focus_points: list[speaker_focus.FocusPoint] | None = None) -> str:
     """트림+배속+concat → (콘텐츠 크롭) → 영상영역 크롭·스케일 → 캔버스 pad."""
     vw, vh = style.video_area()
     cw, ch = style.canvas
     parts: list[str] = []
     n = len(ordered)
-    for i, s in enumerate(ordered):
-        a = s["source_start_us"] / US
-        b = s["source_end_us"] / US
-        parts.append(f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed}[v{i}];")
-        parts.append(f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={speed}[a{i}];")
-    concat = "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a];"
     src_w, src_h = in_size
     pre = ""
     if content_crop:
         c_w, c_h, c_x, c_y = content_crop
         pre = f"crop={c_w}:{c_h}:{c_x}:{c_y},"
         src_w, src_h = c_w, c_h
+    dynamic_focus = focus_points if focus_points and len(focus_points) == n else None
+    for i, s in enumerate(ordered):
+        a = s["source_start_us"] / US
+        b = s["source_end_us"] / US
+        if dynamic_focus is None:
+            parts.append(f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed}[v{i}];")
+        else:
+            point = dynamic_focus[i]
+            crop_w, crop_h, crop_x, crop_y = video_crop_box(
+                (src_w, src_h), style,
+                focus_x=point.x,
+                focus_y=point.y,
+                zoom=point.zoom,
+            )
+            parts.append(
+                f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},"
+                f"{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
+                f"pad={cw}:{ch}:0:{style.top_bar}:black[v{i}];"
+            )
+        parts.append(f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={speed}[a{i}];")
+    concat_output = "[v]" if dynamic_focus is not None else "[vc]"
+    concat = "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1{concat_output}[a];"
+    if dynamic_focus is not None:
+        return "".join(parts) + concat
     crop_w, crop_h, crop_x, crop_y = video_crop_box((src_w, src_h), style)
     vid = (f"[vc]{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
            f"pad={cw}:{ch}:0:{style.top_bar}:black[v]")
     return "".join(parts) + concat + vid
 
 
-def build_overlay_filter(n_static: int, groups: list[list]) -> tuple[str, str]:
+def build_overlay_filter(
+    n_static: int,
+    groups: list[list],
+    *,
+    base_label: str = "[0:v]",
+    first_overlay_input: int = 1,
+) -> tuple[str, str]:
     """오버레이 체인. 입력 1..n_static은 상시(타이틀·워터마크),
     이후 len(groups)개는 시간창 자막. (filter_complex, 마지막 라벨) 반환."""
     parts: list[str] = []
-    prev = "[0:v]"
+    prev = base_label
     idx = 0
     for i in range(n_static):
         out = f"[o{idx}]"
-        parts.append(f"{prev}[{i + 1}:v]overlay=0:0{out}")
+        parts.append(f"{prev}[{first_overlay_input + i}:v]overlay=0:0{out}")
         prev = out
         idx += 1
     for j, (a, b, _t) in enumerate(groups):
         out = f"[o{idx}]"
         parts.append(
-            f"{prev}[{n_static + j + 1}:v]overlay=enable='between(t,{a:.3f},{b:.3f})'{out}")
+            f"{prev}[{first_overlay_input + n_static + j}:v]"
+            f"overlay=enable='between(t,{a:.3f},{b:.3f})'{out}"
+        )
         prev = out
         idx += 1
     return ";".join(parts), prev
@@ -294,29 +394,39 @@ def render_title_png(
     style: StylePreset,
     out: Path,
     speaker_text: str = "",
+    title_upper: str | None = None,
+    title_lower: str | None = None,
 ) -> Path:
     W, H = style.canvas
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     title = normalize_title(title)
-    try:
-        lines = wrap_title(title)
-    except ValueError:
-        # Persisted pre-upgrade EDLs can contain shorter/longer titles. New model
-        # output and manual edits are rejected by the shared validator upstream,
-        # while legacy jobs must remain playable.
-        lines = (title,)
+    if title_upper is not None or title_lower is not None:
+        upper = normalize_title(title_upper or "")
+        lower = normalize_title(title_lower or "")
+        lines = tuple(line for line in (upper, lower) if line) or (title,)
+    else:
+        try:
+            lines = wrap_title(title)
+        except ValueError:
+            # Persisted pre-upgrade EDLs can contain shorter/longer titles. New model
+            # output and manual edits are rejected by the shared validator upstream,
+            # while legacy jobs must remain playable.
+            lines = (title,)
     speaker_text = " ".join(speaker_text.split())
     safe_width = W - 120
-    font = _fit_title_font(
-        lines,
-        style.title_font,
-        style.title_size,
-        safe_width,
-        d,
-    )
+    if len(lines) == 2:
+        fonts = (
+            _fit_single_line_font(lines[0], style.title_font, style.title_upper_size, safe_width, d),
+            _fit_single_line_font(lines[1], style.title_font, style.title_size, safe_width, d),
+        )
+        colors = (_hex_rgba(style.title_upper_color), _hex_rgba(style.title_color))
+    else:
+        font = _fit_title_font(lines, style.title_font, style.title_size, safe_width, d)
+        fonts = tuple(font for _line in lines)
+        colors = tuple(_hex_rgba(style.title_color) for _line in lines)
     line_heights = []
-    for line in lines:
+    for line, font in zip(lines, fonts):
         _left, line_top, _right, line_bottom = _ink_bbox(d, line, font)
         line_heights.append(line_bottom - line_top)
     line_gap = style.title_line_gap if style.title_line_gap is not None else 12
@@ -337,9 +447,21 @@ def render_title_png(
         gap = style.title_speaker_gap if speaker_text else 0
         group_height = title_height + gap + speaker_height
         title_center_y = round(group_center_y - group_height / 2 + title_height / 2)
-    line_center_y = title_center_y - title_height / 2
-    for line, line_height in zip(lines, line_heights):
-        center_y = round(line_center_y + line_height / 2)
+    if len(lines) == 2 and speaker_text and style.title_anchor_y is not None:
+        lower_center_y = _editor_y_to_canvas(style.title_anchor_y, H)
+        centers = (
+            round(lower_center_y - line_heights[1] / 2 - line_gap - line_heights[0] / 2),
+            lower_center_y,
+        )
+        title_center_y = round((centers[0] - line_heights[0] / 2 + centers[1] + line_heights[1] / 2) / 2)
+    else:
+        line_center_y = title_center_y - title_height / 2
+        centers_list: list[int] = []
+        for line_height in line_heights:
+            centers_list.append(round(line_center_y + line_height / 2))
+            line_center_y += line_height + line_gap
+        centers = tuple(centers_list)
+    for line, font, color, center_y in zip(lines, fonts, colors, centers):
         title_origin = _centered_text_origin(d, line, font, (W // 2, center_y))
         _draw_highlighted_line(
             d,
@@ -347,14 +469,13 @@ def render_title_png(
             line,
             [keyword] if keyword else [],
             font,
-            _hex_rgba(style.title_color),
-            _hex_rgba(style.title_highlight),
+            color,
+            color,
         )
-        line_center_y += line_height + line_gap
     if speaker_text:
+        title_bottom = max(center + height / 2 for center, height in zip(centers, line_heights))
         speaker_center_y = round(
-            title_center_y + title_height / 2
-            + style.title_speaker_gap + speaker_height / 2
+            title_bottom + style.title_speaker_gap + speaker_height / 2
         )
         d.text(
             _centered_text_origin(d, speaker_text, speaker_font, (W // 2, speaker_center_y)),
@@ -504,6 +625,9 @@ class RenderAssets:
     groups: list[list]
     work: Path
     keywords: list[str]
+    source: Path | None = None
+    base_filter: Path | None = None
+    total_s: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -513,6 +637,9 @@ class RenderAssets:
             "groups": self.groups,
             "work": str(self.work),
             "keywords": self.keywords,
+            "source": str(self.source) if self.source is not None else None,
+            "base_filter": str(self.base_filter) if self.base_filter is not None else None,
+            "total_s": self.total_s,
         }
 
     @classmethod
@@ -524,6 +651,9 @@ class RenderAssets:
             groups=list(data.get("groups", [])),
             work=Path(data["work"]),
             keywords=[str(item) for item in data.get("keywords", [])],
+            source=Path(data["source"]) if data.get("source") else None,
+            base_filter=Path(data["base_filter"]) if data.get("base_filter") else None,
+            total_s=float(data.get("total_s", 0.0)),
         )
 
     def write_manifest(self, path: Path) -> Path:
@@ -554,12 +684,16 @@ def variant_cache_key(
     subtitles_enabled: bool,
     style_hash_value: str,
     speaker_text: str = "",
+    title_upper: str | None = None,
+    title_lower: str | None = None,
 ) -> str:
     title_text = normalize_title(title_text)
     payload = json.dumps(
         {
             "storyline_id": storyline_id,
             "title_text": title_text,
+            "title_upper": normalize_title(title_upper) if title_upper is not None else None,
+            "title_lower": normalize_title(title_lower) if title_lower is not None else None,
             "speaker_text": speaker_text,
             "subtitles_enabled": subtitles_enabled,
             "style_hash": style_hash_value,
@@ -626,6 +760,41 @@ def _ffmpeg_progress(args: list[str], total_s: float,
             registry.unregister(proc)
 
 
+def _encode_video(
+    args_before_encoder: list[str],
+    args_after_encoder: list[str],
+    *,
+    total_s: float = 0.0,
+    progress_cb: Callable[[float], None] | None = None,
+) -> VideoEncoder:
+    """Run one H.264 encode, serializing VideoToolbox and retrying in software."""
+    selected = select_video_encoder()
+
+    def run(encoder: VideoEncoder) -> None:
+        _ffmpeg_progress(
+            [
+                *args_before_encoder,
+                *encoder.args,
+                "-movflags", "+faststart",
+                *args_after_encoder,
+            ],
+            total_s,
+            progress_cb,
+        )
+
+    if not selected.hardware_accelerated:
+        run(selected)
+        return selected
+    with _VIDEOTOOLBOX_SLOTS:
+        try:
+            run(selected)
+            return selected
+        except RuntimeError:
+            fallback = _software_encoder()
+            run(fallback)
+            return fallback
+
+
 def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
                            style: StylePreset, work_dir: Path, speed: float,
                            progress_cb: Callable[[float], None] | None = None,
@@ -634,19 +803,29 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
     from reels_editor import edl as edl_mod
     ordered = edl_mod.ordered_segments(edl_doc, segments)
     work_dir.mkdir(parents=True, exist_ok=True)
-    # 콘텐츠 크롭은 첫 세그먼트 시점 기준(v0: 컷 전체가 같은 레이아웃 가정)
+    # 레터박스는 첫 구간에서 제거하고, 화자 위치는 EDL 컷마다 별도로 계산한다.
+    source_size = _probe_size(video_path)
     content = detect_content_crop(video_path, ordered[0]["source_start_us"] / US)
-    filt = build_base_filter(ordered, speed, style, _probe_size(video_path),
-                             content_crop=content)
+    focus_points = speaker_focus.analyze_speaker_focus(
+        video_path,
+        ordered,
+        [len(cut.get("seg_ids", [])) for cut in edl_doc.get("cuts", [])],
+        source_size,
+        content,
+        work_dir,
+    )
+    filt = build_base_filter(
+        ordered,
+        speed,
+        style,
+        source_size,
+        content_crop=content,
+        focus_points=focus_points,
+    )
     fpath = work_dir / "base_filter.txt"
     fpath.write_text(filt)
-    base = work_dir / "base.mp4"
     total_s = sum(s["source_end_us"] - s["source_start_us"]
                   for s in ordered) / US / speed
-    _ffmpeg_progress(["-i", str(video_path), "-filter_complex_script", str(fpath),
-                      "-map", "[v]", "-map", "[a]", "-c:v", "libx264",
-                      "-preset", "veryfast", "-crf", "20", "-c:a", "aac",
-                      str(base)], total_s, progress_cb)
     wm_png = render_watermark_png(
         style,
         work_dir / "wm.png",
@@ -657,7 +836,22 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
     groups = group_captions(items)
     keywords = edl_doc.get("subtitle_keywords", [])
     sub_paths = render_subtitle_pngs(groups, keywords, style, work_dir / "subs")
-    return RenderAssets(base, wm_png, sub_paths, groups, work_dir, keywords)
+    if progress_cb is not None:
+        progress_cb(1.0)
+    # Keep ``base`` populated for manifests created by older releases. New
+    # manifests include the source + crop filter and render the final reel in
+    # one pass instead of creating and re-encoding an intermediate MP4.
+    return RenderAssets(
+        video_path,
+        wm_png,
+        sub_paths,
+        groups,
+        work_dir,
+        keywords,
+        source=video_path,
+        base_filter=fpath,
+        total_s=total_s,
+    )
 
 
 def render_with_title(assets: RenderAssets, title_text: str, keyword: str,
@@ -677,7 +871,9 @@ def render_with_title(assets: RenderAssets, title_text: str, keyword: str,
 def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: str,
                            style: StylePreset, out_path: Path,
                            subtitles_enabled: bool,
-                           speaker_text: str = "") -> Path:
+                           speaker_text: str = "",
+                           title_upper: str | None = None,
+                           title_lower: str | None = None) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     title_png = render_title_png(
         title_text,
@@ -685,19 +881,44 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
         style,
         assets.work / f"title-{out_path.stem}.png",
         speaker_text=speaker_text,
+        title_upper=title_upper,
+        title_lower=title_lower,
     )
     groups = assets.groups if subtitles_enabled else []
     sub_pngs = assets.sub_pngs if subtitles_enabled else []
-    filt2, last = build_overlay_filter(n_static=2, groups=groups)
-    args = ["-i", str(assets.base), "-i", str(title_png), "-i", str(assets.wm_png)]
+    single_pass = (
+        assets.source is not None
+        and assets.base_filter is not None
+        and assets.base_filter.is_file()
+    )
+    filt2, last = build_overlay_filter(
+        n_static=2,
+        groups=groups,
+        base_label="[v]" if single_pass else "[0:v]",
+    )
+    video_input = assets.source if single_pass else assets.base
+    args = ["-i", str(video_input), "-i", str(title_png), "-i", str(assets.wm_png)]
     for p in sub_pngs:
         args += ["-i", str(p)]
     tmp = out_path.with_name(f".{out_path.stem}.part{out_path.suffix}")
-    args += ["-filter_complex", filt2, "-map", last, "-map", "0:a",
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-             "-c:a", "copy", str(tmp)]
+    if single_pass:
+        base_filter = assets.base_filter.read_text(encoding="utf-8").rstrip(";\n ")
+        full_filter = f"{base_filter};{filt2};{last}format=yuv420p[vout]"
+        args += [
+            "-filter_complex", full_filter,
+            "-map", "[vout]",
+            "-map", "[a]",
+        ]
+        audio_args = ["-c:a", "aac", "-b:a", "192k", str(tmp)]
+    else:
+        args += ["-filter_complex", filt2, "-map", last, "-map", "0:a"]
+        audio_args = ["-c:a", "copy", str(tmp)]
     try:
-        _ffmpeg(args)
+        _encode_video(
+            args,
+            audio_args,
+            total_s=assets.total_s,
+        )
         os.replace(tmp, out_path)
     finally:
         if tmp.exists():

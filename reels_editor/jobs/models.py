@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from reels_editor.title_rules import normalize_title
+from reels_editor.title_rules import editor_title_lines, normalize_title
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class Status(StrEnum):
@@ -51,6 +51,20 @@ def _storyline_title(data: dict[str, Any]) -> str:
     return normalize_title(selected)
 
 
+def _stored_title_lines(data: dict[str, Any], title: str) -> tuple[str, str]:
+    if "title_lower" in data:
+        return (
+            normalize_title(str(data.get("title_upper", ""))),
+            normalize_title(str(data.get("title_lower", ""))),
+        )
+    if not title:
+        return "", ""
+    try:
+        return editor_title_lines(title)
+    except ValueError:
+        return "", title
+
+
 @dataclass
 class Variant:
     id: str
@@ -62,6 +76,8 @@ class Variant:
     path: str | None = None
     selected: bool = False
     error: str | None = None
+    title_upper: str = ""
+    title_lower: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         subtitles_on = (
@@ -69,9 +85,16 @@ class Variant:
             if self.subtitles_on is None
             else self.subtitles_on
         )
+        title_text = normalize_title(self.title_text)
+        title_upper, title_lower = _stored_title_lines(
+            {"title_upper": self.title_upper, "title_lower": self.title_lower},
+            title_text,
+        ) if self.title_lower else _stored_title_lines({}, title_text)
         return {
             "id": self.id,
-            "title_text": normalize_title(self.title_text),
+            "title_text": title_text,
+            "title_upper": title_upper,
+            "title_lower": title_lower,
             "subtitles_enabled": self.subtitles_enabled,
             "subtitles_on": subtitles_on,
             "style_hash": self.style_hash,
@@ -83,9 +106,11 @@ class Variant:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Variant:
+        title_text = normalize_title(str(data.get("title_text", "")))
+        title_upper, title_lower = _stored_title_lines(data, title_text)
         return cls(
             id=str(data.get("id", "")),
-            title_text=normalize_title(str(data.get("title_text", ""))),
+            title_text=title_text,
             subtitles_enabled=bool(
                 data.get("subtitles_enabled", data.get("subtitles_on", True))
             ),
@@ -95,6 +120,8 @@ class Variant:
             path=data.get("path"),
             selected=bool(data.get("selected", False)),
             error=data.get("error"),
+            title_upper=title_upper,
+            title_lower=title_lower,
         )
 
 
@@ -121,16 +148,25 @@ class Storyline:
     archive_path: str | None = None
     completed_at: str | None = None
     error: str | None = None
+    title_upper: str = ""
+    title_lower: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         base_path = self.base_video_path or self.base_path
+        title = normalize_title(self.title)
+        title_upper, title_lower = _stored_title_lines(
+            {"title_upper": self.title_upper, "title_lower": self.title_lower},
+            title,
+        ) if self.title_lower else _stored_title_lines({}, title)
         return {
             "id": self.id,
             "index": self.index,
             "angle_name": self.angle_name,
             "status": self.status.value,
             "progress": self.progress,
-            "title": normalize_title(self.title),
+            "title": title,
+            "title_upper": title_upper,
+            "title_lower": title_lower,
             "subtitles_on": self.subtitles_on,
             "variants": [variant.to_dict() for variant in self.variants],
             "base_video_path": self.base_video_path,
@@ -150,13 +186,15 @@ class Storyline:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Storyline:
+        title = _storyline_title(data)
+        title_upper, title_lower = _stored_title_lines(data, title)
         return cls(
             id=str(data.get("id", "")),
             index=int(data.get("index", 0)),
             angle_name=str(data.get("angle_name", "")),
             status=_status(data.get("status")),
             progress=float(data.get("progress", 0.0)),
-            title=_storyline_title(data),
+            title=title,
             subtitles_on=bool(data.get("subtitles_on", True)),
             variants=[
                 Variant.from_dict(item)
@@ -176,6 +214,8 @@ class Storyline:
             archive_path=data.get("archive_path"),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
+            title_upper=title_upper,
+            title_lower=title_lower,
         )
 
 

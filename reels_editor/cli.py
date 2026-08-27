@@ -84,7 +84,7 @@ def render_combos(video: Path, segments: dict,
                   combos: list[tuple[int, int]], style: StylePreset,
                   work: Path, speed: float,
                   progress: Progress | None = None) -> list[dict]:
-    """Render each storyline base once and reuse it across title variants."""
+    """Analyze each storyline once and reuse its crop/caption assets across variants."""
     docs = {result.index: result.doc for result in storylines if result.doc is not None}
     by_story: dict[int, list[int]] = {}
     for storyline_index, title_index in combos:
@@ -97,7 +97,7 @@ def render_combos(video: Path, segments: dict,
             work, storyline_index, segments, doc, style, speed,
         )
         task_id = (
-            progress.add_task(f"s{storyline_index + 1} base 렌더", total=1.0)
+            progress.add_task(f"s{storyline_index + 1} 렌더 준비", total=1.0)
             if progress else None
         )
         callback = (

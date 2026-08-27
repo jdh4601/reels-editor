@@ -40,6 +40,8 @@ class Calls:
     overlay_keywords: list[str] = field(default_factory=list)
     episode_texts: list[str] = field(default_factory=list)
     base_episode_numbers: list[int | None] = field(default_factory=list)
+    overlay_title_lines: list[tuple[str, str]] = field(default_factory=list)
+    speaker_texts: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -145,6 +147,11 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
     def render_overlay(_assets, *, title_text: str, out_path: Path, subtitles_enabled: bool, **_kwargs):
         calls.overlay += 1
         calls.overlay_keywords.append(str(_kwargs.get("keyword", "")))
+        calls.overlay_title_lines.append((
+            str(_kwargs.get("title_upper", "")),
+            str(_kwargs.get("title_lower", "")),
+        ))
+        calls.speaker_texts.append(str(_kwargs.get("speaker_text", "")))
         calls.episode_texts.append(str(_kwargs["style"].episode_text))
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(f"{Path(_assets.base).read_text(encoding='utf-8')}:{title_text}:{subtitles_enabled}".encode())
@@ -260,6 +267,38 @@ def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism
     assert not (Path(job.work_dir or "") / "s1" / "cuts").exists()
 
 
+def test_job_service_harmonizes_grounded_speaker_role_before_render(tmp_path: Path) -> None:
+    calls = Calls()
+    grounded = _doc("A")
+    grounded["speaker"] = {
+        "name": "히텐 샤",
+        "company": "Crazy Egg",
+        "role": "창업자",
+        "alternate_role": "",
+        "evidence": "Hiten Shah is a founder. He started Crazy Egg.",
+    }
+    incomplete = _doc("B")
+    incomplete["speaker"] = {
+        "name": "히튼 샤",
+        "company": "",
+        "role": "",
+        "alternate_role": "",
+        "evidence": "Hiten Shah is a founder.",
+    }
+    results = [
+        StorylineResult(0, "전략형", grounded),
+        StorylineResult(1, "실패 분석형", incomplete),
+    ]
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls, results))
+
+    _run_ready(service, candidate_count=2)
+
+    assert calls.speaker_texts == [
+        "히텐 샤 (Crazy Egg 창업자)",
+        "히텐 샤 (Crazy Egg 창업자)",
+    ]
+
+
 def test_job_service_analyzes_ten_candidates_then_generates_only_selected(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
@@ -327,7 +366,7 @@ def test_episode_number_is_job_level_for_render_caption_and_archive(tmp_path: Pa
 
     assert ready.episode_number == 37
     assert set(calls.base_episode_numbers) == {37}
-    assert set(calls.episode_texts) == {"에피소드 37"}
+    assert set(calls.episode_texts) == {"에피소드 37 / 1000"}
     assert captioned.storylines[1].instagram_caption.startswith("Ep 37. ")
     assert all(
         Path(story.archive_path or "").parent.name.startswith("Ep-37_")
@@ -539,6 +578,34 @@ def test_title_edit_rerenders_overlay_only_and_invalidates_caption(tmp_path: Pat
     assert calls.overlay == before[2] + 1
     assert "새로운 제목이다" in Path(story.active_variant_path or "").read_text(encoding="utf-8")
     assert Path(story.archive_path or "").read_bytes() == Path(story.active_variant_path or "").read_bytes()
+
+
+def test_title_edit_preserves_explicit_white_and_orange_lines(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, calls),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=1)
+
+    updated = service.update_storyline_title(
+        ready.id,
+        "s1",
+        title_upper="고객이 떠난 진짜 이유",
+        title_lower="기능보다 복잡한 첫 화면",
+    )
+
+    story = updated.storylines[0]
+    assert story.title_upper == "고객이 떠난 진짜 이유"
+    assert story.title_lower == "기능보다 복잡한 첫 화면"
+    assert story.title == "고객이 떠난 진짜 이유 기능보다 복잡한 첫 화면"
+    assert calls.overlay_title_lines[-1] == (
+        "고객이 떠난 진짜 이유",
+        "기능보다 복잡한 첫 화면",
+    )
+    assert story.variants[-1].title_upper == story.title_upper
+    assert story.variants[-1].title_lower == story.title_lower
 
 
 @pytest.mark.parametrize(

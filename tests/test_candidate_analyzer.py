@@ -6,16 +6,16 @@ from reels_editor import candidate_analyzer
 
 
 TOPICS = [
-    "첫 고객 인터뷰",
-    "가격 실험의 결정적 결과",
-    "광고비 손실의 진짜 원인",
-    "기능 삭제로 되찾은 고객",
-    "현금흐름 관리",
-    "유료 전환의 결정적 순간",
-    "창업자 번아웃 탈출법",
-    "제품 출시 전에 버린 기능",
-    "고객 이탈을 막은 한마디",
-    "시장 선택이 바꾼 생존",
+    "첫 고객을 만든 인터뷰의 결정적 질문",
+    "가격 실험으로 확인한 고객의 진짜 기준",
+    "광고비 손실을 키운 잘못된 타깃 선택",
+    "기능을 덜어내고 되찾은 핵심 고객",
+    "현금흐름 위기를 넘긴 비용 관리 원칙",
+    "무료 사용자를 유료 고객으로 바꾼 순간",
+    "창업자 번아웃을 막은 업무 중단 기준",
+    "제품 출시 전에 반드시 버려야 할 기능",
+    "고객 이탈을 막아낸 한 문장의 힘",
+    "시장 선택 하나가 바꾼 회사의 생존 방식",
 ]
 
 
@@ -108,6 +108,36 @@ def test_candidate_title_over_length_limit_is_rejected(segments: dict) -> None:
     assert "24자" in calls[1]
 
 
+def test_candidate_title_that_is_too_short_is_rejected(segments: dict) -> None:
+    calls: list[str] = []
+    titles = ["첫 고객 확보", *TOPICS[1:]]
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        payload = _payload_with_titles(titles) if len(calls) == 1 else _payload(["strategy"])
+        return json.dumps(payload, ensure_ascii=False)
+
+    candidate_analyzer.generate_candidates(segments, ["strategy"], runner=runner)
+
+    assert len(calls) == 2
+    assert "너무 짧음" in calls[1]
+
+
+def test_candidate_title_without_natural_spacing_is_rejected(segments: dict) -> None:
+    calls: list[str] = []
+    titles = ["첫고객을만든인터뷰의결정적질문", *TOPICS[1:]]
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        payload = _payload_with_titles(titles) if len(calls) == 1 else _payload(["strategy"])
+        return json.dumps(payload, ensure_ascii=False)
+
+    candidate_analyzer.generate_candidates(segments, ["strategy"], runner=runner)
+
+    assert len(calls) == 2
+    assert "띄어쓰기가 부족" in calls[1]
+
+
 def test_candidate_titles_all_declarative_are_rejected(segments: dict) -> None:
     declarative = [f"{topic} 했습니다" for topic in TOPICS]
     calls: list[str] = []
@@ -127,8 +157,8 @@ def test_candidate_prompt_carries_text_hook_principles(segments: dict) -> None:
     prompt = candidate_analyzer.build_candidate_prompt(segments, ["strategy"])
 
     assert "스타카토" in prompt
-    assert "6~24자" in prompt
     assert "12~24자" in prompt
+    assert "3어절 이상" in prompt
 
 
 def test_selected_candidate_result_carries_candidate_title(segments: dict) -> None:

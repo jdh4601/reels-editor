@@ -83,10 +83,23 @@ class FakeService:
         story.instagram_caption = "Ep 1. 첫 고객을 만든 방법\n\n본문\n\n질문?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
         return self.job
 
-    def update_storyline_title(self, job_id: str, storyline_id: str, title: str) -> Job:
+    def update_storyline_title(
+        self,
+        job_id: str,
+        storyline_id: str,
+        title: str | None = None,
+        *,
+        title_upper: str | None = None,
+        title_lower: str | None = None,
+    ) -> Job:
         self.title_args = {"job_id": job_id, "storyline_id": storyline_id, "title": title}
+        if title_upper is not None or title_lower is not None:
+            self.title_args.update({"title_upper": title_upper, "title_lower": title_lower})
         assert self.job is not None
-        next(item for item in self.job.storylines if item.id == storyline_id).title = title
+        story = next(item for item in self.job.storylines if item.id == storyline_id)
+        story.title = title or " ".join(part for part in (title_upper, title_lower) if part)
+        story.title_upper = title_upper or ""
+        story.title_lower = title_lower or story.title
         return self.job
 
     def suggested_export_filename(
@@ -508,6 +521,35 @@ def test_title_patch_passes_validated_payload_to_service(tmp_path: Path) -> None
         "title": "새로운 제목이다",
     }
     assert response.json()["storylines"][0]["title"] == "새로운 제목이다"
+
+
+def test_title_patch_passes_explicit_white_and_orange_lines(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    job.storylines = [Storyline(id="s1", index=0, status=Status.READY, title="이전 제목입니다")]
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).patch(
+        f"/api/jobs/{job.id}/storylines/s1/title?token=secret",
+        json={"title_upper": "첫 번째 문구", "title_lower": "두 번째 문구"},
+    )
+
+    assert response.status_code == 200
+    assert service.title_args == {
+        "job_id": job.id,
+        "storyline_id": "s1",
+        "title": None,
+        "title_upper": "첫 번째 문구",
+        "title_lower": "두 번째 문구",
+    }
+    assert response.json()["storylines"][0]["title_upper"] == "첫 번째 문구"
+    assert response.json()["storylines"][0]["title_lower"] == "두 번째 문구"
 
 
 def test_selection_request_passes_selected_for_export(tmp_path: Path) -> None:

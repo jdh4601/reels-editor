@@ -65,10 +65,10 @@ def test_srt_matches_render_groups(segments: dict, edl_doc: dict,
     assert "-->" in p.read_text(encoding="utf-8")
 
 
-def test_multi_combo_render_reuses_storyline_base(
+def test_multi_combo_render_reuses_storyline_analysis_assets(
         synth_video: Path, segments: dict, style_preset,
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """스토리라인 2개와 조합 3개를 실제 ffmpeg로 렌더한다."""
+    """스토리라인별 분석은 한 번만 하고 조합 3개를 실제 ffmpeg로 렌더한다."""
     segments = dict(segments)
     segments["video_path"] = str(synth_video)
     common = {
@@ -115,6 +115,7 @@ def test_multi_combo_render_reuses_storyline_base(
         work / "s2" / "reel-t1.mp4",
     ]
     assert all(path.stat().st_size > 0 for path in expected)
+    assert not (work / "s1" / ".render" / "base.mp4").exists()
     assert (work / "s1" / "reel.srt").is_file()
     assert (work / "s2" / "reel.srt").is_file()
 

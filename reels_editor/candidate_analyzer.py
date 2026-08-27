@@ -12,11 +12,11 @@ from reels_editor.storyteller import (
     StorylineResult,
     extract_json,
     generate_script,
+    harmonize_speaker_metadata,
     is_declarative_sentence,
     text_hook_principles,
-    title_length_error,
 )
-from reels_editor.title_rules import normalize_title
+from reels_editor.title_rules import MAX_TITLE_CHARS, normalize_title, title_char_count
 
 if TYPE_CHECKING:
     from reels_editor.jobs.models import ContentCandidate
@@ -27,6 +27,8 @@ TARGET_DURATION_S = 35
 MIN_DURATION_S = 30
 MAX_DURATION_S = 40
 MAX_RETRIES = 2
+MIN_CANDIDATE_TITLE_CHARS = 12
+MIN_CANDIDATE_TITLE_WORDS = 3
 
 CONTENT_TYPES: dict[str, dict[str, str]] = {
     "story": {
@@ -113,7 +115,7 @@ def generate_candidates(
         feedback = (
             "이전 후보 목록이 검증에 실패했다. 정확히 10개의 서로 다른 후보를 만들고, "
             "허용된 content_type과 실제 SEGMENTS의 id만 사용하라. title은 릴스 화면에 "
-            "그대로 박히는 텍스트 훅이므로 공백 제외 6~24자로 쓰고 12~24자를 우선하라. 오류:\n"
+            "그대로 박히는 텍스트 훅이므로 공백 제외 12~24자, 띄어쓴 3어절 이상으로 쓰라. 오류:\n"
             + "\n".join(errors)
         )
     if raw_dump is not None:
@@ -170,7 +172,9 @@ def generate_selected_candidates(
             )
 
     with ThreadPoolExecutor(max_workers=len(candidates)) as executor:
-        return list(executor.map(one, enumerate(candidates)))
+        results = list(executor.map(one, enumerate(candidates)))
+    harmonize_speaker_metadata(results)
+    return results
 
 
 def _parse_candidates(
@@ -227,9 +231,23 @@ def _text_hook_errors(candidates: list[ContentCandidate]) -> list[str]:
     errors: list[str] = []
     titled = [candidate for candidate in candidates if candidate.title]
     for index, candidate in enumerate(titled):
-        length_error = title_length_error(candidate.title)
-        if length_error:
-            errors.append(f"candidates[{index}].title이 {length_error}")
+        length = title_char_count(candidate.title)
+        if length < MIN_CANDIDATE_TITLE_CHARS:
+            errors.append(
+                f"candidates[{index}].title이 공백 제외 {length}자로 너무 짧음 — "
+                f"최소 {MIN_CANDIDATE_TITLE_CHARS}자로 구체화할 것"
+            )
+        elif length > MAX_TITLE_CHARS:
+            errors.append(
+                f"candidates[{index}].title이 공백 제외 {length}자로 최대 "
+                f"{MAX_TITLE_CHARS}자를 초과함"
+            )
+        words = candidate.title.split()
+        if len(words) < MIN_CANDIDATE_TITLE_WORDS:
+            errors.append(
+                f"candidates[{index}].title에 띄어쓰기가 부족함 — "
+                f"자연스럽게 띄어쓴 {MIN_CANDIDATE_TITLE_WORDS}어절 이상으로 쓸 것"
+            )
     if not errors and titled and all(is_declarative_sentence(c.title) for c in titled):
         errors.append(
             "모든 title이 서술형 완결 문장임 — 최소 1개는 명사구로 끝맺을 것"

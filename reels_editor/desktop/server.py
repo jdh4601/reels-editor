@@ -67,7 +67,9 @@ class GenerateCandidatesRequest(BaseModel):
 
 
 class StorylineTitleRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    title_upper: str | None = Field(default=None, max_length=200)
+    title_lower: str | None = Field(default=None, max_length=200)
 
 
 class PlaybackSpeedSettingsRequest(BaseModel):
@@ -235,7 +237,16 @@ def create_app(
         _auth: None = Depends(require_token),
     ) -> dict[str, Any]:
         try:
-            job = service.update_storyline_title(job_id, storyline_id, request.title)
+            if request.title_upper is None and request.title_lower is None:
+                job = service.update_storyline_title(job_id, storyline_id, request.title)
+            else:
+                job = service.update_storyline_title(
+                    job_id,
+                    storyline_id,
+                    request.title,
+                    title_upper=request.title_upper,
+                    title_lower=request.title_lower,
+                )
         except JobServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _snapshot_from_job(job)
@@ -428,6 +439,8 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
         "progress": int(round(storyline.progress * 100)) if storyline.progress <= 1 else int(storyline.progress),
         "video_url": _media_url(job.id, artifact_id) if artifact_id else None,
         "title": storyline.title,
+        "title_upper": storyline.title_upper,
+        "title_lower": storyline.title_lower,
         "instagram_caption": storyline.instagram_caption,
         "archive_path": storyline.archive_path,
         "completed_at": storyline.completed_at,
@@ -527,6 +540,8 @@ def _placeholder_storyline(index: int) -> dict[str, Any]:
         "progress": 0,
         "video_url": None,
         "title": "제목 준비 중",
+        "title_upper": "",
+        "title_lower": "제목 준비 중",
         "error": None,
         "revision": 0,
     }

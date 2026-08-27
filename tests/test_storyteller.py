@@ -363,6 +363,107 @@ def test_speaker_company_role_requires_script_evidence(segments: dict) -> None:
     assert storyteller.format_speaker_label(doc["speaker"]) == "김지영 (마루 창업자)"
 
 
+def test_harmonize_speaker_metadata_shares_grounded_founder_identity() -> None:
+    grounded = storyteller.StorylineResult(
+        0,
+        "전략형",
+        {
+            "speaker": {
+                "name": "히텐 샤",
+                "company": "Crazy Egg",
+                "role": "창업자",
+                "alternate_role": "",
+                "evidence": (
+                    "Very excited to have Hiten Shah here. He is one of the most "
+                    "experienced founders in SaaS. He started Crazy Egg."
+                ),
+            }
+        },
+    )
+    incomplete = storyteller.StorylineResult(
+        1,
+        "실패 분석형",
+        {
+            "speaker": {
+                "name": "히튼 샤",
+                "company": "",
+                "role": "",
+                "alternate_role": "",
+                "evidence": (
+                    "Very excited to have Hiten Shah here. He is one of the most "
+                    "experienced founders in SaaS."
+                ),
+            }
+        },
+    )
+
+    storyteller.harmonize_speaker_metadata([grounded, incomplete])
+
+    assert incomplete.doc is not None
+    assert storyteller.format_speaker_label(incomplete.doc["speaker"]) == (
+        "히텐 샤 (Crazy Egg 창업자)"
+    )
+
+
+def test_harmonize_speaker_metadata_does_not_merge_different_people() -> None:
+    first = storyteller.StorylineResult(
+        0,
+        "전략형",
+        {
+            "speaker": {
+                "name": "김지영",
+                "company": "마루",
+                "role": "창업자",
+                "alternate_role": "",
+                "evidence": "저는 마루 공동 창업자 김지영입니다",
+            }
+        },
+    )
+    second = storyteller.StorylineResult(
+        1,
+        "원칙형",
+        {"speaker": {"name": "박준호", "company": "", "role": "", "evidence": "박준호입니다"}},
+    )
+
+    storyteller.harmonize_speaker_metadata([first, second])
+
+    assert second.doc is not None
+    assert storyteller.format_speaker_label(second.doc["speaker"]) == "박준호"
+
+
+def test_harmonize_speaker_metadata_does_not_merge_similar_names_without_shared_evidence() -> None:
+    founder = storyteller.StorylineResult(
+        0,
+        "전략형",
+        {
+            "speaker": {
+                "name": "김지영",
+                "company": "마루",
+                "role": "창업자",
+                "alternate_role": "",
+                "evidence": "저는 마루 공동 창업자 김지영이며 고객 문제를 풀고 있습니다",
+            }
+        },
+    )
+    other = storyteller.StorylineResult(
+        1,
+        "원칙형",
+        {
+            "speaker": {
+                "name": "김지연",
+                "company": "",
+                "role": "",
+                "evidence": "저는 투자자 김지연이며 시장의 성장 가능성을 살펴보고 있습니다",
+            }
+        },
+    )
+
+    storyteller.harmonize_speaker_metadata([founder, other])
+
+    assert other.doc is not None
+    assert storyteller.format_speaker_label(other.doc["speaker"]) == "김지연"
+
+
 def test_speaker_ungrounded_descriptor_is_rejected(segments: dict) -> None:
     doc = {
         "speaker": {

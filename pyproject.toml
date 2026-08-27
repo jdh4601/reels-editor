@@ -29,6 +29,7 @@ dependencies = [
   "websockets>=13",
   "pywebview>=6.0",
   "yt-dlp>=2025.1.15",
+  "pyobjc-framework-Vision>=12.2,<13; sys_platform == 'darwin'",
 ]
 
 [project.urls]

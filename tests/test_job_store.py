@@ -145,6 +145,33 @@ def test_job_store_persists_titles_in_nfc(tmp_path: Path) -> None:
     assert loaded.storylines[0].variants[0].title_text == composed
 
 
+def test_job_store_persists_explicit_title_lines(tmp_path: Path) -> None:
+    store = JobStore(root=tmp_path)
+    job = store.create_job()
+    job.storylines = [Storyline(
+        id="s1",
+        index=0,
+        title="첫 번째 문구 두 번째 문구",
+        title_upper="첫 번째 문구",
+        title_lower="두 번째 문구",
+        variants=[Variant(
+            id="v1",
+            title_text="첫 번째 문구 두 번째 문구",
+            title_upper="첫 번째 문구",
+            title_lower="두 번째 문구",
+            subtitles_enabled=True,
+        )],
+    )]
+
+    store.save(job)
+    loaded = store.load(job.id)
+
+    assert loaded.storylines[0].title_upper == "첫 번째 문구"
+    assert loaded.storylines[0].title_lower == "두 번째 문구"
+    assert loaded.storylines[0].variants[0].title_upper == "첫 번째 문구"
+    assert loaded.storylines[0].variants[0].title_lower == "두 번째 문구"
+
+
 def test_job_snapshot_keeps_dashboard_snake_case_fields(tmp_path: Path) -> None:
     store = JobStore(root=tmp_path)
     job = store.create_job(

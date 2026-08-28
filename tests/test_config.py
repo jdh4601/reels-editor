@@ -52,6 +52,14 @@ def test_load_config_accepts_codex_cli_provider(tmp_path: Path) -> None:
     assert cfg.model == "gpt-5.6-sol"
 
 
+def test_load_config_accepts_gemini_cli_provider(tmp_path: Path) -> None:
+    p = tmp_path / "config.yaml"
+    p.write_text("provider: gemini-cli\nmodel: gemini-3-pro\n", encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.provider == "gemini-cli"
+    assert cfg.model == "gemini-3-pro"
+
+
 def test_load_config_accepts_max_storyline_count(tmp_path: Path) -> None:
     p = tmp_path / "config.yaml"
     p.write_text("n_storylines: 10\n", encoding="utf-8")

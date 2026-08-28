@@ -43,7 +43,7 @@ class CreateJobRequest(BaseModel):
         min_length=1,
         max_length=4,
     )
-    provider: Literal["codex-cli", "claude-cli", "openai", "kimi"] = "codex-cli"
+    provider: Literal["codex-cli", "claude-cli", "gemini-cli", "openai", "kimi"] = "codex-cli"
 
 
 class SelectionRequest(BaseModel):

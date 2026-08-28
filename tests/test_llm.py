@@ -9,6 +9,7 @@ import pytest
 from reels_editor.config import AppConfig
 from reels_editor.llm import (
     PROVIDER_DEFAULTS, build_runner, claude_cli_args, codex_cli_args,
+    gemini_cli_args,
 )
 from reels_editor.llm_http import openai_chat_runner
 
@@ -34,6 +35,20 @@ def test_codex_cli_args_are_ephemeral_and_read_only() -> None:
 def test_codex_cli_args_with_model() -> None:
     args = codex_cli_args("gpt-5.6-sol")
     assert args[-2:] == ["--model", "gpt-5.6-sol"]
+
+
+def test_gemini_cli_args_are_read_only_and_extension_free() -> None:
+    args = gemini_cli_args("")
+    assert args[0] == "gemini"
+    assert args[args.index("--approval-mode") + 1] == "plan"
+    assert args[args.index("--output-format") + 1] == "text"
+    assert args[args.index("-e") + 1] == "none"
+    assert "--model" not in args and "-m" not in args
+
+
+def test_gemini_cli_args_with_model() -> None:
+    args = gemini_cli_args("gemini-3-pro")
+    assert args[-2:] == ["--model", "gemini-3-pro"]
 
 
 def test_build_runner_openai_without_key_raises(tmp_path, monkeypatch) -> None:
@@ -174,6 +189,41 @@ def test_codex_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> Non
     monkeypatch.setattr(subprocess, "run", fake_run)
     run = build_runner(AppConfig(provider="codex-cli"))
     with pytest.raises(RuntimeError, match="Codex CLI를 찾을 수 없습니다"):
+        run("프롬프트")
+
+
+def test_gemini_cli_runner_returns_stdout(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout='{"ok": 1}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = build_runner(AppConfig(provider="gemini-cli", model="gemini-3-pro"))
+
+    assert run("프롬프트") == '{"ok": 1}'
+    assert captured["args"][-2:] == ["-p", "프롬프트"]
+    assert captured["args"][captured["args"].index("--approval-mode") + 1] == "plan"
+
+
+def test_gemini_cli_runner_failure_includes_stderr(monkeypatch) -> None:
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="quota exceeded")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = build_runner(AppConfig(provider="gemini-cli"))
+    with pytest.raises(RuntimeError, match="quota exceeded"):
+        run("프롬프트")
+
+
+def test_gemini_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'gemini'")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = build_runner(AppConfig(provider="gemini-cli"))
+    with pytest.raises(RuntimeError, match="Gemini CLI를 찾을 수 없습니다"):
         run("프롬프트")
 
 

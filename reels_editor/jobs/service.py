@@ -38,7 +38,7 @@ from .store import JobStore
 DEFAULT_STYLE = Path(__file__).parent.parent.parent / "styles" / "done.yaml"
 MAX_DESKTOP_STORYLINES = 10
 MAX_BASE_RENDERS = 2
-DESKTOP_PROVIDERS = frozenset({"codex-cli", "claude-cli", "openai", "kimi"})
+DESKTOP_PROVIDERS = frozenset({"codex-cli", "claude-cli", "gemini-cli", "openai", "kimi"})
 EXPORT_TITLE_MAX_BYTES = 220
 DEFAULT_EPISODE_NUMBER = 1
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

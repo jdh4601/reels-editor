@@ -159,6 +159,7 @@ style: {}
 | --- | --- | --- |
 | OpenAI Codex CLI | `codex-cli` | `codex login` |
 | Claude Code CLI | `claude-cli` | `claude` login |
+| Google Gemini CLI | `gemini-cli` | `gemini` login |
 | OpenAI API | `openai` | `OPENAI_API_KEY` |
 | Kimi | `kimi` | `MOONSHOT_API_KEY` |
 | OpenAI-compatible server | `custom` | `REELS_LLM_API_KEY` |

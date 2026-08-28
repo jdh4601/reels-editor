@@ -154,6 +154,7 @@ style: {}
 | --- | --- | --- |
 | OpenAI Codex CLI | `codex-cli` | `codex login` |
 | Claude Code CLI | `claude-cli` | `claude` 로그인 |
+| Google Gemini CLI | `gemini-cli` | `gemini` 로그인 |
 | OpenAI API | `openai` | `OPENAI_API_KEY` |
 | Kimi | `kimi` | `MOONSHOT_API_KEY` |
 | OpenAI 호환 서버 | `custom` | `REELS_LLM_API_KEY` |

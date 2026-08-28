@@ -270,6 +270,26 @@ def test_create_youtube_job_passes_url_and_selected_content_types_to_service(tmp
     }
 
 
+def test_create_job_accepts_gemini_cli_provider(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).post(
+        "/api/jobs?token=secret",
+        json={"youtube_url": "https://youtu.be/abc123", "provider": "gemini-cli"},
+    )
+
+    assert response.status_code == 200
+    assert service.youtube_start_args["provider"] == "gemini-cli"
+
+
 def test_create_job_rejects_empty_content_types(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
     job = store.create_job()

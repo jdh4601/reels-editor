@@ -812,6 +812,17 @@ def test_job_service_uses_selected_candidate_count_and_provider(tmp_path: Path) 
     assert calls.providers == ["claude-cli", "claude-cli"]
 
 
+def test_job_service_accepts_gemini_cli_provider(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(
+        tmp_path, calls, [StorylineResult(0, "정면승부형", _doc("https://youtu.be/A"))]))
+
+    job = _run_ready(service, candidate_count=1, provider="gemini-cli")
+
+    assert job.provider == "gemini-cli"
+    assert calls.providers == ["gemini-cli", "gemini-cli"]
+
+
 def test_job_service_reports_detailed_progress_during_rendering(tmp_path: Path) -> None:
     calls = Calls()
     entered_render = threading.Event()

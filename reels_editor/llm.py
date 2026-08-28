@@ -1,7 +1,7 @@
 """LLM 프로바이더 러너 팩토리. storyteller의 runner 주입점에 꽂는다.
 
 claude-cli: 로컬 Claude Code. codex-cli: OpenAI Codex CLI.
-openai/kimi/custom: OpenAI-호환 chat/completions.
+gemini-cli: Google Gemini CLI. openai/kimi/custom: OpenAI-호환 chat/completions.
 """
 from __future__ import annotations
 
@@ -37,6 +37,21 @@ def codex_cli_args(model: str) -> list[str]:
         "codex", "exec", "--ephemeral", "--skip-git-repo-check",
         "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules",
         "--color", "never",
+    ]
+    if model:
+        args += ["--model", model]
+    return args
+
+
+def gemini_cli_args(model: str) -> list[str]:
+    """스토리 생성 전용 Gemini 호출 인자.
+
+    plan 승인 모드로 도구가 파일을 수정할 수 없게 하고, 설치된 확장을 전부
+    비활성화해 사용자 환경에 따라 결과가 달라지지 않도록 한다.
+    """
+    args = [
+        "gemini", "--approval-mode", "plan",
+        "--output-format", "text", "-e", "none",
     ]
     if model:
         args += ["--model", model]
@@ -89,12 +104,38 @@ def _codex_cli_runner(model: str) -> Callable[[str], str]:
     return run
 
 
+def _gemini_cli_runner(model: str) -> Callable[[str], str]:
+    def run(prompt: str) -> str:
+        # 임시 디렉터리에서 실행해 영상 프로젝트의 GEMINI.md나 로컬 설정이
+        # 스토리 생성 결과에 섞여 들어가지 않도록 한다.
+        with tempfile.TemporaryDirectory(prefix="reels-gemini-") as tmp:
+            args = [*gemini_cli_args(model), "-p", prompt]
+            try:
+                result = processes.run(
+                    args, cwd=tmp, input="", capture_output=True, text=True,
+                    timeout=TIMEOUT_S,
+                )
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"gemini 타임아웃({TIMEOUT_S}초): {e}") from e
+            except FileNotFoundError as e:
+                raise RuntimeError(
+                    "Gemini CLI를 찾을 수 없습니다 — Google Gemini CLI가 설치되어 있고 "
+                    f"PATH에 등록되어 있는지 확인하세요: {e}") from e
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout).strip()[-2000:]
+                raise RuntimeError(f"gemini 실패:\n{detail}")
+            return result.stdout
+    return run
+
+
 def build_runner(cfg: AppConfig,
                  credentials: Path | None = None) -> Callable[[str], str]:
     if cfg.provider == "claude-cli":
         return _claude_cli_runner(cfg.model)
     if cfg.provider == "codex-cli":
         return _codex_cli_runner(cfg.model)
+    if cfg.provider == "gemini-cli":
+        return _gemini_cli_runner(cfg.model)
     if cfg.provider == "custom":
         base_url, model = cfg.base_url, cfg.model
         if not base_url or not model:

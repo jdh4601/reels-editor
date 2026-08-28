@@ -14,7 +14,7 @@ import yaml
 
 from reels_editor.style import StylePreset
 
-PROVIDERS = ("claude-cli", "codex-cli", "openai", "kimi", "custom")
+PROVIDERS = ("claude-cli", "codex-cli", "gemini-cli", "openai", "kimi", "custom")
 # StylePreset 필드 중 게이트 설정으로 조절 가능한 키
 STYLE_OVERRIDE_KEYS = ("sub_size", "title_size", "sub_highlight",
                        "title_highlight", "sub_y_frac", "sub_box_alpha", "speed")

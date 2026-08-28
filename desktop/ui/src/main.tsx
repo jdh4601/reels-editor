@@ -27,7 +27,7 @@ type JobStatus = "idle" | "loading" | "generating" | "awaiting_selection" | "ren
 type ConnectionState = "connected" | "connecting" | "disconnected";
 type ExportState = "idle" | "exporting" | "done" | "failed";
 type ContentType = "story" | "strategy" | "failure" | "principle";
-type ModelProvider = "codex-cli" | "claude-cli" | "openai" | "kimi";
+type ModelProvider = "codex-cli" | "claude-cli" | "gemini-cli" | "openai" | "kimi";
 type SettingsSaveState = "idle" | "saving" | "saved" | "error";
 type CaptionActionState = "idle" | "generating" | "error" | "copied";
 type TitleActionState = "idle" | "saving" | "error" | "saved";
@@ -306,6 +306,7 @@ const REELS_EDITOR_LOGO_URL = new URL("../../assets/reels-editor-icon.png", impo
 const PROVIDER_OPTIONS: Array<{ value: ModelProvider; label: string; description: string }> = [
   { value: "codex-cli", label: "Codex CLI", description: "로컬 Codex 인증과 설치된 기본 모델을 사용합니다." },
   { value: "claude-cli", label: "Claude CLI", description: "설치된 Claude Code CLI를 사용합니다." },
+  { value: "gemini-cli", label: "Gemini CLI", description: "로컬 Gemini 인증과 설치된 기본 모델을 사용합니다." },
   { value: "openai", label: "OpenAI API", description: "OPENAI_API_KEY 환경변수의 자격증명을 사용합니다." },
   { value: "kimi", label: "Kimi API", description: "MOONSHOT_API_KEY 환경변수의 자격증명을 사용합니다." },
 ];

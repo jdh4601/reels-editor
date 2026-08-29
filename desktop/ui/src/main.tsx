@@ -18,6 +18,7 @@ import {
   Settings2,
   Square,
   Subtitles,
+  Trash2,
   WifiOff,
 } from "lucide-react";
 import "./styles.css";
@@ -100,6 +101,7 @@ type Snapshot = {
   candidates: ContentCandidate[];
   selectedCandidateIds: string[];
   provider: ModelProvider;
+  model: string;
   episodeNumber: number;
   eventSeq: number;
 };
@@ -107,7 +109,7 @@ type Snapshot = {
 type ArchiveItem = {
   id: string;
   jobId: string;
-  storylineId: string | null;
+  storylineId: string;
   episodeNumber: number;
   projectName: string;
   reelTitle: string;
@@ -221,6 +223,7 @@ type ApiSnapshot = {
   selected_candidate_ids?: string[];
   selectedCandidateIds?: string[];
   provider?: string;
+  model?: string;
   episode_number?: number;
   episodeNumber?: number;
   seq?: number;
@@ -285,10 +288,11 @@ const EMPTY_SUMMARY = "YouTube 인터뷰 링크를 넣으면 클립 후보와 �
 const ACTIVE_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay", "exporting"]);
 const GENERATION_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay"]);
 const GENERATION_STAGES = [
-  { label: "소스 확인", description: "저장된 영상·자막은 재사용하고, 없을 때만 다운로드합니다." },
-  { label: "자막 정리", description: "원문 자막과 타임코드를 분석 가능한 형태로 정리합니다." },
-  { label: "후보 10개 분석", description: "선택한 유형에서 겹치지 않는 유익한 내용을 찾습니다." },
-  { label: "선택 릴스 제작", description: "고른 후보만 30~40초 영상으로 제작합니다." },
+  { label: "영상 다운로드", duration: "약 1~2분", description: "저장된 영상이 있으면 이 단계를 건너뜁니다." },
+  { label: "자막 정리", duration: "1분 이내", description: "원문 자막과 타임코드를 정리합니다." },
+  { label: "후보·제목 생성", duration: "약 1~2분", description: "겹치지 않는 후보와 제목을 만듭니다." },
+  { label: "릴스 대본 생성", duration: "약 1분", description: "선택한 후보를 20~40초 대본으로 구성합니다." },
+  { label: "영상 렌더링", duration: "약 5분", description: "제목·자막·오디오를 합성해 영상을 완성합니다." },
 ] as const;
 const CONTENT_TYPE_OPTIONS: Array<{ value: ContentType; label: string; example: string }> = [
   { value: "story", label: "스토리형", example: "회사가 망하기 직전에 바꾼 한 가지" },
@@ -304,12 +308,30 @@ const DEFAULT_PLAYBACK_SPEED = 1.2;
 const DEFAULT_EPISODE_NUMBER = 1;
 const REELS_EDITOR_LOGO_URL = new URL("../../assets/reels-editor-icon.png", import.meta.url).href;
 const PROVIDER_OPTIONS: Array<{ value: ModelProvider; label: string; description: string }> = [
-  { value: "codex-cli", label: "Codex CLI", description: "로컬 Codex 인증과 설치된 기본 모델을 사용합니다." },
+  { value: "codex-cli", label: "Codex CLI", description: "로컬 Codex 인증으로 선택한 모델을 사용합니다." },
   { value: "claude-cli", label: "Claude CLI", description: "설치된 Claude Code CLI를 사용합니다." },
   { value: "gemini-cli", label: "Gemini CLI", description: "로컬 Gemini 인증과 설치된 기본 모델을 사용합니다." },
   { value: "openai", label: "OpenAI API", description: "OPENAI_API_KEY 환경변수의 자격증명을 사용합니다." },
   { value: "kimi", label: "Kimi API", description: "MOONSHOT_API_KEY 환경변수의 자격증명을 사용합니다." },
 ];
+const MODEL_OPTIONS: Record<ModelProvider, Array<{ value: string; label: string }>> = {
+  "codex-cli": [
+    { value: "gpt-5.6-sol", label: "5.6 Sol" },
+    { value: "gpt-5.6-terra", label: "5.6 Terra" },
+    { value: "gpt-5.6-luna", label: "5.6 Luna" },
+    { value: "gpt-5.5", label: "5.5" },
+    { value: "gpt-5.4", label: "5.4" },
+    { value: "gpt-5.4-mini", label: "5.4 mini" },
+  ],
+  "claude-cli": [{ value: "", label: "기본 모델" }],
+  "gemini-cli": [{ value: "", label: "기본 모델" }],
+  openai: [{ value: "gpt-4o", label: "GPT-4o" }],
+  kimi: [{ value: "kimi-k2-0905-preview", label: "Kimi K2" }],
+};
+
+function defaultModel(provider: ModelProvider): string {
+  return MODEL_OPTIONS[provider][0]?.value ?? "";
+}
 
 function modelProvider(value: string | undefined): ModelProvider {
   return PROVIDER_OPTIONS.some((option) => option.value === value) ? value as ModelProvider : "codex-cli";
@@ -402,6 +424,7 @@ function normalizeArchiveItem(item: ApiArchiveItem, index: number): ArchiveItem 
   const jobId = item.job_id ?? item.jobId;
   if (!jobId) return null;
   const storylineId = item.storyline_id ?? item.storylineId ?? null;
+  if (!storylineId) return null;
   const sourceUrl = item.source_url ?? item.sourceUrl ?? null;
   const videoUrl = mediaUrl(item.video_url ?? item.videoUrl ?? null);
   if (!videoUrl) return null;
@@ -479,8 +502,42 @@ function generationStageIndex(phase: string | null | undefined, status: JobStatu
   if (phase === "transcript") return 1;
   if (phase === "analyzing") return 2;
   if (status === "generating" || phase === "generating") return 3;
-  if (["rendering", "overlay"].includes(phase ?? "") || status === "rendering_base" || status === "rendering_overlay") return 3;
+  if (["rendering", "overlay"].includes(phase ?? "") || status === "rendering_base" || status === "rendering_overlay") return 4;
   return 0;
+}
+
+function estimatedRenderMinutes(storylineCount: number): number {
+  const count = Math.max(1, storylineCount);
+  return Math.max(2.5, Math.ceil(count / 2) * 2.5);
+}
+
+function estimatedRemainingMinutes(
+  phase: string | null | undefined,
+  status: JobStatus,
+  progress: number,
+  renderMinutes: number,
+): number {
+  if (["rendering", "overlay"].includes(phase ?? "") || status === "rendering_base" || status === "rendering_overlay") {
+    const renderProgress = Math.max(0, Math.min(1, (progress - 28) / 68));
+    return Math.max(0.5, renderMinutes * (1 - renderProgress));
+  }
+  if (status === "generating" || phase === "generating") return renderMinutes + 1;
+  if (phase === "analyzing") return renderMinutes + 2;
+  if (phase === "transcript") return renderMinutes + 3;
+  if (phase === "downloading") {
+    const downloadProgress = Math.max(0, Math.min(1, (progress - 4) / 10));
+    return renderMinutes + 2 + 2 * (1 - downloadProgress);
+  }
+  return renderMinutes + 4;
+}
+
+function remainingTimeLabel(minutes: number): string {
+  return minutes <= 1 ? "1분 이내" : `약 ${Math.ceil(minutes)}분`;
+}
+
+function estimatedCompletionLabel(minutes: number): string {
+  return new Intl.DateTimeFormat("ko-KR", { hour: "numeric", minute: "2-digit" })
+    .format(new Date(Date.now() + minutes * 60_000));
 }
 
 function isDemoMode(): boolean {
@@ -578,6 +635,7 @@ function makeEmptySnapshot(connection: ConnectionState = "disconnected"): Snapsh
     candidates: [],
     selectedCandidateIds: [],
     provider: "codex-cli",
+    model: defaultModel("codex-cli"),
     episodeNumber: DEFAULT_EPISODE_NUMBER,
     eventSeq: 0,
     storylines: [],
@@ -611,6 +669,7 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
     candidates: [],
     selectedCandidateIds: [],
     provider: "codex-cli",
+    model: defaultModel("codex-cli"),
     episodeNumber: 37,
     eventSeq: 1,
     storylines: [0, 1, 2].map((index) => ({
@@ -698,6 +757,7 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
     })),
     selectedCandidateIds: payload.selected_candidate_ids ?? payload.selectedCandidateIds ?? [],
     provider: modelProvider(payload.provider),
+    model: payload.model ?? "",
     episodeNumber: positiveInteger(payload.episode_number ?? payload.episodeNumber),
     eventSeq: payload.event_seq ?? payload.seq ?? 0,
   };
@@ -766,6 +826,7 @@ function App() {
   const [selectedContentTypes, setSelectedContentTypes] = useState<ContentType[]>(ALL_CONTENT_TYPES);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider>("codex-cli");
+  const [selectedModel, setSelectedModel] = useState(defaultModel("codex-cli"));
   const [playbackSpeed, setPlaybackSpeed] = useState(DEFAULT_PLAYBACK_SPEED);
   const [speedSettingsSaveState, setSpeedSettingsSaveState] = useState<SettingsSaveState>("idle");
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -777,6 +838,8 @@ function App() {
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [openingArchiveId, setOpeningArchiveId] = useState<string | null>(null);
+  const [deletingArchiveId, setDeletingArchiveId] = useState<string | null>(null);
+  const [deletingAllArchive, setDeletingAllArchive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsMenuRef = useRef<HTMLDivElement | null>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -789,6 +852,7 @@ function App() {
   const [eventConnectionVersion, setEventConnectionVersion] = useState(0);
   const [liveMessage, setLiveMessage] = useState("대시보드 연결 중");
   const [captionStates, setCaptionStates] = useState<Record<string, CaptionActionState>>({});
+  const [captionErrors, setCaptionErrors] = useState<Record<string, string | null>>({});
   const [titleDrafts, setTitleDrafts] = useState<Record<string, TitleDraft>>({});
   const [titleStates, setTitleStates] = useState<Record<string, TitleActionState>>({});
   const [titleErrors, setTitleErrors] = useState<Record<string, string | null>>({});
@@ -833,9 +897,12 @@ function App() {
       setSelectedContentTypes(next.contentTypes.length > 0 ? next.contentTypes : ALL_CONTENT_TYPES);
       setSelectedCandidateIds(next.selectedCandidateIds);
       setSelectedProvider(next.provider);
+      setSelectedModel(next.model || defaultModel(next.provider));
       setYoutubeUrl(next.sourceUrl ?? "");
       setEpisodeInput(String(next.episodeNumber));
       setYoutubeError(null);
+      setCaptionStates({});
+      setCaptionErrors({});
       setTitleStates({});
       setTitleErrors({});
       setExportState("idle");
@@ -958,6 +1025,14 @@ function App() {
   const generationActive = GENERATION_JOB_STATUSES.has(snapshot?.jobStatus ?? "idle");
   const activeGenerationStage = generationStageIndex(snapshot?.jobPhase, snapshot?.jobStatus ?? "idle");
   const generationProgress = snapshot?.jobProgress ?? 0;
+  const estimatedStorylineCount = snapshot?.nStorylines || selectedCandidateIds.length || 3;
+  const renderMinutes = estimatedRenderMinutes(estimatedStorylineCount);
+  const remainingMinutes = estimatedRemainingMinutes(
+    snapshot?.jobPhase,
+    snapshot?.jobStatus ?? "idle",
+    generationProgress,
+    renderMinutes,
+  );
   const episodeNumber = positiveInteger(episodeInput, 0);
   const episodeValid = Number.isInteger(Number(episodeInput)) && Number(episodeInput) > 0 && String(Number(episodeInput)) === episodeInput.trim();
   const sourceThumbnailUrl = youtubeThumbnailUrl(youtubeUrl);
@@ -1006,8 +1081,8 @@ function App() {
     });
   }
 
-  function retryStoryline(storyline: Storyline) {
-    setLiveMessage(`${storyline.label} 대표 영상을 다시 렌더합니다.`);
+  function rerenderStoryline(storyline: Storyline) {
+    setLiveMessage(`${storyline.label} 대표 영상을 리렌더링합니다.`);
     if (isDemoMode()) {
       updateStoryline(storyline.id, { status: "rendering", progress: 38, error: undefined });
       window.setTimeout(() => {
@@ -1018,7 +1093,7 @@ function App() {
     }
     if (snapshot) {
       void apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/retry`, { method: "POST" }).catch(() =>
-        setLiveMessage("다시 시도 요청이 실패했습니다."),
+        setLiveMessage("리렌더링 요청이 실패했습니다."),
       );
     }
   }
@@ -1026,6 +1101,7 @@ function App() {
   async function generateInstagramCaption(storyline: Storyline) {
     if (storyline.status !== "ready") return;
     setCaptionStates((current) => ({ ...current, [storyline.id]: "generating" }));
+    setCaptionErrors((current) => ({ ...current, [storyline.id]: null }));
     setLiveMessage(`${storyline.label} Instagram 캡션을 생성합니다.`);
     try {
       if (isDemoMode()) {
@@ -1037,6 +1113,8 @@ function App() {
         if (!snapshot) return;
         const response = await apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/caption`, {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: selectedProvider, model: selectedModel }),
         });
         const normalized = normalizeSnapshot((await response.json()) as ApiSnapshot);
         applySnapshot(archiveModeRef.current ? completedOnlySnapshot(normalized) : normalized);
@@ -1044,8 +1122,10 @@ function App() {
       setCaptionStates((current) => ({ ...current, [storyline.id]: "idle" }));
       setLiveMessage(`${storyline.label} Instagram 캡션이 준비되었습니다.`);
     } catch (error) {
+      const detail = error instanceof Error ? error.message : "Instagram 캡션 생성에 실패했습니다.";
       setCaptionStates((current) => ({ ...current, [storyline.id]: "error" }));
-      setLiveMessage(error instanceof Error ? error.message : "Instagram 캡션 생성에 실패했습니다.");
+      setCaptionErrors((current) => ({ ...current, [storyline.id]: detail }));
+      setLiveMessage(detail);
     }
   }
 
@@ -1168,6 +1248,60 @@ function App() {
     }
   }
 
+  async function deleteArchiveItem(item: ArchiveItem) {
+    if (openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive) return;
+    const confirmed = window.confirm(
+      `‘${item.reelTitle}’ 릴스를 삭제할까요?\n\n보관 영상과 작업 파일이 함께 삭제되며 되돌릴 수 없습니다.`,
+    );
+    if (!confirmed) return;
+    setDeletingArchiveId(item.id);
+    setArchiveError(null);
+    try {
+      if (isDemoMode()) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      } else {
+        await apiMutation(
+          `/api/archive/${encodeURIComponent(item.jobId)}/${encodeURIComponent(item.storylineId)}`,
+          { method: "DELETE" },
+        );
+      }
+      setArchiveItems((current) => current.filter((candidate) => candidate.id !== item.id));
+      setLiveMessage(`‘${item.reelTitle}’ 릴스와 관련 작업 파일을 삭제했습니다.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "과거 릴스를 삭제하지 못했습니다.";
+      setArchiveError(message);
+      setLiveMessage(message);
+    } finally {
+      setDeletingArchiveId(null);
+    }
+  }
+
+  async function deleteAllArchive() {
+    if (archiveItems.length === 0 || openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive) return;
+    const count = archiveItems.length;
+    const confirmed = window.confirm(
+      `과거 릴스 ${count}개를 모두 삭제할까요?\n\n보관 영상과 작업 파일이 함께 삭제되며 되돌릴 수 없습니다.`,
+    );
+    if (!confirmed) return;
+    setDeletingAllArchive(true);
+    setArchiveError(null);
+    try {
+      if (isDemoMode()) {
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      } else {
+        await apiMutation("/api/archive", { method: "DELETE" });
+      }
+      setArchiveItems([]);
+      setLiveMessage(`과거 릴스 ${count}개와 관련 작업 파일을 모두 삭제했습니다.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "과거 릴스를 모두 삭제하지 못했습니다.";
+      setArchiveError(message);
+      setLiveMessage(message);
+    } finally {
+      setDeletingAllArchive(false);
+    }
+  }
+
   async function updateTitle(storyline: Storyline) {
     if (!snapshot || storyline.status !== "ready") return;
     const draft = titleDrafts[storyline.id] ?? { upper: storyline.titleUpper, lower: storyline.titleLower };
@@ -1261,6 +1395,7 @@ function App() {
         episode_number: episodeNumber,
         content_types: selectedContentTypes,
         provider: selectedProvider,
+        model: selectedModel,
       }),
     });
     applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
@@ -1510,7 +1645,11 @@ function App() {
             aria-label="모델 프로바이더"
             value={selectedProvider}
             disabled={jobBusy}
-            onChange={(event) => setSelectedProvider(event.target.value as ModelProvider)}
+            onChange={(event) => {
+              const provider = event.target.value as ModelProvider;
+              setSelectedProvider(provider);
+              setSelectedModel(defaultModel(provider));
+            }}
           >
             {PROVIDER_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
@@ -1519,6 +1658,18 @@ function App() {
           <p className="settings-note">
             {PROVIDER_OPTIONS.find((option) => option.value === selectedProvider)?.description}
           </p>
+          <label className="settings-select-label" htmlFor="model-name">세부 모델</label>
+          <select
+            id="model-name"
+            aria-label="세부 모델"
+            value={selectedModel}
+            disabled={jobBusy}
+            onChange={(event) => setSelectedModel(event.target.value)}
+          >
+            {MODEL_OPTIONS[selectedProvider].map((option) => (
+              <option key={option.value || "default"} value={option.value}>{option.label}</option>
+            ))}
+          </select>
         </div>
       </div>
     );
@@ -1562,14 +1713,27 @@ function App() {
           </div>
         </div>
 
-        <section className="archive-workspace" aria-labelledby="archive-title" aria-busy={archiveLoading}>
+        <section className="archive-workspace" aria-labelledby="archive-title" aria-busy={archiveLoading || deletingAllArchive || deletingArchiveId !== null}>
           <header className="archive-header">
             <div>
               <p className="eyebrow">완료된 영상만 표시</p>
               <h2 id="archive-title">다시 꺼내 쓸 릴스</h2>
-              <p>영상을 열면 재생, 캡션 생성·복사, 고정 폴더로 다시 내보내기를 할 수 있습니다.</p>
+              <p>영상을 열어 다시 활용할 수 있습니다. 완료 후 3일이 지난 릴스는 자동 삭제됩니다.</p>
             </div>
-            <strong>{archiveItems.length}<span>개</span></strong>
+            <div className="archive-summary">
+              <strong>{archiveItems.length}<span>개</span></strong>
+              {archiveItems.length > 0 ? (
+                <button
+                  type="button"
+                  className="archive-delete-all"
+                  disabled={archiveLoading || openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive}
+                  onClick={() => { void deleteAllArchive(); }}
+                >
+                  {deletingAllArchive ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Trash2 size={15} aria-hidden="true" />}
+                  {deletingAllArchive ? "삭제 중" : "전체 삭제"}
+                </button>
+              ) : null}
+            </div>
           </header>
 
           {archiveLoading ? (
@@ -1606,16 +1770,28 @@ function App() {
                     <p>{item.projectName}</p>
                     <small><Clock3 size={13} aria-hidden="true" /> {formatArchiveDate(item.completedAt)}</small>
                   </div>
-                  <button
-                    type="button"
-                    className="archive-open"
-                    disabled={openingArchiveId !== null}
-                    onClick={() => { void openArchiveItem(item); }}
-                    aria-label={`${item.reelTitle} 열기`}
-                  >
-                    {openingArchiveId === item.id ? <Loader2 size={16} className="spin" /> : null}
-                    {openingArchiveId === item.id ? "여는 중" : "열기"}
-                  </button>
+                  <div className="archive-actions">
+                    <button
+                      type="button"
+                      className="archive-open"
+                      disabled={openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive}
+                      onClick={() => { void openArchiveItem(item); }}
+                      aria-label={`${item.reelTitle} 열기`}
+                    >
+                      {openingArchiveId === item.id ? <Loader2 size={16} className="spin" /> : null}
+                      {openingArchiveId === item.id ? "여는 중" : "열기"}
+                    </button>
+                    <button
+                      type="button"
+                      className="archive-delete"
+                      disabled={openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive}
+                      onClick={() => { void deleteArchiveItem(item); }}
+                      aria-label={`${item.reelTitle} 삭제`}
+                    >
+                      {deletingArchiveId === item.id ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Trash2 size={15} aria-hidden="true" />}
+                      {deletingArchiveId === item.id ? "삭제 중" : "삭제"}
+                    </button>
+                  </div>
                 </article>
               ))}
             </div>
@@ -1778,7 +1954,7 @@ function App() {
           ))}
         </fieldset>
         <p id="youtube-source-help" className={youtubeError ? "youtube-source-help error" : "youtube-source-help"}>
-          {youtubeError ?? "분석이 끝나면 원하는 후보를 복수 선택합니다. 최종 영상은 항상 30~40초로 제작됩니다."}
+          {youtubeError ?? "분석이 끝나면 원하는 후보를 복수 선택합니다. 최종 영상은 항상 20~40초로 제작됩니다."}
         </p>
       </form>
 
@@ -1795,7 +1971,9 @@ function App() {
             <div>
               <p className="eyebrow">분석 완료 · 중복 제거됨</p>
               <h2 id="candidate-workspace-title">만들고 싶은 릴스를 선택하세요</h2>
-              <p>선택한 후보만 30~40초 영상으로 제작합니다.</p>
+              <p>
+                선택한 후보만 제작하며, 선택 후 대본 생성과 렌더링까지 {remainingTimeLabel(estimatedRenderMinutes(selectedCandidateIds.length || 3) + 1)} 걸립니다.
+              </p>
             </div>
             <strong>{selectedCandidateIds.length}<span>개 선택</span></strong>
           </header>
@@ -1852,7 +2030,7 @@ function App() {
           <strong>{candidateSelectionActive ? selectedCandidateIds.length : stats.failed}</strong>
           <small>{candidateSelectionActive ? "선택한 후보" : "실패한 릴스"}</small>
         </div>
-        <div><strong>{candidateSelectionActive ? "30–40초" : subtitlesEnabled ? "ON" : "OFF"}</strong><small>{candidateSelectionActive ? "고정 영상 길이" : "클립 자막"}</small></div>
+        <div><strong>{candidateSelectionActive ? "20–40초" : subtitlesEnabled ? "ON" : "OFF"}</strong><small>{candidateSelectionActive ? "허용 영상 길이" : "클립 자막"}</small></div>
       </section>
 
       {generationActive ? (
@@ -1866,7 +2044,13 @@ function App() {
                 <p>{snapshot?.jobMessage ?? GENERATION_STAGES[activeGenerationStage].description}</p>
               </div>
             </div>
-            <strong className="generation-progress-percent">{generationProgress}%</strong>
+            <div className="generation-progress-summary">
+              <div className="generation-progress-eta">
+                <strong>{remainingTimeLabel(remainingMinutes)} 남음</strong>
+                <span>예상 완료 {estimatedCompletionLabel(remainingMinutes)}</span>
+              </div>
+              <strong className="generation-progress-percent">{generationProgress}%</strong>
+            </div>
           </div>
           <div
             className="generation-progress-track"
@@ -1884,13 +2068,19 @@ function App() {
               return (
                 <li className={state} key={stage.label}>
                   <span aria-hidden="true">{state === "done" ? <Check size={13} /> : index + 1}</span>
-                  <div><strong>{stage.label}</strong><small>{stage.description}</small></div>
+                  <div>
+                    <strong>{stage.label}</strong>
+                    <small>{index === 4 ? remainingTimeLabel(renderMinutes) : stage.duration} · {stage.description}</small>
+                  </div>
                 </li>
               );
             })}
           </ol>
           <p className="generation-progress-detail">
             준비 완료 {stats.ready}개 · 렌더링 {storylines.filter((storyline) => storyline.status === "rendering").length}개 · 오버레이 {storylines.filter((storyline) => storyline.status === "overlaying").length}개
+          </p>
+          <p className="generation-progress-breakdown">
+            기본 3개 자동 작업 약 8~10분 · 다운로드 1~2분 · 후보·제목 1~2분 · 렌더링 {remainingTimeLabel(renderMinutes)} ({estimatedStorylineCount}개 기준) · 후보 선택 시간 제외
           </p>
         </section>
       ) : null}
@@ -2062,7 +2252,11 @@ function App() {
                 ) : (
                   <p>이 릴스의 실제 내용에 맞춘 게시글 캡션을 만듭니다.</p>
                 )}
-                {captionStates[storyline.id] === "error" ? <p className="caption-error">캡션 작업에 실패했습니다. 다시 시도해주세요.</p> : null}
+                {captionStates[storyline.id] === "error" ? (
+                  <p className="caption-error" role="alert">
+                    {captionErrors[storyline.id] ?? "캡션 작업에 실패했습니다. 다시 시도해주세요."}
+                  </p>
+                ) : null}
               </section>
 
               <div className="lane-footer">
@@ -2076,7 +2270,16 @@ function App() {
                   />
                   <span>내보내기 선택</span>
                 </label>
-              {storyline.status === "failed" && !archiveMode ? <button type="button" disabled={jobBusy} onClick={() => retryStoryline(storyline)}>다시 시도</button> : null}
+              {storyline.status === "failed" && !archiveMode ? (
+                <button
+                  type="button"
+                  disabled={jobBusy}
+                  onClick={() => rerenderStoryline(storyline)}
+                  aria-label={`${storyline.label} 리렌더링`}
+                >
+                  <RefreshCcw size={15} aria-hidden="true" /> 리렌더링
+                </button>
+              ) : null}
               </div>
               {storyline.error ? <p className="lane-error" role="alert">{storyline.error}</p> : null}
             </article>

@@ -71,7 +71,10 @@ def _claude_cli_runner(model: str) -> Callable[[str], str]:
                 "PATH에 등록되어 있는지 확인하거나, 설정 패널에서 다른 프로바이더로 "
                 f"전환하세요: {e}") from e
         if r.returncode != 0:
-            raise RuntimeError(f"claude -p 실패:\n{r.stderr}")
+            detail = (r.stderr or r.stdout).strip()[-2000:]
+            if not detail:
+                detail = f"종료 코드 {r.returncode} (오류 출력 없음)"
+            raise RuntimeError(f"claude -p 실패:\n{detail}")
         return r.stdout
     return run
 

@@ -6,6 +6,7 @@ import secrets
 import socket
 import threading
 import time
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
@@ -44,6 +45,7 @@ class CreateJobRequest(BaseModel):
         max_length=4,
     )
     provider: Literal["codex-cli", "claude-cli", "gemini-cli", "openai", "kimi"] = "codex-cli"
+    model: str | None = Field(default=None, max_length=100)
 
 
 class SelectionRequest(BaseModel):
@@ -66,6 +68,11 @@ class GenerateCandidatesRequest(BaseModel):
     candidate_ids: list[str] = Field(min_length=1, max_length=10)
 
 
+class InstagramCaptionRequest(BaseModel):
+    provider: Literal["codex-cli", "claude-cli", "gemini-cli", "openai", "kimi"] | None = None
+    model: str | None = Field(default=None, max_length=100)
+
+
 class StorylineTitleRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     title_upper: str | None = Field(default=None, max_length=200)
@@ -85,9 +92,37 @@ def create_app(
     session_token: str | None = None,
     config_path: Path | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Reels Editor Desktop")
     dialogs = dialog_provider or FakeDialogProvider()
     service = job_service or JobService(store=JobStore())
+
+    async def purge_expired_archive() -> None:
+        purge = getattr(service, "purge_expired_archive", None)
+        if callable(purge):
+            try:
+                await asyncio.to_thread(purge)
+            except (OSError, ValueError, JobServiceError):
+                # Cleanup is best-effort; a stale archive must not prevent startup.
+                pass
+
+    async def periodic_archive_cleanup() -> None:
+        while True:
+            await asyncio.sleep(60 * 60)
+            await purge_expired_archive()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        await purge_expired_archive()
+        cleanup_task = asyncio.create_task(periodic_archive_cleanup())
+        try:
+            yield
+        finally:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
+
+    app = FastAPI(title="Reels Editor Desktop", lifespan=lifespan)
     token = session_token or secrets.token_urlsafe(24)
     app.state.session_token = token
 
@@ -156,6 +191,7 @@ def create_app(
                     request.youtube_url,
                     content_types=request.content_types,
                     provider=request.provider,
+                    model=request.model,
                     episode_number=request.episode_number,
                 )
             else:
@@ -169,6 +205,28 @@ def create_app(
     @app.get("/api/archive")
     def archive(_auth: None = Depends(require_token)) -> dict[str, Any]:
         return {"items": _archive_items(service.archive_jobs())}
+
+    @app.delete("/api/archive/{job_id}/{storyline_id}")
+    def delete_archive_item(
+        job_id: str,
+        storyline_id: str,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, int]:
+        try:
+            service.delete_archive_item(job_id, storyline_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="archive item not found") from exc
+        except JobServiceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"deleted": 1}
+
+    @app.delete("/api/archive")
+    def delete_archive(_auth: None = Depends(require_token)) -> dict[str, int]:
+        try:
+            deleted = service.delete_all_archive()
+        except JobServiceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"deleted": deleted}
 
     @app.post("/api/jobs/{job_id}/open")
     def open_job(job_id: str, _auth: None = Depends(require_token)) -> dict[str, Any]:
@@ -221,10 +279,16 @@ def create_app(
     def generate_instagram_caption(
         job_id: str,
         storyline_id: str,
+        request: InstagramCaptionRequest | None = None,
         _auth: None = Depends(require_token),
     ) -> dict[str, Any]:
         try:
-            job = service.generate_instagram_caption(job_id, storyline_id)
+            job = service.generate_instagram_caption(
+                job_id,
+                storyline_id,
+                provider=request.provider if request else None,
+                model=request.model if request else None,
+            )
         except JobServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _snapshot_from_job(job)
@@ -380,6 +444,7 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
             "candidates": [],
             "selected_candidate_ids": [],
             "provider": "codex-cli",
+            "model": "",
             "seq": 0,
             "event_seq": 0,
         }
@@ -408,6 +473,7 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "candidates": [_candidate_snapshot(candidate) for candidate in job.candidates],
         "selected_candidate_ids": job.selected_candidate_ids,
         "provider": job.provider or "codex-cli",
+        "model": job.model or "",
         "storylines": [_storyline_snapshot(job, storyline) for storyline in job.storylines],
         "export": job.export.to_dict(),
         "seq": job.seq,

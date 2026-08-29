@@ -24,7 +24,9 @@ if TYPE_CHECKING:
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "candidate-analysis.md"
 CANDIDATE_COUNT = 10
 TARGET_DURATION_S = 35
-MIN_DURATION_S = 30
+# Keep short but usable clips: the target remains 35s, while completed
+# storylines from 20s through 40s are valid.
+MIN_DURATION_S = 20
 MAX_DURATION_S = 40
 MAX_RETRIES = 2
 MIN_CANDIDATE_TITLE_CHARS = 12

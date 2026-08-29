@@ -38,18 +38,40 @@ def test_build_prompt_allows_five_second_grace_for_long_reel(segments: dict) -> 
     assert "78초" in p  # 소스 예산 = 65s * speed 1.2
 
 
-def test_build_prompt_can_require_fixed_30_to_40_second_window(segments: dict) -> None:
+def test_build_prompt_can_require_fixed_20_to_40_second_window(segments: dict) -> None:
     prompt = storyteller.build_prompt(
         segments,
         duration_s=35,
         feedback=None,
-        min_duration_s=30,
+        min_duration_s=20,
         max_duration_s=40,
     )
 
-    assert "반드시 30~40초" in prompt
+    assert "반드시 20~40초" in prompt
     assert "목표는 35초" in prompt
     assert "최대 48초" in prompt
+
+
+def test_generate_script_accepts_shorter_clip_inside_20_to_40_window(
+        segments: dict, edl_doc: dict) -> None:
+    short_segments = {
+        **segments,
+        "segments": [
+            {**segments["segments"][0], "source_start_us": 0, "source_end_us": 5_000_000},
+            {**segments["segments"][1], "source_start_us": 5_000_000, "source_end_us": 10_000_000},
+            {**segments["segments"][2], "source_start_us": 10_000_000, "source_end_us": 37_040_000},
+        ],
+    }
+
+    result = storyteller.generate_script(
+        short_segments,
+        duration_s=35,
+        min_duration_s=20,
+        max_duration_s=40,
+        runner=lambda _prompt: json.dumps(edl_doc, ensure_ascii=False),
+    )
+
+    assert result["cuts"] == edl_doc["cuts"]
 
 
 def test_build_prompt_requires_korean_captions_for_english_transcript(segments: dict) -> None:
@@ -307,7 +329,13 @@ def test_fresh_legacy_shaped_speaker_role_still_requires_direct_evidence(
 
     errors = storyteller.validate_and_normalize_speaker(doc, source)
 
-    assert errors == ["speaker의 기업/역할 evidence가 제공된 SEGMENTS 또는 영상 맥락에 직접 존재해야 함"]
+    assert errors == []
+    assert doc["speaker"] == {
+        "name": "Synthetic Person",
+        "company": "",
+        "role": "",
+        "alternate_role": "",
+    }
 
 
 def test_legacy_persisted_speaker_without_evidence_degrades_to_name_only() -> None:
@@ -464,7 +492,7 @@ def test_harmonize_speaker_metadata_does_not_merge_similar_names_without_shared_
     assert storyteller.format_speaker_label(other.doc["speaker"]) == "김지연"
 
 
-def test_speaker_ungrounded_descriptor_is_rejected(segments: dict) -> None:
+def test_speaker_ungrounded_descriptor_degrades_to_name_only(segments: dict) -> None:
     doc = {
         "speaker": {
             "name": "김지영",
@@ -477,7 +505,13 @@ def test_speaker_ungrounded_descriptor_is_rejected(segments: dict) -> None:
 
     errors = storyteller.validate_and_normalize_speaker(doc, segments)
 
-    assert errors == ["speaker의 기업/역할 evidence가 제공된 SEGMENTS 또는 영상 맥락에 직접 존재해야 함"]
+    assert errors == []
+    assert doc["speaker"] == {
+        "name": "김지영",
+        "company": "",
+        "role": "",
+        "alternate_role": "",
+    }
 
 
 def test_speaker_evidence_must_name_the_claimed_company_and_role(segments: dict) -> None:
@@ -491,7 +525,9 @@ def test_speaker_evidence_must_name_the_claimed_company_and_role(segments: dict)
         }
     }
 
-    assert storyteller.validate_and_normalize_speaker(doc, segments)
+    assert storyteller.validate_and_normalize_speaker(doc, segments) == []
+    assert doc["speaker"]["company"] == ""
+    assert doc["speaker"]["role"] == ""
 
 
 def test_generate_script_accepts_long_reel_within_five_second_grace(segments: dict, edl_doc: dict) -> None:

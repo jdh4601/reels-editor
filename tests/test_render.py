@@ -184,6 +184,7 @@ def test_build_base_filter_has_pad_for_bars(edl_doc: dict, segments: dict) -> No
     assert "atempo=1.2" in f
     assert f"pad={style.canvas[0]}:{style.canvas[1]}" in f
     assert f":0:{style.top_bar}" in f  # 영상이 top_bar 아래에 놓임
+    assert f.count("setsar=1") >= 2
 
 
 def test_build_base_filter_content_crop_first(edl_doc: dict, segments: dict) -> None:

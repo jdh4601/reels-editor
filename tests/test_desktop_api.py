@@ -26,6 +26,9 @@ class FakeService:
         self.title_args: dict | None = None
         self.config = AppConfig(provider="codex-cli")
         self.archive_override: list[Job] | None = None
+        self.deleted_archive_item: tuple[str, str] | None = None
+        self.delete_all_count = 0
+        self.purge_calls = 0
 
     def snapshot(self, job_id: str | None = None) -> Job | None:
         return self.job
@@ -40,23 +43,37 @@ class FakeService:
         *,
         content_types: list[str] | None = None,
         provider: str | None = None,
+        model: str | None = None,
         episode_number: int = 1,
     ) -> Job:
         self.youtube_start_args = {
             "youtube_url": youtube_url,
             "content_types": content_types,
             "provider": provider,
+            "model": model,
             "episode_number": episode_number,
         }
         assert self.job is not None
         self.job.source_url = youtube_url
         self.job.episode_number = episode_number
+        self.job.provider = provider
+        self.job.model = model
         return self.job
 
     def archive_jobs(self) -> list[Job]:
         if self.archive_override is not None:
             return self.archive_override
         return [self.job] if self.job is not None else []
+
+    def delete_archive_item(self, job_id: str, storyline_id: str) -> None:
+        self.deleted_archive_item = (job_id, storyline_id)
+
+    def delete_all_archive(self) -> int:
+        return self.delete_all_count
+
+    def purge_expired_archive(self) -> int:
+        self.purge_calls += 1
+        return 0
 
     def open_job(self, job_id: str) -> Job:
         assert self.job is not None and self.job.id == job_id
@@ -76,8 +93,20 @@ class FakeService:
         assert self.job is not None
         return self.job
 
-    def generate_instagram_caption(self, job_id: str, storyline_id: str) -> Job:
-        self.caption_args = {"job_id": job_id, "storyline_id": storyline_id}
+    def generate_instagram_caption(
+        self,
+        job_id: str,
+        storyline_id: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> Job:
+        self.caption_args = {
+            "job_id": job_id,
+            "storyline_id": storyline_id,
+            "provider": provider,
+            "model": model,
+        }
         assert self.job is not None
         story = next(item for item in self.job.storylines if item.id == storyline_id)
         story.instagram_caption = "Ep 1. 첫 고객을 만든 방법\n\n본문\n\n질문?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
@@ -257,15 +286,18 @@ def test_create_youtube_job_passes_url_and_selected_content_types_to_service(tmp
             "episode_number": 37,
             "content_types": ["strategy", "failure"],
             "provider": "codex-cli",
+            "model": "gpt-5.6-terra",
         },
     )
 
     assert response.status_code == 200
     assert response.json()["source_url"] == "https://youtu.be/abc123"
+    assert response.json()["model"] == "gpt-5.6-terra"
     assert service.youtube_start_args == {
         "youtube_url": "https://youtu.be/abc123",
         "content_types": ["strategy", "failure"],
         "provider": "codex-cli",
+        "model": "gpt-5.6-terra",
         "episode_number": 37,
     }
 
@@ -461,6 +493,44 @@ def test_archive_returns_completed_reel_identity_and_open_reuses_snapshot(tmp_pa
     assert opened.json()["episode_number"] == 37
 
 
+def test_archive_delete_endpoints_delegate_to_service(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    service = FakeService(store, job)
+    service.delete_all_count = 4
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+    client = TestClient(app)
+
+    one = client.delete(f"/api/archive/{job.id}/s1?token=secret")
+    all_items = client.delete("/api/archive?token=secret")
+
+    assert one.status_code == 200
+    assert one.json() == {"deleted": 1}
+    assert service.deleted_archive_item == (job.id, "s1")
+    assert all_items.status_code == 200
+    assert all_items.json() == {"deleted": 4}
+
+
+def test_app_startup_purges_expired_archive(tmp_path: Path) -> None:
+    service = FakeService(JobStore(tmp_path / "jobs"))
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 200
+
+    assert service.purge_calls == 1
+
+
 def test_archive_api_uses_existing_ready_variant_when_recorded_active_is_missing(
     tmp_path: Path,
 ) -> None:
@@ -611,10 +681,16 @@ def test_caption_request_generates_and_returns_reel_caption(tmp_path: Path) -> N
 
     response = TestClient(app).post(
         f"/api/jobs/{job.id}/storylines/s1/caption?token=secret",
+        json={"provider": "codex-cli", "model": "gpt-5.4-mini"},
     )
 
     assert response.status_code == 200
-    assert service.caption_args == {"job_id": job.id, "storyline_id": "s1"}
+    assert service.caption_args == {
+        "job_id": job.id,
+        "storyline_id": "s1",
+        "provider": "codex-cli",
+        "model": "gpt-5.4-mini",
+    }
     assert response.json()["storylines"][0]["instagram_caption"].startswith("Ep 1. ")
 
 

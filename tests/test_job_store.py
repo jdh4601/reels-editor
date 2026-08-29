@@ -73,6 +73,18 @@ def test_current_job_can_be_cleared_without_deleting_history(tmp_path: Path) -> 
     assert store.current_job().id == second.id
 
 
+def test_delete_job_removes_only_target_and_clears_current_pointer(tmp_path: Path) -> None:
+    store = JobStore(root=tmp_path)
+    first = store.create_job(source_url="https://youtu.be/first")
+    second = store.create_job(source_url="https://youtu.be/second")
+
+    store.delete_job(second.id)
+
+    assert not store.job_dir(second.id).exists()
+    assert store.load(first.id).source_url == "https://youtu.be/first"
+    assert store.current_job() is None
+
+
 def test_current_job_falls_back_to_recent_for_legacy_store(tmp_path: Path) -> None:
     store = JobStore(root=tmp_path)
     job = store.create_job(source_url="https://youtu.be/legacy")

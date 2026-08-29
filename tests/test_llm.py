@@ -162,6 +162,22 @@ def test_claude_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> No
     assert "No such file or directory" in str(ei.value)
 
 
+def test_claude_cli_runner_failure_includes_stdout_when_stderr_is_empty(monkeypatch) -> None:
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args,
+            1,
+            stdout="You've hit your session limit · resets 4pm (Asia/Seoul)",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = build_runner(AppConfig(provider="claude-cli"))
+
+    with pytest.raises(RuntimeError, match="session limit"):
+        run("프롬프트")
+
+
 def test_codex_cli_runner_returns_last_message(monkeypatch) -> None:
     captured: dict = {}
 

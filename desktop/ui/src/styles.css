@@ -438,14 +438,33 @@ h2 {
 
 .archive-header h2 { font-size: 27px; margin: 5px 0 7px; }
 .archive-header p:last-child { color: #68716c; font-size: 13px; }
-.archive-header > strong {
+.archive-summary {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.archive-summary > strong {
   align-items: baseline;
   color: #463469;
   display: flex;
   font-size: 34px;
   gap: 4px;
 }
-.archive-header > strong span { color: #797279; font-size: 12px; }
+.archive-summary > strong span { color: #797279; font-size: 12px; }
+.archive-delete-all,
+.archive-delete {
+  border-color: #d4b9b3;
+  color: #8e3d32;
+  font-weight: 720;
+}
+.archive-delete-all:hover:not(:disabled),
+.archive-delete:hover:not(:disabled) {
+  background: #f8ece8;
+  border-color: #ad5a4d;
+}
+.archive-delete-all { min-height: 32px; padding-inline: 10px; }
 
 .archive-list { display: grid; }
 
@@ -493,7 +512,9 @@ h2 {
 .archive-copy h3 { color: #252a27; font-size: 18px; line-height: 1.35; overflow-wrap: anywhere; }
 .archive-copy > p:not(.eyebrow) { color: #636c67; font-size: 13px; }
 .archive-copy small { align-items: center; color: #83807a; display: flex; font-size: 11px; gap: 5px; margin-top: 5px; }
+.archive-actions { align-items: stretch; display: flex; gap: 8px; }
 .archive-open { background: #21362f; border-color: #21362f; color: #fff; font-weight: 760; min-width: 84px; }
+.archive-delete { min-width: 70px; }
 
 .archive-state {
   align-items: center;
@@ -548,6 +569,13 @@ h2 {
 
 .settings-note { color: #757e79; font-size: 11px; line-height: 1.4; }
 .settings-note.error { color: #93382e; font-weight: 680; }
+
+.settings-select-label {
+  color: #626b66;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 2px;
+}
 
 .settings-field select {
   appearance: none;
@@ -676,6 +704,30 @@ h2 {
   letter-spacing: -0.04em;
 }
 
+.generation-progress-summary {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 18px;
+}
+
+.generation-progress-eta {
+  display: grid;
+  gap: 2px;
+  text-align: right;
+}
+
+.generation-progress-eta strong {
+  color: #244f3d;
+  font-size: 14px;
+}
+
+.generation-progress-eta span {
+  color: #68706b;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .generation-progress-track {
   background: #d9ddd7;
   border-radius: 999px;
@@ -695,7 +747,7 @@ h2 {
 .generation-steps {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   list-style: none;
   margin: 14px 0 0;
   padding: 0;
@@ -729,6 +781,14 @@ h2 {
   color: #68706b;
   font-size: 11px;
   margin: 11px 0 0 45px;
+}
+
+.generation-progress-breakdown {
+  color: #4f5f57;
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.4;
+  margin: 7px 0 0 45px;
 }
 
 .connection-dot {

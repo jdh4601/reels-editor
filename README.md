@@ -113,7 +113,7 @@ Then start the app:
 3. Click **후보 10개 분석** (Analyze 10 candidates). The app downloads the video
    and transcript, then proposes ten non-overlapping ideas.
 4. Select the ones worth making and click **선택한 후보로 릴스 생성**
-   (Generate selected reels). Only your picks get rendered, at 30–40 seconds each.
+   (Generate selected reels). Only your picks get rendered, at 20–40 seconds each.
 5. Optionally click **캡션 생성하기** (Generate caption) for an Instagram caption
    written from that reel's actual script.
 6. Select what you want and click **선택 영상 내보내기** (Export selected).

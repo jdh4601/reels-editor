@@ -71,3 +71,15 @@ def test_generate_caption_retries_invalid_structure() -> None:
     assert caption == _valid_caption()
     assert len(prompts) == 2
     assert "이전 캡션이 검증에 실패했다" in prompts[1]
+
+
+def test_append_source_credit_adds_normalized_channel_and_url_as_last_line() -> None:
+    caption = instagram_caption.append_source_credit(
+        _valid_caption(),
+        channel_name="  Y   Combinator  ",
+        source_url=" https://youtu.be/abc123 ",
+    )
+
+    assert caption.endswith("원본 출처: Y Combinator https://youtu.be/abc123")
+    assert caption.splitlines()[-1] == "원본 출처: Y Combinator https://youtu.be/abc123"
+    assert caption.count("원본 출처:") == 1

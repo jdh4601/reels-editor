@@ -267,7 +267,10 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
         a = s["source_start_us"] / US
         b = s["source_end_us"] / US
         if dynamic_focus is None:
-            parts.append(f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed}[v{i}];")
+            # YouTube sources can carry different sample/pixel aspect ratios
+            # per segment. Normalize before concat; equal width/height alone
+            # is not enough for FFmpeg's concat filter.
+            parts.append(f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},setsar=1[v{i}];")
         else:
             point = dynamic_focus[i]
             crop_w, crop_h, crop_x, crop_y = video_crop_box(
@@ -279,7 +282,7 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
             parts.append(
                 f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},"
                 f"{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
-                f"pad={cw}:{ch}:0:{style.top_bar}:black[v{i}];"
+                f"pad={cw}:{ch}:0:{style.top_bar}:black,setsar=1[v{i}];"
             )
         parts.append(f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={speed}[a{i}];")
     concat_output = "[v]" if dynamic_focus is not None else "[vc]"

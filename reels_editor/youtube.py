@@ -5,13 +5,19 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 from urllib.parse import parse_qs, urlparse
 
 from reels_editor.timebase import US
 
 YOUTUBE_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"})
 _MEDIA_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})
+MAX_DOWNLOAD_HEIGHT = 1080
+DOWNLOAD_FORMAT = (
+    "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/"
+    "b[height<=1080][ext=mp4]/"
+    "bv*[height<=1080]+ba/b[height<=1080]"
+)
 
 
 class YouTubeSourceError(RuntimeError):
@@ -41,6 +47,16 @@ class YouTubeSource:
     transcript_language: str
     transcript_kind: str
     thumbnail_url: str = ""
+
+
+@dataclass(frozen=True)
+class DownloadProgress:
+    fraction: float
+    component: Literal["video", "audio", "media"]
+    component_fraction: float
+    downloaded_bytes: int | None = None
+    total_bytes: int | None = None
+    finished: bool = False
 
 
 def validate_youtube_url(url: str) -> str:
@@ -257,6 +273,7 @@ def download_youtube_source(
     output_dir: Path,
     *,
     progress_cb: Callable[[float], None] | None = None,
+    progress_detail_cb: Callable[[DownloadProgress], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
     ydl_factory: Callable[[dict[str, Any]], _YoutubeDL] | None = None,
 ) -> YouTubeSource:
@@ -282,21 +299,44 @@ def download_youtube_source(
     def progress_hook(event: dict[str, Any]) -> None:
         if cancelled and cancelled():
             raise YouTubeSourceError("YouTube 다운로드가 취소되었습니다.")
-        if not progress_cb:
+        if not progress_cb and not progress_detail_cb:
             return
-        if event.get("status") == "finished":
-            progress_cb(1.0)
+        component = _download_component(event)
+        if component is None:
             return
+        finished = event.get("status") == "finished"
         downloaded = _positive_float(event.get("downloaded_bytes")) or 0.0
         total = _positive_float(event.get("total_bytes")) or _positive_float(event.get("total_bytes_estimate"))
-        if total:
-            progress_cb(max(0.0, min(downloaded / total, 0.99)))
+        if finished:
+            component_fraction = 1.0
+        elif total:
+            component_fraction = max(0.0, min(downloaded / total, 0.99))
+        else:
+            return
+        if component == "video":
+            fraction = component_fraction * 0.9
+        elif component == "audio":
+            fraction = 0.9 + component_fraction * 0.1
+        else:
+            fraction = component_fraction
+        detail = DownloadProgress(
+            fraction=max(0.0, min(fraction, 1.0)),
+            component=component,
+            component_fraction=component_fraction,
+            downloaded_bytes=round(downloaded) or None,
+            total_bytes=round(total) if total else None,
+            finished=finished,
+        )
+        if progress_detail_cb:
+            progress_detail_cb(detail)
+        elif progress_cb:
+            progress_cb(detail.fraction)
 
     options: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+        "format": DOWNLOAD_FORMAT,
         "merge_output_format": "mp4",
         "outtmpl": str(output_dir / "source.%(ext)s"),
         "writesubtitles": track.kind == "manual",
@@ -352,6 +392,23 @@ def _default_ydl_factory(options: dict[str, Any]) -> _YoutubeDL:
     except ImportError as exc:  # pragma: no cover - dependency packaging failure
         raise YouTubeSourceError("yt-dlp가 설치되지 않았습니다. 앱을 다시 설치하거나 업데이트하세요.") from exc
     return YoutubeDL(options)
+
+
+def _download_component(event: dict[str, Any]) -> Literal["video", "audio", "media"] | None:
+    info = event.get("info_dict") if isinstance(event.get("info_dict"), dict) else {}
+    filename = str(event.get("filename") or info.get("filepath") or info.get("_filename") or "")
+    suffix = Path(filename.removesuffix(".part")).suffix.lower()
+    if suffix and suffix not in _MEDIA_SUFFIXES and suffix not in {".m4a", ".aac", ".mp3", ".opus"}:
+        return None
+    vcodec = str(info.get("vcodec") or "").lower()
+    acodec = str(info.get("acodec") or "").lower()
+    if vcodec == "none" and acodec not in {"", "none"}:
+        return "audio"
+    if acodec == "none" and vcodec not in {"", "none"}:
+        return "video"
+    if suffix in {".m4a", ".aac", ".mp3", ".opus"}:
+        return "audio"
+    return "media"
 
 
 def _caption_languages(value: Any) -> list[str]:

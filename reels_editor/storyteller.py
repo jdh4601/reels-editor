@@ -316,7 +316,15 @@ def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]
             or normalized_evidence.casefold() not in normalize_title(source_text).casefold()
             or not _speaker_evidence_supports_identity(normalized, normalized_evidence)
         ):
-            return ["speaker의 기업/역할 evidence가 제공된 SEGMENTS 또는 영상 맥락에 직접 존재해야 함"]
+            # Identity metadata is optional decoration. Never discard an
+            # otherwise valid storyline because the model guessed a company
+            # or role; keep the grounded name and remove unsupported claims.
+            normalized = {
+                "name": normalized["name"],
+                "company": "",
+                "role": "",
+                "alternate_role": "",
+            }
     doc["speaker"] = normalized
     return []
 

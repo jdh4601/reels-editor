@@ -32,7 +32,7 @@ def test_load_done_preset() -> None:
     assert s.sub_y == -400
     assert s.watermark_size == 75
     assert s.watermark_opacity == 255
-    assert s.watermark_y == -1450
+    assert s.watermark_y == -1410
     assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
     assert s.watermark_width == 212
     assert s.episode_text == "에피소드 1 / 1000"

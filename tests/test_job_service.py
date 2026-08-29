@@ -7,6 +7,7 @@ import time
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from reels_editor.render import RenderAssets
 from reels_editor.storyteller import StorylineResult
 from reels_editor.style import StylePreset
 from reels_editor.config import AppConfig
-from reels_editor.youtube import YouTubeSource
+from reels_editor.youtube import DownloadProgress, YouTubeSource
 
 TEST_URL = "https://youtu.be/founder"
 
@@ -33,6 +34,7 @@ class Calls:
     storyline_counts: list[int] = field(default_factory=list)
     speeds: list[float] = field(default_factory=list)
     providers: list[str] = field(default_factory=list)
+    models: list[str] = field(default_factory=list)
     max_active_base: int = 0
     active_base: int = 0
     base_version: int = 0
@@ -167,6 +169,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         output_dir.mkdir(parents=True, exist_ok=True)
         transcript.write_text("{}", encoding="utf-8")
         segments = _segments(video)
+        segments["source_channel"] = "테스트 창업가 채널"
         (output_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
         title = url.rstrip("/").rsplit("/", 1)[-1]
         return YouTubeSource(
@@ -194,7 +197,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
             _kwargs["speed"],
         ),
         generate_instagram_caption=generate_caption,
-        build_runner=lambda cfg: _capture_provider(calls, cfg.provider),
+        build_runner=lambda cfg: _capture_provider(calls, cfg.provider, cfg.model),
         load_style=lambda _path: style,
         render_base_and_assets=render_base,
         render_overlay_variant=render_overlay,
@@ -210,12 +213,14 @@ def _run_ready(
     *,
     candidate_count: int = 3,
     provider: str | None = None,
+    model: str | None = None,
     content_types: list[str] | None = None,
     episode_number: int = 1,
 ):
     analyzed = service.run_youtube_job_sync(
         url,
         provider=provider,
+        model=model,
         content_types=content_types,
         episode_number=episode_number,
     )
@@ -225,8 +230,9 @@ def _run_ready(
     )
 
 
-def _capture_provider(calls: Calls, provider: str):
+def _capture_provider(calls: Calls, provider: str, model: str = ""):
     calls.providers.append(provider)
+    calls.models.append(model)
     return lambda prompt: prompt
 
 
@@ -344,12 +350,35 @@ def test_job_service_generates_and_persists_caption_for_selected_reel(tmp_path: 
 
     caption = updated.storylines[1].instagram_caption
     assert caption.startswith("Ep 37. ")
+    assert caption.splitlines()[-1] == f"원본 출처: 테스트 창업가 채널 {TEST_URL}"
     assert service.store.load(ready.id).storylines[1].instagram_caption == caption
     assert len(calls.caption_requests) == 1
     request = calls.caption_requests[0]
     assert request["episode_number"] == 37
     assert request["candidate"]["id"] == "c2"
     assert request["selected_title"].endswith("제목 1")
+
+
+def test_caption_provider_override_uses_current_ui_selection(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+    ready = _run_ready(
+        service,
+        candidate_count=1,
+        provider="claude-cli",
+        episode_number=3,
+    )
+    calls.providers.clear()
+
+    service.generate_instagram_caption(
+        ready.id,
+        "s1",
+        provider="codex-cli",
+        model="gpt-5.4-mini",
+    )
+
+    assert calls.providers == ["codex-cli"]
+    assert calls.models[-1] == "gpt-5.4-mini"
 
 
 def test_episode_number_is_job_level_for_render_caption_and_archive(tmp_path: Path) -> None:
@@ -469,6 +498,68 @@ def test_archive_jobs_filters_non_playable_history(tmp_path: Path) -> None:
     archived = service.archive_jobs()
 
     assert [job.id for job in archived] == [ready.id]
+
+
+def test_delete_archive_item_removes_story_files_and_last_job(tmp_path: Path) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=2)
+    first, second = ready.storylines
+    first_archive = Path(first.archive_path or "")
+    second_archive = Path(second.archive_path or "")
+
+    service.delete_archive_item(ready.id, first.id)
+
+    remaining = service.store.load(ready.id)
+    assert [story.id for story in remaining.storylines] == [second.id]
+    assert not first_archive.exists()
+    assert not first_archive.with_suffix(".mp4.manifest.json").exists()
+    assert not (service.store.job_dir(ready.id) / first.id).exists()
+    assert second_archive.is_file()
+
+    service.delete_archive_item(ready.id, second.id)
+
+    assert not service.store.job_dir(ready.id).exists()
+    assert not second_archive.exists()
+    assert service.store.current_job() is None
+
+
+def test_delete_all_archive_removes_every_completed_reel(tmp_path: Path) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=2)
+
+    deleted = service.delete_all_archive()
+
+    assert deleted == 2
+    assert not service.store.job_dir(ready.id).exists()
+    assert service.archive_jobs() == []
+
+
+def test_purge_expired_archive_keeps_reels_newer_than_three_days(tmp_path: Path) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(service, candidate_count=2)
+    now = datetime(2026, 8, 27, 10, tzinfo=UTC)
+    stored = service.store.load(ready.id)
+    stored.storylines[0].completed_at = (now - timedelta(days=3, seconds=1)).isoformat()
+    stored.storylines[1].completed_at = (now - timedelta(days=2, hours=23)).isoformat()
+    service.store.save(stored)
+
+    deleted = service.purge_expired_archive(now=now)
+
+    assert deleted == 1
+    remaining = service.store.load(ready.id)
+    assert [story.id for story in remaining.storylines] == [ready.storylines[1].id]
 
 
 def test_archive_promotes_existing_ready_variant_instead_of_listing_deleted_active(
@@ -722,7 +813,16 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
 
     def download(url: str, output_dir: Path, **kwargs: Any) -> YouTubeSource:
         download_args.update({"url": url, "output_dir": output_dir, **kwargs})
-        kwargs["progress_cb"](0.5)
+        kwargs["progress_detail_cb"](DownloadProgress(
+            fraction=0.45,
+            component="video",
+            component_fraction=0.5,
+            downloaded_bytes=50 * 1024 * 1024,
+            total_bytes=100 * 1024 * 1024,
+        ))
+        download_args["progress_snapshot"] = json.loads(
+            (output_dir.parent / "job.json").read_text(encoding="utf-8")
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
         segments = _segments(video)
         (output_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
@@ -751,6 +851,10 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     assert job.transcript_language == "ko"
     assert job.transcript_kind == "automatic"
     assert download_args["output_dir"] == tmp_path / "jobs" / job.id / "source"
+    assert download_args["progress_snapshot"]["progress"] == pytest.approx(0.085)
+    assert download_args["progress_snapshot"]["message"] == (
+        "YouTube 영상 다운로드 중 · 50% · 50MB / 100MB"
+    )
     assert calls.durations == [35]
     assert calls.base == 3
 
@@ -810,6 +914,32 @@ def test_job_service_uses_selected_candidate_count_and_provider(tmp_path: Path) 
     assert len(job.storylines) == 10
     assert calls.storyline_counts == [10]
     assert calls.providers == ["claude-cli", "claude-cli"]
+
+
+def test_job_service_persists_and_uses_selected_codex_model(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+
+    job = _run_ready(
+        service,
+        candidate_count=1,
+        provider="codex-cli",
+        model="gpt-5.6-terra",
+    )
+
+    assert job.model == "gpt-5.6-terra"
+    assert calls.models == ["gpt-5.6-terra", "gpt-5.6-terra"]
+
+
+def test_job_service_rejects_unknown_codex_model(tmp_path: Path) -> None:
+    service = JobService(store=JobStore(tmp_path / "jobs"))
+
+    with pytest.raises(JobServiceError, match="지원하지 않는 Codex CLI 모델"):
+        service.run_youtube_job_sync(
+            TEST_URL,
+            provider="codex-cli",
+            model="gpt-not-real",
+        )
 
 
 def test_job_service_accepts_gemini_cli_provider(tmp_path: Path) -> None:

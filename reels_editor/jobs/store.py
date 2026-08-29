@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +80,25 @@ class JobStore:
 
     def clear_current(self) -> None:
         self._write_current(None)
+
+    def delete_job(self, job_id: str) -> None:
+        """Delete one job directory without following paths outside the store."""
+        target = Path(os.path.abspath(self.job_dir(job_id)))
+        root = Path(os.path.abspath(self.root))
+        if target.parent != root or target.name != job_id:
+            raise ValueError("job directory must be a direct child of the store")
+        if target.is_symlink():
+            raise ValueError("job directory is a symlink")
+        if not target.is_dir():
+            raise FileNotFoundError(f"job not found: {job_id}")
+
+        shutil.rmtree(target)
+        try:
+            payload = json.loads(self.current_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and payload.get("job_id") == job_id:
+            self._write_current(None)
 
     def set_current(self, job_id: str) -> Job:
         job = self.load(job_id)

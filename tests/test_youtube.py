@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from reels_editor.youtube import (
+    DOWNLOAD_FORMAT,
+    DownloadProgress,
     YouTubeSourceError,
     download_youtube_source,
     load_cached_youtube_source,
@@ -150,10 +152,17 @@ def test_parse_json3_transcript_builds_source_timed_segments(tmp_path: Path) -> 
 
 
 class _FakeYoutubeDL:
-    def __init__(self, options: dict, info: dict, output_dir: Path) -> None:
+    def __init__(
+        self,
+        options: dict,
+        info: dict,
+        output_dir: Path,
+        progress_events: list[dict] | None = None,
+    ) -> None:
         self.options = options
         self.info = info
         self.output_dir = output_dir
+        self.progress_events = progress_events
 
     def __enter__(self) -> _FakeYoutubeDL:
         return self
@@ -169,8 +178,12 @@ class _FakeYoutubeDL:
                 encoding="utf-8",
             )
             for hook in self.options.get("progress_hooks", []):
-                hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100})
-                hook({"status": "finished"})
+                events = self.progress_events or [
+                    {"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100},
+                    {"status": "finished"},
+                ]
+                for event in events:
+                    hook(event)
         return self.info
 
 
@@ -212,4 +225,60 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
     assert json.loads((tmp_path / "segments.json").read_text(encoding="utf-8"))["video_path"] == str(tmp_path / "source.mp4")
     assert options_seen[1]["writesubtitles"] is True
     assert options_seen[1]["writeautomaticsub"] is False
+    assert options_seen[1]["format"] == DOWNLOAD_FORMAT
+    assert "height<=1080" in options_seen[1]["format"]
     assert progress == [0.5, 1.0]
+
+
+def test_download_progress_ignores_subtitles_and_aggregates_video_and_audio(tmp_path: Path) -> None:
+    info = {
+        "id": "abc123",
+        "title": "창업가 인터뷰",
+        "duration": 3600,
+        "language": "en",
+        "subtitles": {"en": [{"ext": "json3"}]},
+        "automatic_captions": {},
+    }
+    events = [
+        {"status": "finished", "filename": str(tmp_path / "source.en.json3")},
+        {
+            "status": "downloading",
+            "filename": str(tmp_path / "source.f137.mp4.part"),
+            "downloaded_bytes": 50,
+            "total_bytes": 100,
+            "info_dict": {"vcodec": "avc1", "acodec": "none"},
+        },
+        {
+            "status": "finished",
+            "filename": str(tmp_path / "source.f137.mp4"),
+            "info_dict": {"vcodec": "avc1", "acodec": "none"},
+        },
+        {
+            "status": "downloading",
+            "filename": str(tmp_path / "source.f140.m4a.part"),
+            "downloaded_bytes": 25,
+            "total_bytes": 100,
+            "info_dict": {"vcodec": "none", "acodec": "mp4a"},
+        },
+        {
+            "status": "finished",
+            "filename": str(tmp_path / "source.f140.m4a"),
+            "info_dict": {"vcodec": "none", "acodec": "mp4a"},
+        },
+    ]
+    details: list[DownloadProgress] = []
+
+    def factory(options: dict) -> _FakeYoutubeDL:
+        return _FakeYoutubeDL(options, info, tmp_path, events)
+
+    download_youtube_source(
+        "https://www.youtube.com/watch?v=abc123",
+        tmp_path,
+        progress_detail_cb=details.append,
+        ydl_factory=factory,
+    )
+
+    assert [round(detail.fraction, 3) for detail in details] == [0.45, 0.9, 0.925, 1.0]
+    assert [detail.component for detail in details] == ["video", "video", "audio", "audio"]
+    assert details[0].downloaded_bytes == 50
+    assert details[0].total_bytes == 100

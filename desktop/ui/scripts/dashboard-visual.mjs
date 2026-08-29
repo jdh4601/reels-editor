@@ -819,6 +819,12 @@ async function assertCompletedArchiveWorkflow(browser) {
   let openCalls = 0;
   let captionCalls = 0;
   let exportCalls = 0;
+  let deleteItemCalls = 0;
+  let deleteAllCalls = 0;
+  let archiveReadyItems = [
+    { id: "ready-item", job_id: "archive-job", storyline_id: "archive-ready", status: "ready", episode_number: 37, project_name: "김현지 대표 인터뷰", reel_title: "고객을 먼저 만난 이유", source_url: "https://youtu.be/dQw4w9WgXcQ", source_thumbnail_url: "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg", video_url: "/media/archive-ready.mp4", completed_at: "2026-08-25T12:30:00+09:00" },
+    { id: "delete-item", job_id: "archive-job", storyline_id: "archive-delete", status: "ready", episode_number: 37, project_name: "김현지 대표 인터뷰", reel_title: "삭제할 과거 릴스", source_url: "https://youtu.be/dQw4w9WgXcQ", source_thumbnail_url: "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg", video_url: "/media/archive-delete.mp4", completed_at: "2026-08-25T12:20:00+09:00" },
+  ];
   const readyStoryline = (caption = "") => ({
     storyline_id: "archive-ready",
     index: 1,
@@ -855,15 +861,29 @@ async function assertCompletedArchiveWorkflow(browser) {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ job_id: "empty", project_name: "Reels Editor", status: "idle", n_storylines: 0, storylines: [] }) });
   });
   await page.route("**/api/archive", async (route) => {
-    if (route.request().method() !== "GET") throw new Error(`Archive endpoint expected GET, got ${route.request().method()}`);
+    if (route.request().method() === "DELETE") {
+      deleteAllCalls += 1;
+      const deleted = archiveReadyItems.length;
+      archiveReadyItems = [];
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ deleted }) });
+      return;
+    }
+    if (route.request().method() !== "GET") throw new Error(`Archive endpoint expected GET or DELETE, got ${route.request().method()}`);
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ items: [
-        { id: "ready-item", job_id: "archive-job", storyline_id: "archive-ready", status: "ready", episode_number: 37, project_name: "김현지 대표 인터뷰", reel_title: "고객을 먼저 만난 이유", source_url: "https://youtu.be/dQw4w9WgXcQ", source_thumbnail_url: "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg", video_url: "/media/archive-ready.mp4", completed_at: "2026-08-25T12:30:00+09:00" },
+        ...archiveReadyItems,
         { id: "failed-item", job_id: "failed-job", storyline_id: "failed", status: "failed", episode_number: 4, project_name: "실패 작업", reel_title: "완료되지 않음" },
         { id: "analysis-item", job_id: "analysis-job", storyline_id: "analysis", status: "ready", episode_number: 5, project_name: "분석 작업", reel_title: "재생 파일 없음" },
       ] }),
     });
+  });
+  await page.route("**/api/archive/**", async (route) => {
+    if (route.request().method() !== "DELETE") throw new Error(`Archive item endpoint expected DELETE, got ${route.request().method()}`);
+    deleteItemCalls += 1;
+    const storylineId = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
+    archiveReadyItems = archiveReadyItems.filter((item) => item.storyline_id !== storylineId);
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ deleted: 1 }) });
   });
   await page.route("**/api/jobs/archive-job/open", async (route) => {
     if (route.request().method() !== "POST") throw new Error(`Open endpoint expected POST, got ${route.request().method()}`);
@@ -899,12 +919,18 @@ async function assertCompletedArchiveWorkflow(browser) {
     throw new Error(`Opening the archive should focus its visible heading: ${JSON.stringify(archiveViewFocus)}`);
   }
   const archiveCount = await page.locator(".archive-item").count();
-  if (archiveCount !== 1 || !(await page.locator(".archive-item").innerText()).includes("에피소드 37")) {
+  if (archiveCount !== 2 || !(await page.locator(".archive-list").innerText()).includes("에피소드 37")) {
     throw new Error(`Archive must display only completed entries, got ${archiveCount}`);
   }
-  const archiveThumbnailSrc = await page.locator(".archive-thumbnail").getAttribute("src");
+  const archiveThumbnailSrc = await page.locator(".archive-thumbnail").first().getAttribute("src");
   if (!archiveThumbnailSrc?.includes("/vi/dQw4w9WgXcQ/hqdefault.jpg")) {
     throw new Error(`Archive did not normalize source_thumbnail_url: ${archiveThumbnailSrc}`);
+  }
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "삭제할 과거 릴스 삭제" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".archive-item").length === 1);
+  if (deleteItemCalls !== 1 || archiveReadyItems.length !== 1) {
+    throw new Error(`Archive item delete did not update server and list state: ${JSON.stringify({ deleteItemCalls, archiveReadyItems })}`);
   }
   await page.screenshot({ path: path.join(screenshotRoot, "archive-list-1280x900.png"), fullPage: true });
   await page.getByRole("button", { name: "고객을 먼저 만난 이유 열기" }).click();
@@ -919,7 +945,7 @@ async function assertCompletedArchiveWorkflow(browser) {
   if (openCalls !== 1 || await page.locator(".lane").count() !== 1 || await page.locator("video").count() !== 1) {
     throw new Error(`Opening an archived item should show one playable completed lane: ${JSON.stringify({ openCalls })}`);
   }
-  for (const forbidden of ["비우기", "다시 분석", "다시 시도", "생성 설정"]) {
+  for (const forbidden of ["비우기", "다시 분석", "리렌더링", "생성 설정"]) {
     if (await page.getByRole("button", { name: forbidden, exact: true }).count()) throw new Error(`Archive mode exposed forbidden action: ${forbidden}`);
   }
   if (await page.locator("input[role='switch']").count()) throw new Error("Archive mode exposed subtitle re-render control");
@@ -936,6 +962,15 @@ async function assertCompletedArchiveWorkflow(browser) {
   await page.waitForFunction(() => document.body.innerText.includes("Ep-37_김현지 대표 인터뷰/reel.mp4"));
   if (exportCalls !== 1) throw new Error("Archived reel did not call fixed-path re-export");
   await page.screenshot({ path: path.join(screenshotRoot, "archive-opened-1280x900.png"), fullPage: true });
+
+  await page.getByRole("button", { name: "과거 릴스" }).click();
+  await page.waitForSelector(".archive-item", { state: "visible" });
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "전체 삭제" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("완료된 릴스가 아직 없습니다."));
+  if (deleteAllCalls !== 1 || archiveReadyItems.length !== 0) {
+    throw new Error(`Archive delete-all did not clear server and list state: ${JSON.stringify({ deleteAllCalls, archiveReadyItems })}`);
+  }
   await page.close();
 }
 
@@ -1128,6 +1163,10 @@ try {
     const durationRadioCount = await page.locator("input[name='video-duration']").count();
     const storylineCountRadioCount = await page.locator("input[name='storyline-count']").count();
     const selectedProvider = await page.getByLabel("모델 프로바이더").inputValue();
+    const modelControl = page.getByLabel("세부 모델");
+    const codexModels = await modelControl.locator("option").evaluateAll((options) =>
+      options.map((option) => ({ value: option.value, label: option.textContent?.trim() })),
+    );
     const speedControl = page.getByLabel("재생 배속");
     if (!(await speedControl.evaluate((control) => document.activeElement === control))) {
       throw new Error("Opening generation settings should focus the first meaningful control");
@@ -1138,14 +1177,26 @@ try {
       step: await speedControl.getAttribute("step"),
       value: await speedControl.inputValue(),
     };
-    if (durationRadioCount !== 0 || storylineCountRadioCount !== 0 || selectedProvider !== "codex-cli" || JSON.stringify(speedAttributes) !== JSON.stringify({ min: "1", max: "1.5", step: "0.05", value: "1.2" })) {
-      throw new Error(`Unexpected settings controls: ${JSON.stringify({ durationRadioCount, storylineCountRadioCount, selectedProvider, speedAttributes })}`);
+    const expectedCodexModels = [
+      { value: "gpt-5.6-sol", label: "5.6 Sol" },
+      { value: "gpt-5.6-terra", label: "5.6 Terra" },
+      { value: "gpt-5.6-luna", label: "5.6 Luna" },
+      { value: "gpt-5.5", label: "5.5" },
+      { value: "gpt-5.4", label: "5.4" },
+      { value: "gpt-5.4-mini", label: "5.4 mini" },
+    ];
+    if (durationRadioCount !== 0 || storylineCountRadioCount !== 0 || selectedProvider !== "codex-cli" || JSON.stringify(codexModels) !== JSON.stringify(expectedCodexModels) || JSON.stringify(speedAttributes) !== JSON.stringify({ min: "1", max: "1.5", step: "0.05", value: "1.2" })) {
+      throw new Error(`Unexpected settings controls: ${JSON.stringify({ durationRadioCount, storylineCountRadioCount, selectedProvider, codexModels, speedAttributes })}`);
     }
     if (viewport.width === 1280) {
       await page.waitForTimeout(250);
       const settingsScreenshot = path.join(screenshotRoot, "settings-1280x800.png");
       await page.screenshot({ path: settingsScreenshot, fullPage: true });
       summary.push({ viewport: "settings-1280x800", screenshot: settingsScreenshot });
+    }
+    await modelControl.selectOption("gpt-5.4-mini");
+    if (await modelControl.inputValue() !== "gpt-5.4-mini") {
+      throw new Error(`Expected Codex model to change to gpt-5.4-mini, got ${await modelControl.inputValue()}`);
     }
     await speedControl.fill("1.25");
     await page.waitForTimeout(300);
@@ -1182,7 +1233,7 @@ try {
   await progressPage.waitForSelector(".generation-progress", { state: "visible" });
   const progressText = await progressPage.locator(".generation-progress").innerText();
   const progressValue = await progressPage.locator(".generation-progress-track").getAttribute("aria-valuenow");
-  if (!progressText.includes("생성 진행 · 4/4단계") || !progressText.includes("제목·자막 오버레이") || progressValue !== "64") {
+  if (!progressText.includes("생성 진행 · 5/5단계") || !progressText.includes("예상 완료") || !progressText.includes("렌더링 약 5분") || !progressText.includes("제목·자막 오버레이") || progressValue !== "64") {
     throw new Error(`Unexpected generation progress panel: ${JSON.stringify({ progressText, progressValue })}`);
   }
   await assertNoCriticalOverlap(progressPage);

@@ -10,6 +10,8 @@ MAX_RETRIES = 2
 MIN_CAPTION_CHARS = 350
 MAX_CAPTION_CHARS = 1_200
 CTA = "다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
+SOURCE_CREDIT_PREFIX = "원본 출처:"
+UNKNOWN_CHANNEL = "채널 정보 없음"
 
 
 def build_prompt(
@@ -86,6 +88,32 @@ def validate_caption(caption: str, episode_number: int) -> list[str]:
     if "```" in caption or re.search(r"(?m)^\s*#{1,6}\s", caption):
         errors.append("Markdown 또는 해시태그를 포함함")
     return errors
+
+
+def append_source_credit(
+    caption: str,
+    *,
+    channel_name: str,
+    source_url: str,
+) -> str:
+    """Append the trusted YouTube credit as the caption's final line."""
+    normalized_caption = _normalize(caption)
+    normalized_channel = " ".join(str(channel_name or "").split()) or UNKNOWN_CHANNEL
+    normalized_url = "".join(str(source_url or "").split())
+    if not normalized_url:
+        raise ValueError("원본 YouTube URL을 찾지 못했습니다.")
+
+    # Keep regeneration idempotent even if an LLM or custom caption provider
+    # unexpectedly included a source credit of its own.
+    normalized_caption = re.sub(
+        rf"\n+(?:{re.escape(SOURCE_CREDIT_PREFIX)}[^\n]*\n*)+$",
+        "",
+        normalized_caption,
+    ).rstrip()
+    return (
+        f"{normalized_caption}\n\n"
+        f"{SOURCE_CREDIT_PREFIX} {normalized_channel} {normalized_url}"
+    )
 
 
 def _normalize(raw: str) -> str:

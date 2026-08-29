@@ -11,7 +11,7 @@ import uuid
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,8 +39,18 @@ DEFAULT_STYLE = Path(__file__).parent.parent.parent / "styles" / "done.yaml"
 MAX_DESKTOP_STORYLINES = 10
 MAX_BASE_RENDERS = 2
 DESKTOP_PROVIDERS = frozenset({"codex-cli", "claude-cli", "gemini-cli", "openai", "kimi"})
+CODEX_CLI_MODELS = frozenset({
+    "",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+})
 EXPORT_TITLE_MAX_BYTES = 220
 DEFAULT_EPISODE_NUMBER = 1
+ARCHIVE_RETENTION_DAYS = 3
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _FILENAME_WHITESPACE = re.compile(r"\s+")
 
@@ -104,15 +114,19 @@ class JobService:
         *,
         content_types: list[str] | None = None,
         provider: str | None = None,
+        model: str | None = None,
         episode_number: int = DEFAULT_EPISODE_NUMBER,
     ) -> Job:
         source_url = youtube.validate_youtube_url(youtube_url)
         selected_types = self._validated_content_types(content_types)
+        selected_provider = self._validated_provider(provider)
+        selected_model = self._validated_model(selected_provider, model)
         with self._lock:
             if self._active_job_id is not None:
                 raise JobServiceError("another job is already active")
             job = self._create_job(
-                self._validated_provider(provider),
+                selected_provider,
+                selected_model,
                 source_url=source_url,
                 content_types=selected_types,
                 episode_number=episode_number,
@@ -136,15 +150,19 @@ class JobService:
         *,
         content_types: list[str] | None = None,
         provider: str | None = None,
+        model: str | None = None,
         episode_number: int = DEFAULT_EPISODE_NUMBER,
     ) -> Job:
         source_url = youtube.validate_youtube_url(youtube_url)
         selected_types = self._validated_content_types(content_types)
+        selected_provider = self._validated_provider(provider)
+        selected_model = self._validated_model(selected_provider, model)
         with self._lock:
             if self._active_job_id is not None:
                 raise JobServiceError("another job is already active")
             job = self._create_job(
-                self._validated_provider(provider),
+                selected_provider,
+                selected_model,
                 source_url=source_url,
                 content_types=selected_types,
                 episode_number=episode_number,
@@ -215,6 +233,7 @@ class JobService:
         Existing ready jobs are migrated lazily into durable archive storage. A
         migration failure never removes the internal playable artifact.
         """
+        self.purge_expired_archive()
         archived: list[Job] = []
         for candidate in self.store.list_recent(limit=1000):
             playable_ids = [
@@ -238,6 +257,141 @@ class JobService:
                     pass
             archived.append(self.store.load(candidate.id))
         return archived
+
+    def delete_archive_item(self, job_id: str, storyline_id: str) -> None:
+        """Delete one completed reel and its app-managed files."""
+        with self._archive_lock, self._lock:
+            if self._active_job_id == job_id:
+                raise JobServiceError("cannot delete a reel while its job is active")
+            job = self.store.load(job_id)
+            story = self._find_storyline(job, storyline_id)
+            if story.status is not Status.READY:
+                raise JobServiceError("only completed reels can be deleted")
+
+            self._delete_durable_storyline_export(job, story)
+            self._delete_internal_storyline_files(job, story)
+            job.storylines = [item for item in job.storylines if item.id != storyline_id]
+            if job.selected_storyline_id == storyline_id:
+                job.selected_storyline_id = None
+            if job.export.selected_storyline_id == storyline_id:
+                job.export.selected_storyline_id = None
+                job.export.selected_variant_id = None
+
+            if not any(item.status is Status.READY for item in job.storylines):
+                self.store.delete_job(job.id)
+            else:
+                self._save(job)
+            self._condition.notify_all()
+
+    def delete_all_archive(self) -> int:
+        """Delete every completed reel currently owned by the archive."""
+        targets = [
+            (job.id, story.id)
+            for job in self.store.list_recent(limit=1000)
+            for story in job.storylines
+            if story.status is Status.READY
+        ]
+        deleted = 0
+        for job_id, storyline_id in targets:
+            try:
+                self.delete_archive_item(job_id, storyline_id)
+            except FileNotFoundError:
+                continue
+            deleted += 1
+        return deleted
+
+    def purge_expired_archive(
+        self,
+        *,
+        retention_days: int = ARCHIVE_RETENTION_DAYS,
+        now: datetime | None = None,
+    ) -> int:
+        """Delete completed reels once their retention period has elapsed."""
+        if retention_days < 1:
+            raise ValueError("retention_days must be positive")
+        current = now or datetime.now(UTC)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        cutoff = current.astimezone(UTC) - timedelta(days=retention_days)
+        targets: list[tuple[str, str]] = []
+        for job in self.store.list_recent(limit=1000):
+            for story in job.storylines:
+                if story.status is not Status.READY:
+                    continue
+                completed_at = _stored_datetime(
+                    story.completed_at or job.updated_at or job.created_at
+                )
+                if completed_at is not None and completed_at <= cutoff:
+                    targets.append((job.id, story.id))
+
+        deleted = 0
+        for job_id, storyline_id in targets:
+            try:
+                self.delete_archive_item(job_id, storyline_id)
+            except FileNotFoundError:
+                continue
+            deleted += 1
+        return deleted
+
+    def _delete_internal_storyline_files(self, job: Job, story: Storyline) -> None:
+        job_root = self.store.job_dir(job.id).resolve()
+        storyline_dir = self.store.job_dir(job.id) / story.id
+        absolute_storyline_dir = Path(os.path.abspath(storyline_dir))
+        if absolute_storyline_dir.parent != Path(os.path.abspath(job_root)):
+            raise JobServiceError("storyline directory is outside the job")
+        if storyline_dir.is_symlink():
+            raise JobServiceError("storyline directory is a symlink")
+        if storyline_dir.is_dir():
+            shutil.rmtree(storyline_dir)
+        story_root = job_root / story.id
+        job.artifacts = {
+            artifact_id: artifact
+            for artifact_id, artifact in job.artifacts.items()
+            if not self._is_relative_to(Path(artifact.path).resolve(), story_root)
+        }
+
+    def _delete_durable_storyline_export(self, job: Job, story: Storyline) -> None:
+        if not story.archive_path:
+            return
+        destination = Path(story.archive_path).expanduser()
+        if not self._is_archive_namespace_path(destination):
+            return
+        manifest = destination.with_suffix(destination.suffix + ".manifest.json")
+        if (
+            not destination.exists()
+            and not destination.is_symlink()
+            and not manifest.exists()
+            and not manifest.is_symlink()
+        ):
+            return
+        self._assert_safe_export_output(destination)
+        self._assert_safe_export_output(manifest)
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not (
+            isinstance(payload, dict)
+            and payload.get("job_id") == job.id
+            and payload.get("storyline_id") == story.id
+        ):
+            return
+        if destination.is_file():
+            destination.unlink()
+        if manifest.is_file():
+            manifest.unlink()
+        self._remove_empty_archive_directory(destination.parent, job.id)
+
+    def _remove_empty_archive_directory(self, directory: Path, job_id: str) -> None:
+        if not directory.is_dir() or not self._directory_belongs_to_job(directory, job_id):
+            return
+        marker = directory / ".reels-editor-job.json"
+        remaining = [path for path in directory.iterdir() if path != marker]
+        if remaining:
+            return
+        if marker.is_file() and not marker.is_symlink():
+            marker.unlink()
+        directory.rmdir()
 
     def wait_for_update(self, after_seq: int, timeout: float | None = None) -> Job | None:
         with self._condition:
@@ -353,7 +507,14 @@ class JobService:
                 self._render_storyline_base(job_id, storyline_id)
         return self.store.load(job_id)
 
-    def generate_instagram_caption(self, job_id: str, storyline_id: str) -> Job:
+    def generate_instagram_caption(
+        self,
+        job_id: str,
+        storyline_id: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> Job:
         with self._lock:
             job = self.store.load(job_id)
             storyline = self._find_storyline(job, storyline_id)
@@ -366,12 +527,24 @@ class JobService:
                 raise JobServiceError("릴스 원문 구간 파일을 찾지 못했습니다.")
             title = storyline.title or "창업가 인사이트"
             episode_number = job.episode_number
+            source_url = job.source_url or ""
             candidate = self._candidate_for_storyline(job, storyline)
-            provider = job.provider or self.config.provider
+            if provider is not None and provider not in DESKTOP_PROVIDERS:
+                raise JobServiceError(f"지원하지 않는 모델 프로바이더입니다: {provider}")
+            job_provider = job.provider or self.config.provider
+            selected_provider = provider or job_provider
+            if model is not None:
+                selected_model = self._validated_model(selected_provider, model)
+            elif selected_provider == job_provider:
+                selected_model = job.model or ""
+            elif selected_provider == self.config.provider:
+                selected_model = self.config.model
+            else:
+                selected_model = ""
             cfg = AppConfig(
-                provider=provider,
-                model=job.model or "",
-                base_url=self.config.base_url if provider == self.config.provider else "",
+                provider=selected_provider,
+                model=selected_model,
+                base_url=self.config.base_url if selected_provider == self.config.provider else "",
                 n_storylines=job.n_storylines,
                 style=dict(self.config.style),
             )
@@ -396,6 +569,11 @@ class JobService:
                 segments=segments,
                 runner=managed_runner,
                 raw_dump=raw_dump,
+            )
+            caption = instagram_caption.append_source_credit(
+                caption,
+                channel_name=str(segments.get("source_channel") or ""),
+                source_url=source_url,
             )
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             raise JobServiceError(str(exc)) from exc
@@ -1176,6 +1354,17 @@ class JobService:
             raise JobServiceError(f"provider must be one of {sorted(DESKTOP_PROVIDERS)}")
         return selected
 
+    def _validated_model(self, provider: str, model: str | None) -> str:
+        if model is None:
+            selected = self.config.model if provider == self.config.provider else ""
+        else:
+            selected = model.strip()
+        if len(selected) > 100 or not re.fullmatch(r"[A-Za-z0-9._:/-]*", selected):
+            raise JobServiceError("올바르지 않은 모델 이름입니다.")
+        if provider == "codex-cli" and selected not in CODEX_CLI_MODELS:
+            raise JobServiceError(f"지원하지 않는 Codex CLI 모델입니다: {selected}")
+        return selected
+
     @staticmethod
     def _validated_episode_number(episode_number: int) -> int:
         if isinstance(episode_number, bool) or episode_number < 1:
@@ -1185,12 +1374,12 @@ class JobService:
     def _create_job(
         self,
         provider: str,
+        model: str,
         *,
         source_url: str,
         content_types: list[str],
         episode_number: int,
     ) -> Job:
-        model = self.config.model if provider == self.config.provider else ""
         job = self.store.create_job(
             source_url=source_url,
             source_thumbnail_url=youtube.thumbnail_url_for_video(
@@ -1466,10 +1655,23 @@ class JobService:
                 message=f"YouTube 영상을 이 Mac으로 다운로드하는 중입니다. · {round(fraction * 100)}%",
             )
 
+        def on_download_progress_detail(detail: youtube.DownloadProgress) -> None:
+            nonlocal last_reported
+            if detail.fraction < 1.0 and detail.fraction - last_reported < 0.01:
+                return
+            last_reported = detail.fraction
+            self._set_job_progress(
+                job_id,
+                phase="downloading",
+                progress=0.04 + 0.10 * detail.fraction,
+                message=_download_progress_message(detail),
+            )
+
         source = self.deps.download_youtube_source(
             source_url,
             self.store.job_dir(job_id) / "source",
             progress_cb=on_download_progress,
+            progress_detail_cb=on_download_progress_detail,
             cancelled=lambda: self._is_cancelled(job_id),
         )
         self._raise_if_cancelled(job_id)
@@ -2035,6 +2237,33 @@ def _fallback_doc_title(doc: dict[str, Any] | None) -> str:
     return ""
 
 
+def _download_progress_message(detail: youtube.DownloadProgress) -> str:
+    label = "오디오" if detail.component == "audio" else "영상"
+    if detail.finished:
+        if detail.component == "video":
+            return "YouTube 영상 다운로드 완료 · 오디오를 준비하는 중입니다."
+        if detail.component == "audio":
+            return "YouTube 오디오 다운로드 완료 · 영상과 합치는 중입니다."
+        return "YouTube 영상 다운로드 완료 · 파일을 처리하는 중입니다."
+    percent = round(detail.component_fraction * 100)
+    size_detail = ""
+    if detail.downloaded_bytes is not None and detail.total_bytes is not None:
+        size_detail = (
+            f" · {_human_file_size(detail.downloaded_bytes)}"
+            f" / {_human_file_size(detail.total_bytes)}"
+        )
+    return f"YouTube {label} 다운로드 중 · {percent}%{size_detail}"
+
+
+def _human_file_size(value: int) -> str:
+    size = float(max(0, value))
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
+            return f"{round(size)}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"
+
+
 def _assets_fingerprint(manifest_path: Path, assets: render.RenderAssets) -> str:
     digest = hashlib.sha256()
     try:
@@ -2056,6 +2285,18 @@ def _assets_fingerprint(manifest_path: Path, assets: render.RenderAssets) -> str
         digest.update(str(stat.st_size).encode("ascii"))
         digest.update(str(stat.st_mtime_ns).encode("ascii"))
     return digest.hexdigest()[:12]
+
+
+def _stored_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _export_filename(job: Job, story: Storyline) -> str:

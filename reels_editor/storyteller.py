@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -311,20 +312,38 @@ def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]
             ]
         )
         normalized_evidence = normalize_title(evidence)
+        source_key = normalize_title(source_text).casefold()
+        role_supported = (
+            normalized["role"] == "CEO"
+            and any(token in source_key for token in ("ceo", "chief executive officer", "대표", "대표이사"))
+        ) or (
+            normalized["role"] == "창업자"
+            and any(token in source_key for token in ("founder", "co-founder", "cofounder", "창업자", "공동 창업자"))
+        )
+        claim_supported = bool(
+            normalized["company"]
+            and normalized["company"].casefold() in source_key
+            and role_supported
+        )
         if (
             not normalized_evidence
             or normalized_evidence.casefold() not in normalize_title(source_text).casefold()
             or not _speaker_evidence_supports_identity(normalized, normalized_evidence)
         ):
-            # Identity metadata is optional decoration. Never discard an
-            # otherwise valid storyline because the model guessed a company
-            # or role; keep the grounded name and remove unsupported claims.
-            normalized = {
-                "name": normalized["name"],
-                "company": "",
-                "role": "",
-                "alternate_role": "",
-            }
+            if claim_supported:
+                # The model's quote may be an imperfect excerpt, but the
+                # company and role are independently present in the source.
+                normalized["evidence"] = f"{normalized['company']} {normalized['role']}"
+            else:
+                # Identity metadata is optional decoration. Never discard an
+                # otherwise valid storyline because the model guessed a
+                # company or role; keep the grounded name only.
+                normalized = {
+                    "name": normalized["name"],
+                    "company": "",
+                    "role": "",
+                    "alternate_role": "",
+                }
     doc["speaker"] = normalized
     return []
 
@@ -384,6 +403,15 @@ def generate_script(segments: dict, duration_s: int = 30,
         if not errs:
             actual_duration = edl_mod.estimate_duration_s(doc, segments, speed)
             maximum_s = max_duration_s if max_duration_s is not None else maximum_duration_s(duration_s)
+            if actual_duration > maximum_s:
+                trim_overlong_edl(
+                    doc,
+                    segments,
+                    speed=speed,
+                    min_duration_s=min_duration_s,
+                    maximum_s=maximum_s,
+                )
+                actual_duration = edl_mod.estimate_duration_s(doc, segments, speed)
             if min_duration_s > 0 and actual_duration < min_duration_s:
                 errs.append(
                     f"완성 길이 {actual_duration:.1f}초가 최소 {min_duration_s}초보다 짧음 — 완결된 인접 seg_ids를 추가할 것"
@@ -470,6 +498,46 @@ def validate_caption_completeness(doc: dict[str, Any], segments: dict[str, Any])
         "선택 자막이 완결되지 않음 — 마지막 문장과 큰따옴표가 닫힐 때까지 "
         "인접한 다음 seg_id를 포함할 것 (" + "; ".join(errors) + ")"
     ]
+
+
+def trim_overlong_edl(
+    doc: dict[str, Any],
+    segments: dict[str, Any],
+    *,
+    speed: float,
+    min_duration_s: int,
+    maximum_s: int,
+) -> bool:
+    """Remove trailing cuts/segments until the generated duration fits."""
+    while edl_mod.estimate_duration_s(doc, segments, speed) > maximum_s:
+        changed = False
+        cuts = doc.get("cuts", [])
+        for cut_index in range(len(cuts) - 1, -1, -1):
+            candidate = deepcopy(doc)
+            candidate_cuts = candidate["cuts"]
+            ids = candidate_cuts[cut_index].get("seg_ids", [])
+            if len(ids) > 1:
+                ids.pop()
+                if "text" in candidate_cuts[cut_index]:
+                    index = {item["id"]: item for item in segments["segments"]}
+                    candidate_cuts[cut_index]["text"] = " ".join(index[sid]["text"] for sid in ids)
+            else:
+                candidate_cuts.pop(cut_index)
+            if not candidate_cuts:
+                continue
+            if edl_mod.validate_edl(candidate, segments):
+                continue
+            if validate_caption_completeness(candidate, segments):
+                continue
+            duration = edl_mod.estimate_duration_s(candidate, segments, speed)
+            if min_duration_s > 0 and duration < min_duration_s:
+                continue
+            doc["cuts"] = candidate_cuts
+            changed = True
+            break
+        if not changed:
+            return False
+    return True
 
 
 @dataclass(frozen=True)

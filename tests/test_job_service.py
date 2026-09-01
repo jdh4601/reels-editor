@@ -201,6 +201,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         load_style=lambda _path: style,
         render_base_and_assets=render_base,
         render_overlay_variant=render_overlay,
+        verify_render_output=lambda *_args, **_kwargs: None,
         write_outputs=write_outputs,
         write_srt=lambda _groups, path: path.write_text("srt", encoding="utf-8") or path,
         download_youtube_source=download,
@@ -1084,6 +1085,51 @@ def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Pat
     ]
     assert all(b":False" in path.read_bytes() for path in destination.glob("*.mp4"))
     assert exported.export.output_path == str(destination)
+
+
+def test_default_batch_export_creates_isolated_selection_folder(tmp_path: Path) -> None:
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, Calls()),
+        archive_root=tmp_path / "archive",
+        export_root=tmp_path / "exports",
+    )
+    job = _run_ready(service)
+
+    exported = service.export_many(job.id, storyline_ids=["s2"])
+    destination = Path(exported.export.output_path or "")
+
+    assert [path.name for path in destination.glob("*.mp4")] == ["김현지 - 2.mp4"]
+    assert destination.is_relative_to(tmp_path / "exports")
+
+
+def test_buffer_publish_uses_only_selected_storylines(tmp_path: Path) -> None:
+    published: list[tuple[str, str]] = []
+    deps = _deps(tmp_path, Calls())
+
+    def fake_publish(path: Path, **kwargs):
+        published.append((path.name, kwargs["text"]))
+        return job_service_module.buffer_api.BufferPost(
+            id=f"post-{len(published)}", media_url=f"https://cdn/{path.name}", text=kwargs["text"]
+        )
+
+    deps = JobServiceDeps(**{**deps.__dict__, "publish_to_buffer": fake_publish})
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
+    job = _run_ready(service)
+    next(story for story in job.storylines if story.id == "s3").instagram_caption = "third caption"
+    service.store.save(job)
+
+    posts = service.publish_many_to_buffer(
+        job.id,
+        storyline_ids=["s3"],
+        api_key="key",
+        channel_id="channel",
+        cloud_name="cloud",
+        upload_preset="preset",
+    )
+
+    assert [post.id for post in posts] == ["post-1"]
+    assert published == [(Path(next(story for story in job.storylines if story.id == "s3").active_variant_path or "").name, "third caption")]
 
 
 def test_export_filename_uses_sanitized_founder_name_and_storyline_number(tmp_path: Path) -> None:

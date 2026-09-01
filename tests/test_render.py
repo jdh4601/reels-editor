@@ -197,64 +197,40 @@ def test_build_base_filter_content_crop_first(edl_doc: dict, segments: dict) -> 
     assert f"crop=608:1080:656:0,crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}" in f
 
 
-def test_video_crop_box_fits_source_to_nine_sixteen_canvas_without_extra_zoom() -> None:
+def test_video_crop_box_applies_fixed_130_percent_zoom_from_source_center() -> None:
     style = load_style(STYLE)
 
     crop = render.video_crop_box((1920, 1080), style)
-
-    # 전체 출력은 9:16이고, 중앙 영상창은 원본을 추가 확대 없이 채운다.
-    assert crop == render._center_crop_box(
-        1920, 1080, *style.video_area())
-
-
-def test_video_crop_box_moves_and_zooms_toward_left_speaker() -> None:
-    style = load_style(STYLE)
-
-    crop = render.video_crop_box((1920, 1080), style, focus_x=0.14, zoom=1.4)
-
-    assert crop[0] < render.video_crop_box((1920, 1080), style)[0]
-    assert crop[2] == 0
-
-
-def test_video_crop_box_moves_up_to_preserve_speaker_headroom() -> None:
-    style = load_style(STYLE)
-
-    centered = render.video_crop_box((1920, 1080), style, zoom=1.4)
-    speaker_safe = render.video_crop_box(
-        (1920, 1080), style, focus_y=0.28, zoom=1.4
+    frame_w, frame_h, _frame_x, _frame_y = render._center_crop_box(
+        1920, 1080, *style.video_area()
     )
 
-    assert speaker_safe[3] < centered[3]
-    assert speaker_safe[3] == 0
+    assert crop[:2] == (
+        render._even_crop_size(frame_w / 1.3, frame_w),
+        render._even_crop_size(frame_h / 1.3, frame_h),
+    )
+    assert crop[2] + crop[0] / 2 == pytest.approx(1920 / 2, abs=1)
+    assert crop[3] + crop[1] / 2 == pytest.approx(1080 / 2, abs=1)
 
 
-def test_build_base_filter_applies_focus_per_segment(edl_doc: dict, segments: dict) -> None:
-    from reels_editor.speaker_focus import FocusPoint
-
+def test_build_base_filter_applies_one_fixed_center_crop_after_concat(
+    edl_doc: dict, segments: dict
+) -> None:
     style = load_style(STYLE)
     ordered = edl.ordered_segments(edl_doc, segments)
-    points = [
-        FocusPoint(x=0.14, y=0.28, zoom=1.4),
-        FocusPoint(x=0.86, y=0.42, zoom=1.4),
-    ]
 
     filt = render.build_base_filter(
         ordered,
         1.2,
         style,
         in_size=(1920, 1080),
-        focus_points=points,
     )
 
-    left_crop = render.video_crop_box(
-        (1920, 1080), style, focus_x=0.14, focus_y=0.28, zoom=1.4
-    )
-    right_crop = render.video_crop_box(
-        (1920, 1080), style, focus_x=0.86, focus_y=0.42, zoom=1.4
-    )
-    assert f"crop={left_crop[0]}:{left_crop[1]}:{left_crop[2]}:{left_crop[3]}" in filt
-    assert f"crop={right_crop[0]}:{right_crop[1]}:{right_crop[2]}:{right_crop[3]}" in filt
-    assert "concat=n=2:v=1:a=1[v][a]" in filt
+    crop = render.video_crop_box((1920, 1080), style)
+    crop_filter = f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}"
+    assert filt.count(crop_filter) == 1
+    assert "concat=n=2:v=1:a=1[vc][a]" in filt
+    assert filt.index("concat=n=2:v=1:a=1[vc][a]") < filt.index(crop_filter)
 
 
 def test_parse_cropdetect_picks_most_common() -> None:

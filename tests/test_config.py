@@ -103,6 +103,19 @@ def test_save_config_roundtrip(tmp_path: Path) -> None:
     assert load_config(p) == cfg
 
 
+def test_buffer_settings_roundtrip(tmp_path: Path) -> None:
+    p = tmp_path / "config.yaml"
+    cfg = AppConfig(buffer={
+        "channel_id": "channel-1",
+        "cloudinary_cloud_name": "demo",
+        "cloudinary_upload_preset": "reels",
+    })
+
+    save_config(cfg, p)
+
+    assert load_config(p).buffer == cfg.buffer
+
+
 def test_merged_style_applies_known_keys(style_preset) -> None:
     merged = merged_style(style_preset, {"sub_size": 60, "title_highlight": "#123456"})
     assert merged.sub_size == 60

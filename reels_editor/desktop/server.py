@@ -23,7 +23,11 @@ from reels_editor.config import (
     AppConfig,
     DEFAULT_PLAYBACK_SPEED,
     load_config,
+    mask_key,
+    resolve_api_key,
     save_config,
+    save_credential,
+    user_config_path,
 )
 from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
 from reels_editor.youtube import YouTubeSourceError, thumbnail_url_for_video, video_id_from_url
@@ -62,6 +66,17 @@ class ExportRequest(BaseModel):
 class BatchExportRequest(BaseModel):
     storyline_ids: list[str] = Field(min_length=1, max_length=10)
     subtitles_on: bool | None = None
+
+
+class BufferPublishRequest(BaseModel):
+    storyline_ids: list[str] = Field(min_length=1, max_length=10)
+
+
+class BufferSettingsRequest(BaseModel):
+    api_key: str = Field(default="", max_length=1000)
+    channel_id: str = Field(default="", max_length=200)
+    cloudinary_cloud_name: str = Field(default="", max_length=200)
+    cloudinary_upload_preset: str = Field(default="", max_length=200)
 
 
 class GenerateCandidatesRequest(BaseModel):
@@ -125,6 +140,7 @@ def create_app(
     app = FastAPI(title="Reels Editor Desktop", lifespan=lifespan)
     token = session_token or secrets.token_urlsafe(24)
     app.state.session_token = token
+    effective_config_path = config_path or user_config_path()
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -150,6 +166,22 @@ def create_app(
         speed = float(config.style.get("speed", DEFAULT_PLAYBACK_SPEED))
         return {"speed": round(speed, 2)}
 
+    credential_file = effective_config_path.parent / "credentials.yaml"
+
+    def buffer_settings() -> dict[str, Any]:
+        current = getattr(service, "config", AppConfig(provider="codex-cli"))
+        values = current.buffer
+        api_key = resolve_api_key("buffer", credential_file)
+        return {
+            "configured": bool(api_key and all(values.get(key) for key in (
+                "channel_id", "cloudinary_cloud_name", "cloudinary_upload_preset"
+            ))),
+            "api_key_masked": mask_key(api_key) if api_key else "",
+            "channel_id": values.get("channel_id", ""),
+            "cloudinary_cloud_name": values.get("cloudinary_cloud_name", ""),
+            "cloudinary_upload_preset": values.get("cloudinary_upload_preset", ""),
+        }
+
     @app.get("/api/settings/playback-speed")
     def get_playback_speed_settings(_auth: None = Depends(require_token)) -> dict[str, float]:
         return playback_speed_settings()
@@ -161,11 +193,33 @@ def create_app(
     ) -> dict[str, float]:
         # UI 눈금과 동일하게 0.05배 단위로 정규화해 직접 API 호출도 일관되게 처리한다.
         speed = round(request.speed * 20) / 20
-        persisted = load_config(config_path)
-        save_config(replace(persisted, style={**persisted.style, "speed": speed}), config_path)
+        persisted = load_config(effective_config_path)
+        save_config(replace(persisted, style={**persisted.style, "speed": speed}), effective_config_path)
         current = getattr(service, "config", AppConfig(provider="codex-cli"))
         service.config = replace(current, style={**current.style, "speed": speed})
         return playback_speed_settings()
+
+    @app.get("/api/settings/buffer")
+    def get_buffer_settings(_auth: None = Depends(require_token)) -> dict[str, Any]:
+        return buffer_settings()
+
+    @app.put("/api/settings/buffer")
+    def put_buffer_settings(
+        request: BufferSettingsRequest,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        persisted = load_config(effective_config_path)
+        values = {
+            "channel_id": request.channel_id.strip(),
+            "cloudinary_cloud_name": request.cloudinary_cloud_name.strip(),
+            "cloudinary_upload_preset": request.cloudinary_upload_preset.strip(),
+        }
+        save_config(replace(persisted, buffer=values), effective_config_path)
+        current = getattr(service, "config", AppConfig(provider="codex-cli"))
+        service.config = replace(current, buffer=values)
+        if request.api_key.strip():
+            save_credential("buffer", request.api_key.strip(), credential_file)
+        return buffer_settings()
 
     @app.post("/api/dialogs/save-file")
     def save_file(request: SaveDialogRequest, _auth: None = Depends(require_token)) -> dict[str, str | None]:
@@ -342,6 +396,29 @@ def create_app(
         if job.export.output_path:
             dialogs.show_in_file_manager(Path(job.export.output_path).expanduser())
         return _snapshot_from_job(job)
+
+    @app.post("/api/jobs/{job_id}/buffer")
+    def publish_to_buffer(
+        job_id: str,
+        request: BufferPublishRequest,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        settings = buffer_settings()
+        api_key = resolve_api_key("buffer", credential_file)
+        if not settings["configured"] or not api_key:
+            raise HTTPException(status_code=400, detail="Buffer와 Cloudinary 설정을 먼저 완료하세요.")
+        try:
+            posts = service.publish_many_to_buffer(
+                job_id,
+                storyline_ids=request.storyline_ids,
+                api_key=api_key,
+                channel_id=settings["channel_id"],
+                cloud_name=settings["cloudinary_cloud_name"],
+                upload_preset=settings["cloudinary_upload_preset"],
+            )
+        except JobServiceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"posts": [post.to_dict() for post in posts]}
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: str, _auth: None = Depends(require_token)) -> dict[str, Any]:

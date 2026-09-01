@@ -8,6 +8,7 @@ import pytest
 
 from reels_editor.desktop.dialogs import FakeDialogProvider
 from reels_editor.desktop.server import create_app
+from reels_editor.buffer_api import BufferPost
 from reels_editor.jobs import Job, JobStore, Status, Storyline, Variant
 from reels_editor.config import AppConfig, load_config
 
@@ -22,6 +23,7 @@ class FakeService:
         self.selection_args: dict | None = None
         self.export_args: dict | None = None
         self.batch_export_args: dict | None = None
+        self.buffer_publish_args: dict | None = None
         self.clear_current_called = False
         self.title_args: dict | None = None
         self.config = AppConfig(provider="codex-cli")
@@ -177,6 +179,10 @@ class FakeService:
         self.job.export.output_path = str(destination_dir)
         self.job.export.status = Status.READY
         return self.job
+
+    def publish_many_to_buffer(self, job_id: str, **kwargs) -> list[BufferPost]:
+        self.buffer_publish_args = {"job_id": job_id, **kwargs}
+        return [BufferPost(id="buffer-post-1", media_url="https://cdn.example/reel.mp4", text="caption")]
 
     def cancel(self, job_id: str) -> Job:
         assert self.job is not None
@@ -745,6 +751,50 @@ def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Pa
         "subtitles_on": False,
     }
     assert dialogs.opened_directories == [tmp_path / "archive"]
+
+
+def test_buffer_settings_and_publish_keep_api_key_server_side(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("BUFFER_API_KEY", raising=False)
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    service = FakeService(store, job)
+    config_path = tmp_path / "config.yaml"
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+        config_path=config_path,
+    )
+    client = TestClient(app)
+
+    saved = client.put(
+        "/api/settings/buffer?token=secret",
+        json={
+            "api_key": "buf-secret-1234",
+            "channel_id": "instagram-channel",
+            "cloudinary_cloud_name": "demo",
+            "cloudinary_upload_preset": "unsigned-reels",
+        },
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["configured"] is True
+    assert "buf-secret-1234" not in str(saved.json())
+    published = client.post(
+        f"/api/jobs/{job.id}/buffer?token=secret",
+        json={"storyline_ids": ["s2"]},
+    )
+    assert published.status_code == 200
+    assert published.json()["posts"][0]["id"] == "buffer-post-1"
+    assert service.buffer_publish_args == {
+        "job_id": job.id,
+        "storyline_ids": ["s2"],
+        "api_key": "buf-secret-1234",
+        "channel_id": "instagram-channel",
+        "cloud_name": "demo",
+        "upload_preset": "unsigned-reels",
+    }
 
 
 def test_playback_speed_settings_persist_and_update_service(tmp_path: Path) -> None:

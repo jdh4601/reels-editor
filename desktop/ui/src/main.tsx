@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Check,
   CircleAlert,
+  CloudUpload,
   Clock3,
   Copy,
   Download,
@@ -36,6 +37,19 @@ type TitleDraft = { upper: string; lower: string };
 type AppView = "workspace" | "archive";
 type PlaybackSpeedSettings = {
   speed: number;
+};
+type BufferSettings = {
+  configured: boolean;
+  api_key_masked: string;
+  channel_id: string;
+  cloudinary_cloud_name: string;
+  cloudinary_upload_preset: string;
+};
+type BufferSettingsDraft = {
+  apiKey: string;
+  channelId: string;
+  cloudName: string;
+  uploadPreset: string;
 };
 
 type MediaItem = {
@@ -293,6 +307,7 @@ const GENERATION_STAGES = [
   { label: "후보·제목 생성", duration: "약 1~2분", description: "겹치지 않는 후보와 제목을 만듭니다." },
   { label: "릴스 대본 생성", duration: "약 1분", description: "선택한 후보를 20~40초 대본으로 구성합니다." },
   { label: "영상 렌더링", duration: "약 5분", description: "제목·자막·오디오를 합성해 영상을 완성합니다." },
+  { label: "최종 검수", duration: "잠시", description: "출력 해상도·길이·오디오를 확인합니다." },
 ] as const;
 const CONTENT_TYPE_OPTIONS: Array<{ value: ContentType; label: string; example: string }> = [
   { value: "story", label: "스토리형", example: "회사가 망하기 직전에 바꾼 한 가지" },
@@ -499,6 +514,7 @@ function playbackSpeedLabel(value: number): string {
 }
 
 function generationStageIndex(phase: string | null | undefined, status: JobStatus): number {
+  if (phase === "review") return 5;
   if (phase === "transcript") return 1;
   if (phase === "analyzing") return 2;
   if (status === "generating" || phase === "generating") return 3;
@@ -829,6 +845,12 @@ function App() {
   const [selectedModel, setSelectedModel] = useState(defaultModel("codex-cli"));
   const [playbackSpeed, setPlaybackSpeed] = useState(DEFAULT_PLAYBACK_SPEED);
   const [speedSettingsSaveState, setSpeedSettingsSaveState] = useState<SettingsSaveState>("idle");
+  const [bufferSettings, setBufferSettings] = useState<BufferSettings | null>(null);
+  const [bufferSettingsDraft, setBufferSettingsDraft] = useState<BufferSettingsDraft>({
+    apiKey: "", channelId: "", cloudName: "", uploadPreset: "",
+  });
+  const [bufferSettingsSaveState, setBufferSettingsSaveState] = useState<SettingsSaveState>("idle");
+  const [bufferUploadState, setBufferUploadState] = useState<"idle" | "uploading" | "done" | "failed">("idle");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
   const [episodeInput, setEpisodeInput] = useState(String(DEFAULT_EPISODE_NUMBER));
@@ -942,6 +964,28 @@ function App() {
       })
       .catch(() => {
         if (!cancelled) setSpeedSettingsSaveState("error");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (isDemoMode()) return;
+    let cancelled = false;
+    void apiFetch("/api/settings/buffer")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Buffer 설정을 불러오지 못했습니다.");
+        const settings = (await response.json()) as BufferSettings;
+        if (cancelled) return;
+        setBufferSettings(settings);
+        setBufferSettingsDraft({
+          apiKey: "",
+          channelId: settings.channel_id,
+          cloudName: settings.cloudinary_cloud_name,
+          uploadPreset: settings.cloudinary_upload_preset,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setBufferSettingsSaveState("error");
       });
     return () => { cancelled = true; };
   }, []);
@@ -1452,7 +1496,7 @@ function App() {
     setExportPath(null);
     setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개 내보내기를 준비합니다.`);
     try {
-      let completedPath = "~/Movies/Reels Editor/";
+      let completedPath = "~/Movies/Reels Editor Exports/";
       if (!isDemoMode()) {
         const response = await apiMutation(`/api/jobs/${snapshot.jobId}/export-batch`, {
           method: "POST",
@@ -1466,7 +1510,7 @@ function App() {
         completedPath = exportedPathFromPayload(payload) ?? completedPath;
       } else {
         await new Promise((resolve) => window.setTimeout(resolve, 450));
-        completedPath = `~/Movies/Reels Editor/Ep-${snapshot.episodeNumber}_${snapshot.projectName}/`;
+        completedPath = `~/Movies/Reels Editor Exports/Ep-${snapshot.episodeNumber}_${snapshot.projectName}/`;
       }
       setExportState("done");
       setExportPath(completedPath);
@@ -1475,6 +1519,53 @@ function App() {
       setExportState("failed");
       const detail = error instanceof Error ? `: ${error.message}` : "";
       setLiveMessage(`내보내기에 실패했습니다${detail}`);
+    }
+  }
+
+  async function publishSelectedToBuffer() {
+    if (!readySelected || !snapshot || !bufferSettings?.configured) {
+      setLiveMessage("생성 설정에서 Buffer와 Cloudinary 연결 정보를 먼저 저장하세요.");
+      return;
+    }
+    setBufferUploadState("uploading");
+    setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개를 Buffer 큐에 업로드합니다.`);
+    try {
+      const response = await apiMutation(`/api/jobs/${snapshot.jobId}/buffer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storyline_ids: selectedExportStorylines.map((storyline) => storyline.serverId) }),
+      });
+      const payload = (await response.json()) as { posts?: Array<{ id: string }> };
+      const count = payload.posts?.length ?? 0;
+      setBufferUploadState("done");
+      setLiveMessage(`선택한 영상 ${count}개를 Buffer 큐에 추가했습니다.`);
+    } catch (error) {
+      setBufferUploadState("failed");
+      setLiveMessage(error instanceof Error ? error.message : "Buffer 업로드에 실패했습니다.");
+    }
+  }
+
+  async function saveBufferSettings() {
+    setBufferSettingsSaveState("saving");
+    try {
+      const response = await apiMutation("/api/settings/buffer", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: bufferSettingsDraft.apiKey,
+          channel_id: bufferSettingsDraft.channelId,
+          cloudinary_cloud_name: bufferSettingsDraft.cloudName,
+          cloudinary_upload_preset: bufferSettingsDraft.uploadPreset,
+        }),
+      });
+      const settings = (await response.json()) as BufferSettings;
+      setBufferSettings(settings);
+      setBufferSettingsDraft((current) => ({ ...current, apiKey: "" }));
+      setBufferSettingsSaveState("saved");
+      setLiveMessage(settings.configured ? "Buffer 업로드 설정을 저장했습니다." : "Buffer 업로드 설정에 빈 항목이 있습니다.");
+    } catch (error) {
+      setBufferSettingsSaveState("error");
+      setLiveMessage(error instanceof Error ? error.message : "Buffer 설정 저장에 실패했습니다.");
     }
   }
 
@@ -1670,6 +1761,48 @@ function App() {
               <option key={option.value || "default"} value={option.value}>{option.label}</option>
             ))}
           </select>
+        </div>
+
+        <div className="settings-field buffer-settings-field">
+          <div className="settings-field-heading">
+            <h3>Buffer 업로드</h3>
+            <strong>{bufferSettings?.configured ? "연결됨" : "미설정"}</strong>
+          </div>
+          <label className="settings-select-label" htmlFor="buffer-api-key">
+            API 키 {bufferSettings?.api_key_masked ? `(${bufferSettings.api_key_masked})` : ""}
+          </label>
+          <input
+            id="buffer-api-key"
+            type="password"
+            autoComplete="off"
+            placeholder={bufferSettings?.api_key_masked ? "변경할 때만 입력" : "Buffer API 키"}
+            value={bufferSettingsDraft.apiKey}
+            onChange={(event) => setBufferSettingsDraft((current) => ({ ...current, apiKey: event.target.value }))}
+          />
+          <label className="settings-select-label" htmlFor="buffer-channel-id">Instagram 채널 ID</label>
+          <input
+            id="buffer-channel-id"
+            value={bufferSettingsDraft.channelId}
+            onChange={(event) => setBufferSettingsDraft((current) => ({ ...current, channelId: event.target.value }))}
+          />
+          <label className="settings-select-label" htmlFor="cloudinary-cloud-name">Cloudinary cloud name</label>
+          <input
+            id="cloudinary-cloud-name"
+            value={bufferSettingsDraft.cloudName}
+            onChange={(event) => setBufferSettingsDraft((current) => ({ ...current, cloudName: event.target.value }))}
+          />
+          <label className="settings-select-label" htmlFor="cloudinary-upload-preset">Unsigned upload preset</label>
+          <input
+            id="cloudinary-upload-preset"
+            value={bufferSettingsDraft.uploadPreset}
+            onChange={(event) => setBufferSettingsDraft((current) => ({ ...current, uploadPreset: event.target.value }))}
+          />
+          <button type="button" onClick={() => { void saveBufferSettings(); }} disabled={bufferSettingsSaveState === "saving"}>
+            {bufferSettingsSaveState === "saving" ? "저장 중" : "Buffer 설정 저장"}
+          </button>
+          <p className={bufferSettingsSaveState === "error" ? "settings-note error" : "settings-note"}>
+            Buffer는 로컬 파일을 직접 받지 않아 Cloudinary의 공개 URL을 거쳐 큐에 추가합니다.
+          </p>
         </div>
       </div>
     );
@@ -2295,7 +2428,7 @@ function App() {
             {exportState === "done" && exportPath
               ? `저장 위치: ${exportPath}`
               : selectedExportStorylines.length > 0
-                ? `${selectedExportStorylines.map((storyline) => storyline.label).join(" · ")} · ~/Movies/Reels Editor/에 저장됩니다.`
+                ? `${selectedExportStorylines.map((storyline) => storyline.label).join(" · ")} · ~/Movies/Reels Editor Exports/에 저장됩니다.`
                 : "준비된 대표 영상을 복수로 선택할 수 있습니다."}
           </span>
         </div>
@@ -2306,6 +2439,18 @@ function App() {
             <span>자막 {subtitlesEnabled ? "ON" : "OFF"}</span>
           </label>
         ) : <span className="fixed-export-note">고정 보관 폴더</span>}
+        {!archiveMode ? (
+          <button
+            type="button"
+            className="buffer-upload-button"
+            disabled={!readySelected || bufferUploadState === "uploading" || !bufferSettings?.configured}
+            onClick={() => { void publishSelectedToBuffer(); }}
+            title={bufferSettings?.configured ? "선택 영상을 Buffer의 다음 예약 슬롯에 추가" : "생성 설정에서 Buffer 연결을 완료하세요"}
+          >
+            {bufferUploadState === "uploading" ? <Loader2 size={17} className="spin" /> : <CloudUpload size={17} />}
+            {bufferUploadState === "done" ? "Buffer 추가 완료" : "Buffer 큐에 업로드"}
+          </button>
+        ) : null}
         <button type="button" className="export-button" disabled={!readySelected || exportState === "exporting"} onClick={exportSelected}>
           {exportState === "exporting" ? <Loader2 size={17} className="spin" /> : <Download size={17} />}
           {exportState === "done" ? "저장 완료" : archiveMode ? "보관 영상 다시 내보내기" : `선택 영상 ${selectedExportStorylines.length}개 내보내기`}

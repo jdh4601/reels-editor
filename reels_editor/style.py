@@ -45,7 +45,7 @@ class StylePreset:
     watermark_y: int | None = None
     title_y: int | None = None
     video_aspect: tuple[int, int] = (9, 16)
-    video_zoom: float = 1.0
+    video_zoom: float = 1.3
     title_speaker_size: int = 30
     title_speaker_color: str = "#FFFFFF"
     title_speaker_gap: int = 18
@@ -116,7 +116,7 @@ def load_style(path: Path) -> StylePreset:
         watermark_y=int(w["y"]) if "y" in w else None,
         title_y=int(t["y"]) if "y" in t else None,
         video_aspect=tuple(video.get("aspect", (9, 16))),
-        video_zoom=float(video.get("zoom", 1.0)),
+        video_zoom=float(video.get("zoom", 1.3)),
         title_speaker_size=int(t.get("speaker_size", 30)),
         title_speaker_color=str(t.get("speaker_color", "#FFFFFF")),
         title_speaker_gap=int(t.get("speaker_gap", 18)),

@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageDraw, ImageFont
 
-from reels_editor import captions, processes, speaker_focus
+from reels_editor import captions, processes
 from reels_editor.storyteller import format_speaker_label
 from reels_editor.style import StylePreset
 from reels_editor.timebase import US
@@ -207,25 +207,17 @@ def _center_crop_box(in_w: int, in_h: int,
 def video_crop_box(
     in_size: tuple[int, int],
     style: StylePreset,
-    *,
-    focus_x: float = 0.5,
-    focus_y: float = 0.5,
-    zoom: float | None = None,
 ) -> tuple[int, int, int, int]:
-    """영상창에 맞춘 크롭 영역. 화자의 얼굴을 안전 영역으로 이동시킨다."""
+    """영상 중앙을 기준으로 고정 확대한 크롭 영역을 반환한다."""
     in_w, in_h = in_size
     video_w, video_h = style.video_area()
-    frame_w, frame_h, frame_x, frame_y = _center_crop_box(
+    frame_w, frame_h, _frame_x, _frame_y = _center_crop_box(
         in_w, in_h, video_w, video_h)
 
-    effective_zoom = max(style.video_zoom, zoom or 1.0, 1.0)
-    crop_w = _even_crop_size(frame_w / effective_zoom, frame_w)
-    crop_h = _even_crop_size(frame_h / effective_zoom, frame_h)
-    desired_x = round(max(0.0, min(1.0, focus_x)) * in_w - crop_w / 2)
-    crop_x = min(in_w - crop_w, max(0, desired_x))
-    desired_y = round(max(0.0, min(1.0, focus_y)) * in_h - crop_h / 2)
-    crop_y = min(in_h - crop_h, max(0, desired_y))
-    return crop_w, crop_h, crop_x, crop_y
+    zoom = max(style.video_zoom, 1.0)
+    crop_w = _even_crop_size(frame_w / zoom, frame_w)
+    crop_h = _even_crop_size(frame_h / zoom, frame_h)
+    return crop_w, crop_h, (in_w - crop_w) // 2, (in_h - crop_h) // 2
 
 
 def parse_cropdetect(lines: list[str]) -> tuple[int, int, int, int] | None:
@@ -249,8 +241,7 @@ def detect_content_crop(video_path: Path, at_s: float,
 
 def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
                       in_size: tuple[int, int],
-                      content_crop: tuple[int, int, int, int] | None = None,
-                      focus_points: list[speaker_focus.FocusPoint] | None = None) -> str:
+                      content_crop: tuple[int, int, int, int] | None = None) -> str:
     """트림+배속+concat → (콘텐츠 크롭) → 영상영역 크롭·스케일 → 캔버스 pad."""
     vw, vh = style.video_area()
     cw, ch = style.canvas
@@ -262,33 +253,15 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
         c_w, c_h, c_x, c_y = content_crop
         pre = f"crop={c_w}:{c_h}:{c_x}:{c_y},"
         src_w, src_h = c_w, c_h
-    dynamic_focus = focus_points if focus_points and len(focus_points) == n else None
     for i, s in enumerate(ordered):
         a = s["source_start_us"] / US
         b = s["source_end_us"] / US
-        if dynamic_focus is None:
-            # YouTube sources can carry different sample/pixel aspect ratios
-            # per segment. Normalize before concat; equal width/height alone
-            # is not enough for FFmpeg's concat filter.
-            parts.append(f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},setsar=1[v{i}];")
-        else:
-            point = dynamic_focus[i]
-            crop_w, crop_h, crop_x, crop_y = video_crop_box(
-                (src_w, src_h), style,
-                focus_x=point.x,
-                focus_y=point.y,
-                zoom=point.zoom,
-            )
-            parts.append(
-                f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},"
-                f"{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
-                f"pad={cw}:{ch}:0:{style.top_bar}:black,setsar=1[v{i}];"
-            )
+        # YouTube sources can carry different sample/pixel aspect ratios per
+        # segment. Normalize before concat; equal width/height alone is not
+        # enough for FFmpeg's concat filter.
+        parts.append(f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},setsar=1[v{i}];")
         parts.append(f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={speed}[a{i}];")
-    concat_output = "[v]" if dynamic_focus is not None else "[vc]"
-    concat = "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1{concat_output}[a];"
-    if dynamic_focus is not None:
-        return "".join(parts) + concat
+    concat = "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a];"
     crop_w, crop_h, crop_x, crop_y = video_crop_box((src_w, src_h), style)
     vid = (f"[vc]{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
            f"pad={cw}:{ch}:0:{style.top_bar}:black[v]")
@@ -613,6 +586,38 @@ def _probe_size(video_path: Path) -> tuple[int, int]:
     return int(w), int(h)
 
 
+def verify_render_output(
+    video_path: Path,
+    expected_size: tuple[int, int],
+    expected_duration_s: float,
+) -> None:
+    """Final gate for generated MP4s before exposing them as ready."""
+    if not video_path.is_file() or video_path.stat().st_size == 0:
+        raise RuntimeError("최종 영상 검수 실패: 출력 MP4가 비어 있음")
+    width, height = _probe_size(video_path)
+    if (width, height) != expected_size:
+        raise RuntimeError(
+            f"최종 영상 검수 실패: 해상도 {width}x{height}, 기대값 {expected_size[0]}x{expected_size[1]}"
+        )
+    duration = float(processes.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(video_path)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip())
+    if abs(duration - expected_duration_s) > 1.0:
+        raise RuntimeError(
+            f"최종 영상 검수 실패: 길이 {duration:.1f}초, 기대값 {expected_duration_s:.1f}초"
+        )
+    audio = processes.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_type", "-of", "default=nw=1:nk=1",
+         str(video_path)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if audio != "audio":
+        raise RuntimeError("최종 영상 검수 실패: 오디오 트랙이 없음")
+
+
 def _ffmpeg(args: list[str]) -> None:
     r = processes.run(["ffmpeg", "-y", "-loglevel", "error", *args],
                       capture_output=True, text=True)
@@ -806,24 +811,15 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
     from reels_editor import edl as edl_mod
     ordered = edl_mod.ordered_segments(edl_doc, segments)
     work_dir.mkdir(parents=True, exist_ok=True)
-    # 레터박스는 첫 구간에서 제거하고, 화자 위치는 EDL 컷마다 별도로 계산한다.
+    # 레터박스를 제거한 후 전체 컷에 같은 중앙 130% 확대를 적용한다.
     source_size = _probe_size(video_path)
     content = detect_content_crop(video_path, ordered[0]["source_start_us"] / US)
-    focus_points = speaker_focus.analyze_speaker_focus(
-        video_path,
-        ordered,
-        [len(cut.get("seg_ids", [])) for cut in edl_doc.get("cuts", [])],
-        source_size,
-        content,
-        work_dir,
-    )
     filt = build_base_filter(
         ordered,
         speed,
         style,
         source_size,
         content_crop=content,
-        focus_points=focus_points,
     )
     fpath = work_dir / "base_filter.txt"
     fpath.write_text(filt)

@@ -43,7 +43,7 @@ def test_load_done_preset() -> None:
     assert s.episode_y == -1000
     assert s.title_y == 1120
     assert s.video_aspect == (9, 16)
-    assert s.video_zoom == 1.0
+    assert s.video_zoom == 1.3
     assert s.speed == 1.2
     assert s.title_font.is_file()  # Pretendard 실제 설치 확인
 

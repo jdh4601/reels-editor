@@ -590,33 +590,41 @@ def test_generate_script_duration_validation_uses_selected_playback_speed(segmen
         )
 
 
-def test_generate_script_retries_when_clip_exceeds_relaxed_maximum(segments: dict, edl_doc: dict) -> None:
+def test_generate_script_trims_unnecessary_trailing_cut_over_maximum(
+        segments: dict, edl_doc: dict) -> None:
     calls: list[str] = []
     long_segments = {
         **segments,
         "segments": [
-            {
-                **segments["segments"][0],
-                "source_start_us": 0,
-                "source_end_us": 78_120_000,
-            }
+            {**segments["segments"][0], "source_start_us": 0, "source_end_us": 10_000_000},
+            {**segments["segments"][1], "source_start_us": 10_000_000, "source_end_us": 35_000_000},
+            {**segments["segments"][2], "source_start_us": 35_000_000, "source_end_us": 58_200_000},
         ],
     }
     oversized = {
         **edl_doc,
-        "cuts": [{"beat": "훅", "seg_ids": [long_segments["segments"][0]["id"]]}],
+        "cuts": [
+            {"beat": "훅", "seg_ids": ["t0"]},
+            {"beat": "전개", "seg_ids": ["t1"]},
+            {"beat": "라스트 답", "seg_ids": ["t2"]},
+        ],
     }
 
     def runner(prompt: str) -> str:
         calls.append(prompt)
         return json.dumps(oversized, ensure_ascii=False)
 
-    with pytest.raises(RuntimeError):
-        storyteller.generate_script(long_segments, duration_s=60, runner=runner)
+    result = storyteller.generate_script(
+        long_segments,
+        duration_s=35,
+        runner=runner,
+        speed=1.0,
+        min_duration_s=20,
+        max_duration_s=40,
+    )
 
-    assert len(calls) == 3
-    assert "완성 길이 65.1초" in calls[1]
-    assert "최대 65초를 초과" in calls[1]
+    assert len(calls) == 1
+    assert [cut["seg_ids"] for cut in result["cuts"]] == [["t0"], ["t1"]]
 
 
 def test_generate_many_runs_in_parallel(segments: dict) -> None:

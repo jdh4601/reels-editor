@@ -25,6 +25,7 @@ dependencies = [
   "PyYAML>=6",
   "rich>=13",
   "fastapi>=0.116",
+  "httpx>=0.28",
   "uvicorn>=0.35",
   "websockets>=13",
   "pywebview>=6.0",

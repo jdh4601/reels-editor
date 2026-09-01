@@ -5,8 +5,8 @@ top_bar: 560        # 목표 캡처 기준 상단 블랙바 높이 px
 bottom_bar: 570     # 영상 영역 1080x790을 제외한 하단 블랙바 높이 px
 font_dir: ~/Library/Fonts
 video:
-  aspect: [9, 16]       # 원본을 먼저 세로 9:16으로 중앙 크롭
-  zoom: 1.0             # 9:16 변환 후 추가 확대 없음
+  aspect: [9, 16]
+  zoom: 1.3             # 영상 중앙을 기준으로 고정 130% 확대
 title:
   font: Pretendard-Bold.otf
   size: 105             # 한 줄 제목의 최대 크기. 폭에 맞춰 자동 축소

@@ -1233,7 +1233,7 @@ try {
   await progressPage.waitForSelector(".generation-progress", { state: "visible" });
   const progressText = await progressPage.locator(".generation-progress").innerText();
   const progressValue = await progressPage.locator(".generation-progress-track").getAttribute("aria-valuenow");
-  if (!progressText.includes("생성 진행 · 5/5단계") || !progressText.includes("예상 완료") || !progressText.includes("렌더링 약 5분") || !progressText.includes("제목·자막 오버레이") || progressValue !== "64") {
+  if (!progressText.includes("생성 진행 · 5/6단계") || !progressText.includes("최종 검수") || !progressText.includes("예상 완료") || !progressText.includes("렌더링 약 5분") || !progressText.includes("제목·자막 오버레이") || progressValue !== "64") {
     throw new Error(`Unexpected generation progress panel: ${JSON.stringify({ progressText, progressValue })}`);
   }
   await assertNoCriticalOverlap(progressPage);

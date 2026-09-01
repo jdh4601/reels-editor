@@ -117,6 +117,29 @@ Then start the app:
 5. Optionally click **캡션 생성하기** (Generate caption) for an Instagram caption
    written from that reel's actual script.
 6. Select what you want and click **선택 영상 내보내기** (Export selected).
+7. With Buffer configured, click **Buffer 큐에 업로드** to add only the selected
+   videos as Instagram Reels in the next available Buffer slots.
+
+Each export gets its own directory containing only the videos selected for that
+run. App-managed render archives and user-requested export directories are kept
+separate.
+
+### Buffer upload setup
+
+Buffer requires a stable public media URL rather than accepting local video
+files directly. Reels Editor uploads each selected MP4 through a Cloudinary
+unsigned upload preset, then creates an Instagram Reel with Buffer's GraphQL API.
+
+Open generation settings and save your Buffer API key, Instagram channel ID,
+Cloudinary cloud name, and unsigned upload preset. The Buffer key stays in
+`~/.config/reels-editor/credentials.yaml` with `0600` permissions; the
+`BUFFER_API_KEY` environment variable takes precedence when present. Keep the
+Cloudinary URL public until Buffer has published the queued post.
+
+The Buffer channel ID and Cloudinary values persist in
+`~/.config/reels-editor/config.yaml`. Both configuration files live outside the
+`.app` bundle, so rebuilding or replacing the application preserves them. API
+keys are intentionally never stored in the Git repository.
 
 The first render crops, composites the title, subtitles, and logo, and encodes
 the final MP4 in one FFmpeg pass. Title and subtitle edits reuse the downloaded
@@ -186,7 +209,7 @@ refuse; Control-click the app in Finder and choose **Open**.
 | --- | --- |
 | Jobs, downloaded video, transcripts, render assets and local face-analysis cache | `~/Library/Application Support/reels-editor/jobs/` |
 | Configuration | `~/.config/reels-editor/config.yaml` |
-| Exported MP4 | Wherever you choose in the save dialog |
+| Exported MP4 | A per-run folder under `~/Movies/Reels Editor Exports/` |
 
 Re-running the same video reuses the existing download. The video ID is what
 matters, so `youtu.be/…` and `watch?v=…` links to the same video will not

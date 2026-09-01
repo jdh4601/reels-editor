@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, youtube
+from reels_editor import buffer_api, candidate_analyzer, edl, export, instagram_caption, render, youtube
 from reels_editor.config import AppConfig, merged_style
 from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
@@ -69,9 +69,11 @@ class JobServiceDeps:
     load_style: Callable[[Path], StylePreset] = load_style
     render_base_and_assets: Callable[..., render.RenderAssets] = render.render_base_and_assets
     render_overlay_variant: Callable[..., Path] = render.render_overlay_variant
+    verify_render_output: Callable[..., None] = render.verify_render_output
     write_outputs: Callable[[Path, dict[str, Any], dict[str, Any]], None] = export.write_outputs
     write_srt: Callable[[list[list], Path], Path] = export.write_srt
     download_youtube_source: Callable[..., youtube.YouTubeSource] = youtube.download_youtube_source
+    publish_to_buffer: Callable[..., buffer_api.BufferPost] = buffer_api.publish_reel
 
 
 class JobService:
@@ -83,6 +85,7 @@ class JobService:
         style_path: Path = DEFAULT_STYLE,
         config: AppConfig | None = None,
         archive_root: Path | None = None,
+        export_root: Path | None = None,
     ) -> None:
         self.store = store or JobStore()
         self.deps = deps or JobServiceDeps()
@@ -92,6 +95,11 @@ class JobService:
             archive_root.expanduser()
             if archive_root is not None
             else self._default_archive_root()
+        )
+        self.export_root = (
+            export_root.expanduser()
+            if export_root is not None
+            else self._default_export_root()
         )
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
@@ -107,6 +115,11 @@ class JobService:
         if self.store.root == JobStore.default_root():
             return Path.home() / "Movies" / "Reels Editor"
         return self.store.root.parent / "Reels Editor Archive"
+
+    def _default_export_root(self) -> Path:
+        if self.store.root == JobStore.default_root():
+            return Path.home() / "Movies" / "Reels Editor Exports"
+        return self.store.root.parent / "Reels Editor Exports"
 
     def start_youtube_job(
         self,
@@ -941,17 +954,17 @@ class JobService:
             job.message = f"선택한 영상 {len(exports)}개를 내보내는 중입니다."
             self._save(job)
 
+        isolated_selection = destination_dir is None
         if destination_dir is None:
-            destination_dir = self._durable_job_directory(job)
+            destination_dir = self._new_selection_export_directory(job)
         destination_dir = destination_dir.expanduser()
         destination_dir.mkdir(parents=True, exist_ok=True)
         try:
             for story, variant in exports:
-                destination = (
-                    self._durable_destination(job, story, directory=destination_dir)
-                    if self._is_archive_directory(destination_dir)
-                    else destination_dir / _export_filename(job, story)
-                )
+                if isolated_selection or not self._is_archive_directory(destination_dir):
+                    destination = destination_dir / _export_filename(job, story)
+                else:
+                    destination = self._durable_destination(job, story, directory=destination_dir)
                 actual = self._copy_export_variant(job_id, story, variant, destination)
                 with self._lock:
                     current = self.store.load(job_id)
@@ -971,6 +984,53 @@ class JobService:
             job.phase = "ready"
             job.message = f"선택한 영상 {len(exports)}개 내보내기가 완료되었습니다."
             return self._save(job)
+
+    def publish_many_to_buffer(
+        self,
+        job_id: str,
+        *,
+        storyline_ids: list[str],
+        api_key: str,
+        channel_id: str,
+        cloud_name: str,
+        upload_preset: str,
+    ) -> list[buffer_api.BufferPost]:
+        selected_ids = list(dict.fromkeys(storyline_ids))
+        if not selected_ids:
+            raise JobServiceError("at least one storyline_id is required")
+        if not all((api_key, channel_id, cloud_name, upload_preset)):
+            raise JobServiceError("Buffer와 Cloudinary 설정을 먼저 완료하세요.")
+        job = self.store.load(job_id)
+        posts: list[buffer_api.BufferPost] = []
+        try:
+            for storyline_id in selected_ids:
+                story = self._find_storyline(job, storyline_id)
+                variant = self._active_variant(story)
+                if variant.path is None or variant.status is not Status.READY:
+                    raise JobServiceError(f"selected variant is not ready: {storyline_id}")
+                text = story.instagram_caption.strip() or story.title.strip()
+                posts.append(self.deps.publish_to_buffer(
+                    Path(variant.path),
+                    text=text,
+                    api_key=api_key,
+                    channel_id=channel_id,
+                    cloud_name=cloud_name,
+                    upload_preset=upload_preset,
+                ))
+        except buffer_api.BufferPublishError as exc:
+            prefix = f"{len(posts)}개는 Buffer 큐에 추가됐지만 " if posts else ""
+            raise JobServiceError(f"{prefix}{exc}") from exc
+        return posts
+
+    def _new_selection_export_directory(self, job: Job) -> Path:
+        safe_title = _safe_filename_component(
+            job.project_name or "YouTube 인터뷰",
+            max_bytes=EXPORT_TITLE_MAX_BYTES,
+        )
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        destination = self.export_root / f"Ep-{job.episode_number}_{safe_title}" / f"{stamp}-{uuid.uuid4().hex[:6]}"
+        destination.mkdir(parents=True, exist_ok=False)
+        return destination
 
     def _copy_export_variant(
         self,
@@ -1785,7 +1845,7 @@ class JobService:
                 story_id,
                 progress=0.45,
                 status=Status.RENDERING_BASE,
-                detail="세로 영상용 화자 위치와 크롭·자막 에셋을 준비하는 중입니다.",
+                detail="세로 영상용 중앙 크롭·자막 에셋을 준비하는 중입니다.",
             )
             job = self.store.load(job_id)
             assets = self.deps.render_base_and_assets(
@@ -1830,6 +1890,14 @@ class JobService:
                 title_upper=title_upper,
                 title_lower=title_lower,
             )
+            self._set_storyline_render_progress(
+                job_id,
+                story_id,
+                progress=0.94,
+                status=Status.RENDERING_OVERLAY,
+                detail="최종 영상의 해상도·길이·오디오를 검수하는 중입니다.",
+            )
+            self.deps.verify_render_output(out, style.canvas, assets.total_s)
             with self._lock:
                 job = self.store.load(job_id)
                 if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
@@ -1936,6 +2004,8 @@ class JobService:
                     f"릴스 {storyline.index + 1}: {detail} "
                     f"· 전체 {completed}/{job.n_storylines}개 완료"
                 )
+                if "최종 영상" in detail and "검수" in detail:
+                    job.phase = "review"
             self._save(job)
 
     def _render_storyline_base(self, job_id: str, storyline_id: str) -> None:

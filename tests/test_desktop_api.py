@@ -26,6 +26,7 @@ class FakeService:
         self.buffer_publish_args: dict | None = None
         self.clear_current_called = False
         self.title_args: dict | None = None
+        self.title_suggestion_args: dict | None = None
         self.config = AppConfig(provider="codex-cli")
         self.archive_override: list[Job] | None = None
         self.deleted_archive_item: tuple[str, str] | None = None
@@ -132,6 +133,10 @@ class FakeService:
         story.title_upper = title_upper or ""
         story.title_lower = title_lower or story.title
         return self.job
+
+    def generate_storyline_title_suggestion(self, job_id: str, storyline_id: str) -> str:
+        self.title_suggestion_args = {"job_id": job_id, "storyline_id": storyline_id}
+        return "성장이 독이 된 순간"
 
     def suggested_export_filename(
         self,
@@ -646,6 +651,31 @@ def test_title_patch_passes_explicit_white_and_orange_lines(tmp_path: Path) -> N
     }
     assert response.json()["storylines"][0]["title_upper"] == "첫 번째 문구"
     assert response.json()["storylines"][0]["title_lower"] == "두 번째 문구"
+
+
+def test_title_suggestion_returns_editable_title_lines(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    job.storylines = [Storyline(id="s1", index=0, status=Status.READY, title="이전 제목입니다")]
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+    )
+
+    response = TestClient(app).post(
+        f"/api/jobs/{job.id}/storylines/s1/title/suggestion?token=secret",
+    )
+
+    assert response.status_code == 200
+    assert service.title_suggestion_args == {"job_id": job.id, "storyline_id": "s1"}
+    assert response.json() == {
+        "title": "성장이 독이 된 순간",
+        "title_upper": "",
+        "title_lower": "성장이 독이 된 순간",
+    }
 
 
 def test_selection_request_passes_selected_for_export(tmp_path: Path) -> None:

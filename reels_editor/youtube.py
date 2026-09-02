@@ -12,11 +12,11 @@ from reels_editor.timebase import US
 
 YOUTUBE_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"})
 _MEDIA_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})
-MAX_DOWNLOAD_HEIGHT = 1080
+MAX_DOWNLOAD_HEIGHT = 720
 DOWNLOAD_FORMAT = (
-    "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/"
-    "b[height<=1080][ext=mp4]/"
-    "bv*[height<=1080]+ba/b[height<=1080]"
+    f"bv*[height<={MAX_DOWNLOAD_HEIGHT}][ext=mp4]+ba[ext=m4a]/"
+    f"b[height<={MAX_DOWNLOAD_HEIGHT}][ext=mp4]/"
+    f"bv*[height<={MAX_DOWNLOAD_HEIGHT}]+ba/b[height<={MAX_DOWNLOAD_HEIGHT}]"
 )
 
 

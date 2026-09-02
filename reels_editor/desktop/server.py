@@ -30,6 +30,7 @@ from reels_editor.config import (
     user_config_path,
 )
 from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
+from reels_editor.title_rules import editor_title_lines
 from reels_editor.youtube import YouTubeSourceError, thumbnail_url_for_video, video_id_from_url
 
 from .dialogs import DialogProvider, FakeDialogProvider
@@ -368,6 +369,23 @@ def create_app(
         except JobServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _snapshot_from_job(job)
+
+    @app.post("/api/jobs/{job_id}/storylines/{storyline_id}/title/suggestion")
+    def generate_storyline_title_suggestion(
+        job_id: str,
+        storyline_id: str,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, str]:
+        try:
+            title = service.generate_storyline_title_suggestion(job_id, storyline_id)
+            title_upper, title_lower = editor_title_lines(title)
+        except (JobServiceError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "title": title,
+            "title_upper": title_upper,
+            "title_lower": title_lower,
+        }
 
     @app.post("/api/jobs/{job_id}/export")
     def export_job(job_id: str, request: ExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:

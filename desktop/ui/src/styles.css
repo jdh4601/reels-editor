@@ -56,8 +56,9 @@ p { margin: 0; }
 }
 
 .app-shell {
+  align-content: start;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-auto-rows: max-content;
   min-height: 100vh;
   padding: 18px 22px 0;
 }
@@ -674,14 +675,16 @@ h2 {
 .status-row small { color: #68706b; font-size: 12px; line-height: 1.25; overflow-wrap: anywhere; }
 
 .generation-progress {
+  animation: source-reveal 180ms ease-out both;
   background: #f4f6f1;
+  border-top: 1px solid #d5d0c7;
   border-bottom: 1px solid #d5d0c7;
-  padding: 16px 14px 18px;
+  margin-top: 14px;
+  padding: 10px 14px 11px;
 }
 
 .generation-progress-heading,
-.generation-progress-title,
-.generation-steps li {
+.generation-progress-title {
   align-items: center;
   display: flex;
 }
@@ -694,16 +697,16 @@ h2 {
 .generation-progress-title { gap: 11px; min-width: 0; }
 
 .generation-progress-title h2 {
-  font-size: 17px;
-  line-height: 1.25;
-  margin: 2px 0 3px;
+  font-size: 16px;
+  line-height: 1.2;
+  margin-top: 2px;
 }
 
-.generation-progress-title p:last-child {
-  color: #59625d;
-  font-size: 12px;
-  line-height: 1.4;
-  margin: 0;
+.generation-progress-title p {
+  color: #6b756f;
+  font-size: 10px;
+  font-weight: 760;
+  line-height: 1.2;
 }
 
 .generation-progress-icon {
@@ -713,14 +716,14 @@ h2 {
   color: #244f3d;
   display: inline-flex;
   flex: 0 0 auto;
-  height: 34px;
+  height: 30px;
   justify-content: center;
-  width: 34px;
+  width: 30px;
 }
 
 .generation-progress-percent {
   color: #244f3d;
-  font-size: 25px;
+  font-size: 24px;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.04em;
 }
@@ -729,18 +732,18 @@ h2 {
   align-items: center;
   display: flex;
   flex: 0 0 auto;
-  gap: 18px;
+  gap: 16px;
 }
 
 .generation-progress-eta {
   display: grid;
-  gap: 2px;
+  gap: 1px;
   text-align: right;
 }
 
 .generation-progress-eta strong {
   color: #244f3d;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .generation-progress-eta span {
@@ -753,7 +756,7 @@ h2 {
   background: #d9ddd7;
   border-radius: 999px;
   height: 4px;
-  margin-top: 13px;
+  margin-top: 9px;
   overflow: hidden;
 }
 
@@ -763,53 +766,6 @@ h2 {
   display: block;
   height: 100%;
   transition: width 360ms ease;
-}
-
-.generation-steps {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  list-style: none;
-  margin: 14px 0 0;
-  padding: 0;
-}
-
-.generation-steps li { gap: 9px; min-width: 0; }
-
-.generation-steps li > span {
-  align-items: center;
-  border: 1px solid #babfb9;
-  border-radius: 999px;
-  color: #747c77;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 750;
-  height: 23px;
-  justify-content: center;
-  width: 23px;
-}
-
-.generation-steps li div { display: grid; gap: 1px; min-width: 0; }
-.generation-steps li strong { color: #757c77; font-size: 12px; line-height: 1.25; }
-.generation-steps li small { color: #8a918c; font-size: 10px; line-height: 1.3; }
-.generation-steps li.done > span { background: #dfe9e2; border-color: #dfe9e2; color: #2f6a4f; }
-.generation-steps li.done strong { color: #4e5953; }
-.generation-steps li.active > span { background: #244f3d; border-color: #244f3d; color: #fff; }
-.generation-steps li.active strong { color: #1f2823; }
-
-.generation-progress-detail {
-  color: #68706b;
-  font-size: 11px;
-  margin: 11px 0 0 45px;
-}
-
-.generation-progress-breakdown {
-  color: #4f5f57;
-  font-size: 11px;
-  font-weight: 680;
-  line-height: 1.4;
-  margin: 7px 0 0 45px;
 }
 
 .connection-dot {
@@ -1171,6 +1127,24 @@ h2 {
   min-height: 38px;
 }
 
+.title-editor-actions {
+  display: grid;
+  gap: 7px;
+}
+
+.title-editor-actions button { width: 100%; }
+
+.title-editor-actions .title-regenerate-button {
+  background: #f4f4ee;
+  border-color: #bbb6ad;
+  color: #4e5752;
+}
+
+.title-editor-actions .title-regenerate-button:hover:not(:disabled) {
+  background: #eceee8;
+  border-color: #727c76;
+}
+
 .title-editor-help {
   color: #76746f;
   font-size: 10px;
@@ -1396,7 +1370,6 @@ h2 {
   .youtube-source-controls:has(.youtube-thumbnail) { grid-template-columns: 88px minmax(0, 1fr) 150px; }
   .youtube-thumbnail { width: 88px; }
   .candidate-workspace { margin-bottom: 120px; }
-  .generation-steps li small { display: none; }
   .settings-panel { margin-top: 26px; }
   .lane { grid-template-columns: minmax(280px, 0.68fr) minmax(0, 1.32fr); }
   .phone-frame { --preview-height: 480px; }

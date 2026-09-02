@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from reels_editor import buffer_api, candidate_analyzer, edl, export, instagram_caption, render, youtube
+from reels_editor import buffer_api, candidate_analyzer, edl, export, instagram_caption, render, title_suggestion, youtube
 from reels_editor.config import AppConfig, merged_style
 from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
@@ -64,6 +64,7 @@ class JobServiceDeps:
     analyze_candidates: Callable[..., list[ContentCandidate]] = candidate_analyzer.generate_candidates
     generate_selected_candidates: Callable[..., list[StorylineResult]] = candidate_analyzer.generate_selected_candidates
     generate_instagram_caption: Callable[..., str] = instagram_caption.generate_caption
+    generate_title_suggestion: Callable[..., str] = title_suggestion.generate_title_suggestion
     generate_script: Callable[..., dict[str, Any]] = generate_script
     build_runner: Callable[[AppConfig], Callable[[str], str]] = build_runner
     load_style: Callable[[Path], StylePreset] = load_style
@@ -597,6 +598,55 @@ class JobService:
             current_storyline.instagram_caption = caption
             return self._save(current)
 
+    def generate_storyline_title_suggestion(
+        self,
+        job_id: str,
+        storyline_id: str,
+    ) -> str:
+        with self._lock:
+            job = self.store.load(job_id)
+            storyline = self._find_storyline(job, storyline_id)
+            if storyline.status is not Status.READY:
+                raise JobServiceError("완성된 릴스만 새 화면 제목을 제안받을 수 있습니다.")
+            if not storyline.edl_path or not Path(storyline.edl_path).is_file():
+                raise JobServiceError("릴스 대본 파일을 찾지 못했습니다.")
+            segments_path = Path(storyline.edl_path).parent / "segments.json"
+            if not segments_path.is_file():
+                raise JobServiceError("릴스 원문 구간 파일을 찾지 못했습니다.")
+            provider = job.provider or self.config.provider
+            cfg = AppConfig(
+                provider=provider,
+                model=job.model or "",
+                base_url=self.config.base_url if provider == self.config.provider else "",
+                n_storylines=job.n_storylines,
+                style=dict(self.config.style),
+            )
+            current_title = storyline.title
+            candidate = self._candidate_for_storyline(job, storyline)
+            edl_path = Path(storyline.edl_path)
+            raw_dump = self.store.job_dir(job.id) / f"title_suggestion_raw_{storyline.id}.txt"
+
+        doc = json.loads(edl_path.read_text(encoding="utf-8"))
+        segments = json.loads(segments_path.read_text(encoding="utf-8"))
+        registry = self._process_registries.setdefault(job_id, ProcessRegistry())
+        runner = self.deps.build_runner(cfg)
+
+        def managed_runner(prompt: str) -> str:
+            with use_process_registry(registry):
+                return runner(prompt)
+
+        try:
+            return self.deps.generate_title_suggestion(
+                current_title=current_title,
+                candidate=candidate.to_dict() if candidate else None,
+                doc=doc,
+                segments=segments,
+                runner=managed_runner,
+                raw_dump=raw_dump,
+            )
+        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+            raise JobServiceError(str(exc)) from exc
+
     def update_storyline_title(
         self,
         job_id: str,
@@ -883,10 +933,17 @@ class JobService:
             job.message = "선택한 영상을 내보내는 중입니다."
             self._save(job)
 
+        write_manifest = destination is None
         if destination is None:
             destination = self._durable_destination(job, story)
         try:
-            destination = self._copy_export_variant(job_id, story, variant, destination)
+            destination = self._copy_export_variant(
+                job_id,
+                story,
+                variant,
+                destination,
+                write_manifest=write_manifest,
+            )
         except Exception as exc:
             self._record_export_failure(job_id, exc)
             raise
@@ -965,7 +1022,13 @@ class JobService:
                     destination = destination_dir / _export_filename(job, story)
                 else:
                     destination = self._durable_destination(job, story, directory=destination_dir)
-                actual = self._copy_export_variant(job_id, story, variant, destination)
+                actual = self._copy_export_variant(
+                    job_id,
+                    story,
+                    variant,
+                    destination,
+                    write_manifest=False,
+                )
                 with self._lock:
                     current = self.store.load(job_id)
                     current_story = self._find_storyline(current, story.id)
@@ -1038,6 +1101,8 @@ class JobService:
         story: Storyline,
         variant: Variant,
         destination: Path,
+        *,
+        write_manifest: bool = True,
     ) -> Path:
         with self._archive_lock:
             if variant.path is None:
@@ -1051,6 +1116,7 @@ class JobService:
                 destination,
                 job_id=job_id,
                 storyline_id=story.id,
+                reuse_owned=write_manifest,
             )
             operation_id = f"{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}"
             tmp = destination.with_name(
@@ -1065,56 +1131,53 @@ class JobService:
                 f".{manifest.name}.{operation_id}.backup"
             )
             destination_existed = destination.is_file()
-            manifest_existed = manifest.is_file()
-            for output in (
-                destination,
-                manifest,
-                tmp,
-                manifest_tmp,
-                destination_backup,
-                manifest_backup,
-            ):
+            manifest_existed = write_manifest and manifest.is_file()
+            outputs = [destination, tmp, destination_backup]
+            if write_manifest:
+                outputs.extend((manifest, manifest_tmp, manifest_backup))
+            for output in outputs:
                 self._assert_safe_export_output(output)
             try:
                 self._copy_file_exclusive(Path(variant.path), tmp)
-                with manifest_tmp.open("x", encoding="utf-8") as file:
-                    file.write(json.dumps(
-                        {
-                            "job_id": job_id,
-                            "storyline_id": story.id,
-                            "variant_id": variant.id,
-                            "title": variant.title_text,
-                            "subtitles_on": variant.subtitles_enabled,
-                            "output_path": str(destination),
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ))
+                if write_manifest:
+                    with manifest_tmp.open("x", encoding="utf-8") as file:
+                        file.write(json.dumps(
+                            {
+                                "job_id": job_id,
+                                "storyline_id": story.id,
+                                "variant_id": variant.id,
+                                "title": variant.title_text,
+                                "subtitles_on": variant.subtitles_enabled,
+                                "output_path": str(destination),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ))
                 if destination_existed:
                     self._backup_export_file(destination, destination_backup)
-                if manifest_existed:
+                if write_manifest and manifest_existed:
                     self._backup_export_file(manifest, manifest_backup)
                 os.replace(tmp, destination)
-                os.replace(manifest_tmp, manifest)
+                if write_manifest:
+                    os.replace(manifest_tmp, manifest)
             except Exception:
                 self._restore_export_file(
                     destination,
                     destination_backup,
                     existed=destination_existed,
                 )
-                self._restore_export_file(
-                    manifest,
-                    manifest_backup,
-                    existed=manifest_existed,
-                )
+                if write_manifest:
+                    self._restore_export_file(
+                        manifest,
+                        manifest_backup,
+                        existed=manifest_existed,
+                    )
                 raise
             finally:
-                for temporary in (
-                    tmp,
-                    manifest_tmp,
-                    destination_backup,
-                    manifest_backup,
-                ):
+                temporary_paths = [tmp, destination_backup]
+                if write_manifest:
+                    temporary_paths.extend((manifest_tmp, manifest_backup))
+                for temporary in temporary_paths:
                     if temporary.exists() or temporary.is_symlink():
                         temporary.unlink()
             return destination
@@ -1300,12 +1363,12 @@ class JobService:
         *,
         job_id: str,
         storyline_id: str,
+        reuse_owned: bool = True,
     ) -> Path:
         self._assert_safe_export_output(destination)
-        if not destination.exists() or self._destination_belongs_to_story(
-            destination,
-            job_id,
-            storyline_id,
+        if not destination.exists() or (
+            reuse_owned
+            and self._destination_belongs_to_story(destination, job_id, storyline_id)
         ):
             return destination
         for collision_index in range(2, 10_000):
@@ -1313,10 +1376,9 @@ class JobService:
                 f"{destination.stem} ({collision_index}){destination.suffix}"
             )
             self._assert_safe_export_output(candidate)
-            if not candidate.exists() or self._destination_belongs_to_story(
-                candidate,
-                job_id,
-                storyline_id,
+            if not candidate.exists() or (
+                reuse_owned
+                and self._destination_belongs_to_story(candidate, job_id, storyline_id)
             ):
                 return candidate
         raise JobServiceError("export filename collision limit exceeded")
@@ -2370,26 +2432,17 @@ def _stored_datetime(value: str | None) -> datetime | None:
 
 
 def _export_filename(job: Job, story: Storyline) -> str:
-    founder_name = _story_speaker_name(story)
-    if not founder_name:
-        founder_name = job.project_name
-    if not founder_name:
-        founder_name = "인터뷰 화자"
-    safe_name = _safe_filename_component(founder_name, max_bytes=EXPORT_TITLE_MAX_BYTES)
-    return f"{safe_name} - {story.index + 1}.mp4"
-
-
-def _story_speaker_name(story: Storyline) -> str:
-    if not story.edl_path:
-        return ""
-    try:
-        doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    speaker = doc.get("speaker")
-    if not isinstance(speaker, dict):
-        return ""
-    return " ".join(str(speaker.get("name") or "").split())
+    prefix = f"에피소드 {job.episode_number} - "
+    suffix = ".mp4"
+    title_max_bytes = min(
+        EXPORT_TITLE_MAX_BYTES,
+        255 - len(prefix.encode("utf-8")) - len(suffix.encode("utf-8")),
+    )
+    safe_title = _safe_filename_component(
+        story.title or "릴스",
+        max_bytes=title_max_bytes,
+    )
+    return f"{prefix}{safe_title}{suffix}"
 
 
 def _safe_filename_component(value: str, *, max_bytes: int) -> str:

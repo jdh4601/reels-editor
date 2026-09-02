@@ -226,7 +226,8 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
     assert options_seen[1]["writesubtitles"] is True
     assert options_seen[1]["writeautomaticsub"] is False
     assert options_seen[1]["format"] == DOWNLOAD_FORMAT
-    assert "height<=1080" in options_seen[1]["format"]
+    assert "height<=720" in options_seen[1]["format"]
+    assert "height<=1080" not in options_seen[1]["format"]
     assert progress == [0.5, 1.0]
 
 

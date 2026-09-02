@@ -672,6 +672,38 @@ def test_title_edit_rerenders_overlay_only_and_invalidates_caption(tmp_path: Pat
     assert Path(story.archive_path or "").read_bytes() == Path(story.active_variant_path or "").read_bytes()
 
 
+def test_title_suggestion_uses_job_model_without_rerendering(tmp_path: Path) -> None:
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    requests: list[dict[str, Any]] = []
+
+    def suggest(**kwargs: Any) -> str:
+        requests.append(kwargs)
+        return "성장이 독이 된 순간"
+
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=replace(deps, generate_title_suggestion=suggest),
+        archive_root=tmp_path / "archive",
+    )
+    ready = _run_ready(
+        service,
+        candidate_count=1,
+        provider="codex-cli",
+        model="gpt-5.6-terra",
+    )
+    before_overlay = calls.overlay
+
+    title = service.generate_storyline_title_suggestion(ready.id, "s1")
+
+    assert title == "성장이 독이 된 순간"
+    assert calls.overlay == before_overlay
+    assert calls.providers[-1] == "codex-cli"
+    assert calls.models[-1] == "gpt-5.6-terra"
+    assert requests[0]["current_title"] == ready.storylines[0].title
+    assert requests[0]["candidate"]["id"] == "c1"
+
+
 def test_title_edit_preserves_explicit_white_and_orange_lines(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(
@@ -1042,7 +1074,7 @@ def test_selection_change_rerenders_overlay_only_and_exports_one_selected(tmp_pa
 
     assert destination.read_bytes() == Path(story.variants[-1].path or "").read_bytes()
     assert destination.is_file()
-    assert (tmp_path / "exported.mp4.manifest.json").is_file()
+    assert not (tmp_path / "exported.mp4.manifest.json").exists()
     assert exported.export.status is Status.READY
     assert exported.export.output_path == str(destination)
 
@@ -1076,13 +1108,10 @@ def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Pat
     )
 
     assert sorted(path.name for path in destination.glob("*.mp4")) == [
-        "김현지 - 1.mp4",
-        "김현지 - 3.mp4",
+        "에피소드 1 - C 제목 1.mp4",
+        "에피소드 1 - https youtu.be A 제목 1.mp4",
     ]
-    assert sorted(path.name for path in destination.glob("*.manifest.json")) == [
-        "김현지 - 1.mp4.manifest.json",
-        "김현지 - 3.mp4.manifest.json",
-    ]
+    assert list(destination.glob("*.json")) == []
     assert all(b":False" in path.read_bytes() for path in destination.glob("*.mp4"))
     assert exported.export.output_path == str(destination)
 
@@ -1099,7 +1128,10 @@ def test_default_batch_export_creates_isolated_selection_folder(tmp_path: Path) 
     exported = service.export_many(job.id, storyline_ids=["s2"])
     destination = Path(exported.export.output_path or "")
 
-    assert [path.name for path in destination.glob("*.mp4")] == ["김현지 - 2.mp4"]
+    assert [path.name for path in destination.glob("*.mp4")] == [
+        "에피소드 1 - https youtu.be B 제목 1.mp4"
+    ]
+    assert list(destination.glob("*.json")) == []
     assert destination.is_relative_to(tmp_path / "exports")
 
 
@@ -1132,18 +1164,16 @@ def test_buffer_publish_uses_only_selected_storylines(tmp_path: Path) -> None:
     assert published == [(Path(next(story for story in job.storylines if story.id == "s3").active_variant_path or "").name, "third caption")]
 
 
-def test_export_filename_uses_sanitized_founder_name_and_storyline_number(tmp_path: Path) -> None:
+def test_export_filename_uses_episode_number_and_sanitized_reel_title(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
-    job = _run_ready(service)
+    job = _run_ready(service, episode_number=37)
     story = next(story for story in job.storylines if story.id == "s3")
-    assert story.edl_path is not None
-    doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
-    doc["speaker"] = {"name": 'Founder: "Build/Ship?" | Interview', "role": "CEO"}
-    Path(story.edl_path).write_text(json.dumps(doc), encoding="utf-8")
+    story.title = '고객: "Build/Ship?" | 첫 성장'
+    service.store.save(job)
 
     assert service.suggested_export_filename(job.id, "s3") == (
-        "Founder Build Ship Interview - 3.mp4"
+        "에피소드 37 - 고객 Build Ship 첫 성장.mp4"
     )
 
 
@@ -1152,14 +1182,13 @@ def test_export_filename_stays_within_filesystem_component_limit(tmp_path: Path)
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
     job = _run_ready(service)
     story = next(story for story in job.storylines if story.id == "s1")
-    assert story.edl_path is not None
-    doc = json.loads(Path(story.edl_path).read_text(encoding="utf-8"))
-    doc["speaker"] = {"name": "매우 긴 창업가 이름" * 100, "role": "CEO"}
-    Path(story.edl_path).write_text(json.dumps(doc), encoding="utf-8")
+    story.title = "매우 긴 릴스 제목" * 100
+    service.store.save(job)
 
     filename = service.suggested_export_filename(job.id, "s1")
 
-    assert filename.endswith(" - 1.mp4")
+    assert filename.startswith("에피소드 1 - ")
+    assert filename.endswith(".mp4")
     assert len(filename.encode("utf-8")) <= 255
 
 

@@ -361,6 +361,56 @@ async function assertEmptySnapshotStaysEmpty(browser) {
   await page.close();
 }
 
+async function assertLoadingSourceControlsStayCompact(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "loading-job",
+        project_name: "로딩 레이아웃 점검",
+        source_url: "https://youtu.be/dQw4w9WgXcQ",
+        source_label: "YouTube · 다운로드 중",
+        status: "loading",
+        phase: "downloading",
+        progress: 0.04,
+        n_storylines: 0,
+        storylines: [],
+        subtitles_on: true,
+      }),
+    });
+  });
+  await page.route("**/img.youtube.com/vi/**", async (route) => {
+    await route.fulfill({ path: logoFixture, contentType: "image/png" });
+  });
+  await page.goto("http://127.0.0.1:5179/", { waitUntil: "networkidle" });
+  await page.waitForSelector(".generation-progress", { state: "visible" });
+  const geometry = await page.evaluate(() => {
+    const source = document.querySelector(".youtube-source")?.getBoundingClientRect();
+    const controls = document.querySelector(".youtube-source-controls")?.getBoundingClientRect();
+    const picker = document.querySelector(".content-type-picker")?.getBoundingClientRect();
+    const labels = Array.from(document.querySelectorAll(".content-type-picker label"))
+      .map((label) => label.getBoundingClientRect().height);
+    return source && controls && picker ? {
+      sourceHeight: source.height,
+      controlsHeight: controls.height,
+      pickerHeight: picker.height,
+      labelHeights: labels,
+    } : null;
+  });
+  if (
+    !geometry
+    || geometry.sourceHeight > 220
+    || geometry.controlsHeight > 110
+    || geometry.pickerHeight > 50
+    || geometry.labelHeights.some((height) => height > 40)
+  ) {
+    throw new Error(`Loading source controls stretched vertically: ${JSON.stringify(geometry)}`);
+  }
+  await page.screenshot({ path: path.join(screenshotRoot, "loading-source-compact-1280x800.png"), fullPage: true });
+  await page.close();
+}
+
 async function assertMediaTokenAndMutationFailures(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const mediaTokens = [];
@@ -661,7 +711,7 @@ async function assertInstagramCaptionGeneration(browser) {
   if (!(await page.getByRole("button", { name: "캡션 복사" }).isVisible())) {
     throw new Error("Expected copy action after Instagram caption generation");
   }
-  if (!(await page.getByRole("button", { name: "다시 생성" }).isVisible())) {
+  if (!(await page.getByLabel("릴스 1 Instagram 캡션").getByRole("button", { name: "다시 생성" }).isVisible())) {
     throw new Error("Expected regenerate action after Instagram caption generation");
   }
   await page.screenshot({ path: path.join(screenshotRoot, "instagram-caption-1280x900.png"), fullPage: true });
@@ -735,6 +785,7 @@ async function assertSourceThumbnailAndEpisodePayload(browser) {
 async function assertReadyTitleEditing(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   let patchCalls = 0;
+  let suggestionCalls = 0;
   let patchBody = null;
   const snapshot = (
     title = "고객을 먼저 만난 이유",
@@ -774,6 +825,18 @@ async function assertReadyTitleEditing(browser) {
   await page.route("**/media/title-video.mp4**", async (route) => {
     await route.fulfill({ path: path.join(sampleRoot, "sample-1.mp4"), contentType: "video/mp4" });
   });
+  await page.route("**/api/jobs/title-job/storylines/title-story/title/suggestion", async (route) => {
+    if (route.request().method() !== "POST") throw new Error(`Title suggestion endpoint expected POST, got ${route.request().method()}`);
+    suggestionCalls += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        title: "제품보다 고객을 먼저 만난 이유",
+        title_upper: "제품보다 고객을",
+        title_lower: "먼저 만난 이유",
+      }),
+    });
+  });
   await page.route("**/api/jobs/title-job/storylines/title-story/title", async (route) => {
     if (route.request().method() !== "PATCH") throw new Error(`Title endpoint expected PATCH, got ${route.request().method()}`);
     patchCalls += 1;
@@ -788,9 +851,26 @@ async function assertReadyTitleEditing(browser) {
   await page.goto("http://127.0.0.1:5179/", { waitUntil: "networkidle" });
   const upperTitleInput = page.locator("#title-story-title-upper");
   const lowerTitleInput = page.locator("#title-story-title-lower");
+  const regenerateButton = page.getByRole("button", { name: "다시 생성", exact: true });
+  const editButton = page.getByRole("button", { name: "수정하기", exact: true });
+  const actionPositions = await Promise.all([
+    regenerateButton.boundingBox(),
+    editButton.boundingBox(),
+  ]);
+  if (!actionPositions[0] || !actionPositions[1] || actionPositions[0].y >= actionPositions[1].y) {
+    throw new Error(`Title regenerate action should sit above edit: ${JSON.stringify(actionPositions)}`);
+  }
+  await regenerateButton.click();
+  await page.waitForFunction(() => document.body.innerText.includes("새 제목을 제안했습니다."));
+  if (suggestionCalls !== 1 || patchCalls !== 0) {
+    throw new Error(`Title suggestion should not render the video: ${JSON.stringify({ suggestionCalls, patchCalls })}`);
+  }
+  if (await upperTitleInput.inputValue() !== "제품보다 고객을" || await lowerTitleInput.inputValue() !== "먼저 만난 이유") {
+    throw new Error("Suggested title was not loaded into both editable title lines");
+  }
   await upperTitleInput.fill("");
   await lowerTitleInput.fill("짧은제목");
-  await page.getByRole("button", { name: "수정하기" }).click();
+  await editButton.click();
   await page.waitForFunction(() => document.body.innerText.includes("6자 이상"));
   if (patchCalls !== 0) throw new Error("Invalid display title should not call PATCH");
 
@@ -798,7 +878,7 @@ async function assertReadyTitleEditing(browser) {
   const revisedLower = "검증한 진짜 이유";
   await upperTitleInput.fill(revisedUpper);
   await lowerTitleInput.fill(revisedLower);
-  await page.getByRole("button", { name: "수정하기" }).click();
+  await editButton.click();
   await page.waitForFunction(() => document.body.innerText.includes("재생 영상에 수정 내용이 반영되었습니다."));
   if (patchCalls !== 1 || JSON.stringify(patchBody) !== JSON.stringify({
     title_upper: revisedUpper,
@@ -1233,8 +1313,23 @@ try {
   await progressPage.waitForSelector(".generation-progress", { state: "visible" });
   const progressText = await progressPage.locator(".generation-progress").innerText();
   const progressValue = await progressPage.locator(".generation-progress-track").getAttribute("aria-valuenow");
-  if (!progressText.includes("생성 진행 · 5/6단계") || !progressText.includes("최종 검수") || !progressText.includes("예상 완료") || !progressText.includes("렌더링 약 5분") || !progressText.includes("제목·자막 오버레이") || progressValue !== "64") {
-    throw new Error(`Unexpected generation progress panel: ${JSON.stringify({ progressText, progressValue })}`);
+  const progressGeometry = await progressPage.evaluate(() => {
+    const progress = document.querySelector(".generation-progress")?.getBoundingClientRect();
+    const source = document.querySelector(".youtube-source")?.getBoundingClientRect();
+    return progress && source ? { progressBottom: progress.bottom, sourceTop: source.top } : null;
+  });
+  if (
+    !progressText.includes("현재 단계 · 5/6")
+    || !progressText.includes("영상 렌더링")
+    || !progressText.includes("예상 시간")
+    || !progressText.includes("64%")
+    || progressText.includes("예상 완료")
+    || progressText.includes("준비 완료")
+    || progressValue !== "64"
+    || !progressGeometry
+    || progressGeometry.progressBottom > progressGeometry.sourceTop
+  ) {
+    throw new Error(`Unexpected generation progress panel: ${JSON.stringify({ progressText, progressValue, progressGeometry })}`);
   }
   await assertNoCriticalOverlap(progressPage);
   const progressScreenshot = path.join(screenshotRoot, "generation-progress-1280x800.png");
@@ -1243,6 +1338,7 @@ try {
   await progressPage.close();
   await assertProductionFailureDoesNotLeakDemo(browser);
   await assertEmptySnapshotStaysEmpty(browser);
+  await assertLoadingSourceControlsStayCompact(browser);
   await assertMediaTokenAndMutationFailures(browser);
   await assertHeartbeatDoesNotReplaceSnapshot(browser);
   await assertCandidateSelectionGeneratesOnlyChosenReels(browser);

@@ -32,7 +32,7 @@ type ContentType = "story" | "strategy" | "failure" | "principle";
 type ModelProvider = "codex-cli" | "claude-cli" | "gemini-cli" | "openai" | "kimi";
 type SettingsSaveState = "idle" | "saving" | "saved" | "error";
 type CaptionActionState = "idle" | "generating" | "error" | "copied";
-type TitleActionState = "idle" | "saving" | "error" | "saved";
+type TitleActionState = "idle" | "generating" | "saving" | "error" | "suggested" | "saved";
 type TitleDraft = { upper: string; lower: string };
 type AppView = "workspace" | "archive";
 type PlaybackSpeedSettings = {
@@ -302,12 +302,12 @@ const EMPTY_SUMMARY = "YouTube 인터뷰 링크를 넣으면 클립 후보와 �
 const ACTIVE_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay", "exporting"]);
 const GENERATION_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay"]);
 const GENERATION_STAGES = [
-  { label: "영상 다운로드", duration: "약 1~2분", description: "저장된 영상이 있으면 이 단계를 건너뜁니다." },
-  { label: "자막 정리", duration: "1분 이내", description: "원문 자막과 타임코드를 정리합니다." },
-  { label: "후보·제목 생성", duration: "약 1~2분", description: "겹치지 않는 후보와 제목을 만듭니다." },
-  { label: "릴스 대본 생성", duration: "약 1분", description: "선택한 후보를 20~40초 대본으로 구성합니다." },
-  { label: "영상 렌더링", duration: "약 5분", description: "제목·자막·오디오를 합성해 영상을 완성합니다." },
-  { label: "최종 검수", duration: "잠시", description: "출력 해상도·길이·오디오를 확인합니다." },
+  { label: "영상 다운로드" },
+  { label: "자막 정리" },
+  { label: "후보·제목 생성" },
+  { label: "릴스 대본 생성" },
+  { label: "영상 렌더링" },
+  { label: "최종 검수" },
 ] as const;
 const CONTENT_TYPE_OPTIONS: Array<{ value: ContentType; label: string; example: string }> = [
   { value: "story", label: "스토리형", example: "회사가 망하기 직전에 바꾼 한 가지" },
@@ -549,11 +549,6 @@ function estimatedRemainingMinutes(
 
 function remainingTimeLabel(minutes: number): string {
   return minutes <= 1 ? "1분 이내" : `약 ${Math.ceil(minutes)}분`;
-}
-
-function estimatedCompletionLabel(minutes: number): string {
-  return new Intl.DateTimeFormat("ko-KR", { hour: "numeric", minute: "2-digit" })
-    .format(new Date(Date.now() + minutes * 60_000));
 }
 
 function isDemoMode(): boolean {
@@ -1403,6 +1398,40 @@ function App() {
     }
   }
 
+  async function regenerateTitle(storyline: Storyline) {
+    if (!snapshot || storyline.status !== "ready") return;
+    setTitleStates((current) => ({ ...current, [storyline.id]: "generating" }));
+    setTitleErrors((current) => ({ ...current, [storyline.id]: null }));
+    setLiveMessage(`${storyline.label}의 새 화면 제목을 제안받는 중입니다.`);
+    try {
+      let suggestion: TitleDraft;
+      if (isDemoMode()) {
+        await new Promise((resolve) => window.setTimeout(resolve, 550));
+        suggestion = { upper: "성장이 독이 된 순간", lower: "리더가 놓친 위험 신호" };
+      } else {
+        const response = await apiMutation(
+          `/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/title/suggestion`,
+          { method: "POST" },
+        );
+        const payload = await response.json() as { title_upper?: string; title_lower?: string };
+        suggestion = {
+          upper: String(payload.title_upper ?? "").trim(),
+          lower: String(payload.title_lower ?? "").trim(),
+        };
+      }
+      const validationError = titleValidationMessage(suggestion);
+      if (validationError) throw new Error(validationError);
+      setTitleDrafts((current) => ({ ...current, [storyline.id]: suggestion }));
+      setTitleStates((current) => ({ ...current, [storyline.id]: "suggested" }));
+      setLiveMessage(`${storyline.label}의 새 제목을 제안했습니다. 다듬은 뒤 수정하기를 누르세요.`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "새 화면 제목을 제안받지 못했습니다.";
+      setTitleStates((current) => ({ ...current, [storyline.id]: "error" }));
+      setTitleErrors((current) => ({ ...current, [storyline.id]: detail }));
+      setLiveMessage(detail);
+    }
+  }
+
   async function startYoutubeJob(sourceUrl: string) {
     const normalized = sourceUrl.trim();
     if (!normalized) {
@@ -2017,6 +2046,37 @@ function App() {
         </div>
       </div>
 
+      {generationActive ? (
+        <section className="generation-progress" aria-labelledby="generation-progress-title" aria-live="polite">
+          <div className="generation-progress-heading">
+            <div className="generation-progress-title">
+              <span className="generation-progress-icon" aria-hidden="true"><Loader2 size={16} className="spin" /></span>
+              <div>
+                <p>현재 단계 · {activeGenerationStage + 1}/{GENERATION_STAGES.length}</p>
+                <h2 id="generation-progress-title">{GENERATION_STAGES[activeGenerationStage].label}</h2>
+              </div>
+            </div>
+            <div className="generation-progress-summary">
+              <div className="generation-progress-eta">
+                <span>예상 시간</span>
+                <strong>{remainingTimeLabel(remainingMinutes)}</strong>
+              </div>
+              <strong className="generation-progress-percent">{generationProgress}%</strong>
+            </div>
+          </div>
+          <div
+            className="generation-progress-track"
+            role="progressbar"
+            aria-label="전체 영상 생성 진행률"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={generationProgress}
+          >
+            <span style={{ width: `${generationProgress}%` }} />
+          </div>
+        </section>
+      ) : null}
+
       <form className="youtube-source" onSubmit={submitYoutube} hidden={archiveMode}>
         <div className="youtube-source-controls">
           {sourceThumbnailUrl ? (
@@ -2166,58 +2226,6 @@ function App() {
         <div><strong>{candidateSelectionActive ? "20–40초" : subtitlesEnabled ? "ON" : "OFF"}</strong><small>{candidateSelectionActive ? "허용 영상 길이" : "클립 자막"}</small></div>
       </section>
 
-      {generationActive ? (
-        <section className="generation-progress" aria-labelledby="generation-progress-title" aria-live="polite">
-          <div className="generation-progress-heading">
-            <div className="generation-progress-title">
-              <span className="generation-progress-icon" aria-hidden="true"><Loader2 size={17} className="spin" /></span>
-              <div>
-                <p className="eyebrow">생성 진행 · {activeGenerationStage + 1}/{GENERATION_STAGES.length}단계</p>
-                <h2 id="generation-progress-title">{GENERATION_STAGES[activeGenerationStage].label}</h2>
-                <p>{snapshot?.jobMessage ?? GENERATION_STAGES[activeGenerationStage].description}</p>
-              </div>
-            </div>
-            <div className="generation-progress-summary">
-              <div className="generation-progress-eta">
-                <strong>{remainingTimeLabel(remainingMinutes)} 남음</strong>
-                <span>예상 완료 {estimatedCompletionLabel(remainingMinutes)}</span>
-              </div>
-              <strong className="generation-progress-percent">{generationProgress}%</strong>
-            </div>
-          </div>
-          <div
-            className="generation-progress-track"
-            role="progressbar"
-            aria-label="전체 영상 생성 진행률"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={generationProgress}
-          >
-            <span style={{ width: `${generationProgress}%` }} />
-          </div>
-          <ol className="generation-steps">
-            {GENERATION_STAGES.map((stage, index) => {
-              const state = index < activeGenerationStage ? "done" : index === activeGenerationStage ? "active" : "upcoming";
-              return (
-                <li className={state} key={stage.label}>
-                  <span aria-hidden="true">{state === "done" ? <Check size={13} /> : index + 1}</span>
-                  <div>
-                    <strong>{stage.label}</strong>
-                    <small>{index === 4 ? remainingTimeLabel(renderMinutes) : stage.duration} · {stage.description}</small>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-          <p className="generation-progress-detail">
-            준비 완료 {stats.ready}개 · 렌더링 {storylines.filter((storyline) => storyline.status === "rendering").length}개 · 오버레이 {storylines.filter((storyline) => storyline.status === "overlaying").length}개
-          </p>
-          <p className="generation-progress-breakdown">
-            기본 3개 자동 작업 약 8~10분 · 다운로드 1~2분 · 후보·제목 1~2분 · 렌더링 {remainingTimeLabel(renderMinutes)} ({estimatedStorylineCount}개 기준) · 후보 선택 시간 제외
-          </p>
-        </section>
-      ) : null}
-
       {connection === "disconnected" ? (
         <section className="notice" role="status">
           <WifiOff size={18} aria-hidden="true" />
@@ -2313,7 +2321,7 @@ function App() {
                             id={`${storyline.id}-title-${key}`}
                             type="text"
                             value={titleDraft[key]}
-                            disabled={titleStates[storyline.id] === "saving"}
+                            disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"}
                             aria-invalid={Boolean(titleErrors[storyline.id])}
                             aria-describedby={`${storyline.id}-title-help`}
                             onChange={(event) => {
@@ -2326,14 +2334,25 @@ function App() {
                         </label>
                       ))}
                     </div>
-                    <button
-                      type="button"
-                      disabled={titleStates[storyline.id] === "saving" || !titleChanged}
-                      onClick={() => { void updateTitle(storyline); }}
-                    >
-                      {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}
-                      {titleStates[storyline.id] === "saving" ? "반영 중" : "수정하기"}
-                    </button>
+                    <div className="title-editor-actions">
+                      <button
+                        type="button"
+                        className="title-regenerate-button"
+                        disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"}
+                        onClick={() => { void regenerateTitle(storyline); }}
+                      >
+                        {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
+                        {titleStates[storyline.id] === "generating" ? "생성 중" : "다시 생성"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating" || !titleChanged}
+                        onClick={() => { void updateTitle(storyline); }}
+                      >
+                        {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}
+                        {titleStates[storyline.id] === "saving" ? "반영 중" : "수정하기"}
+                      </button>
+                    </div>
                   </div>
                   <p
                     id={`${storyline.id}-title-help`}
@@ -2341,10 +2360,14 @@ function App() {
                     role={titleErrors[storyline.id] ? "alert" : "status"}
                   >
                     {titleErrors[storyline.id]
-                      ?? (titleStates[storyline.id] === "saving"
+                      ?? (titleStates[storyline.id] === "generating"
+                        ? "릴스의 실제 대본을 바탕으로 다른 제목을 만들고 있습니다."
+                        : titleStates[storyline.id] === "saving"
                         ? "기존 영상은 유지한 채 제목 오버레이를 다시 렌더링합니다."
                         : titleStates[storyline.id] === "saved"
                           ? "화면 제목과 재생 영상에 수정 내용이 반영되었습니다."
+                          : titleStates[storyline.id] === "suggested"
+                            ? "새 제목을 제안했습니다. 문구를 다듬은 뒤 수정하기를 누르세요."
                           : "두 입력창의 문구가 영상의 흰색·주황색 제목에 각각 반영됩니다.")}
                   </p>
                 </div>

@@ -50,6 +50,7 @@ def test_load_cached_youtube_source_requires_complete_video_and_transcript(tmp_p
     (tmp_path / "source.info.json").write_text(json.dumps({
         "id": "abc123",
         "title": "Founder interview",
+        "description": "Sam Altman is the CEO of OpenAI.",
     }), encoding="utf-8")
 
     source = load_cached_youtube_source(
@@ -61,6 +62,10 @@ def test_load_cached_youtube_source_requires_complete_video_and_transcript(tmp_p
     assert source is not None
     assert source.video_path == video
     assert source.segments["video_path"] == str(video)
+    assert source.segments["source_description"] == "Sam Altman is the CEO of OpenAI."
+    assert json.loads((tmp_path / "segments.json").read_text(encoding="utf-8"))[
+        "source_description"
+    ] == "Sam Altman is the CEO of OpenAI."
     assert source.transcript_path == transcript
     assert source.title == "Founder interview"
     assert source.thumbnail_url == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
@@ -194,6 +199,7 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
         "duration": 3600,
         "language": "en",
         "channel": "Y Combinator",
+        "description": "Sam Altman is the CEO of OpenAI.",
         "thumbnail": "https://i.ytimg.com/vi/abc123/maxresdefault.jpg",
         "subtitles": {"en": [{"ext": "json3"}]},
         "automatic_captions": {},
@@ -220,6 +226,7 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
     assert source.segments["transcript_language"] == "en"
     assert source.segments["source_title"] == "창업가 인터뷰"
     assert source.segments["source_channel"] == "Y Combinator"
+    assert source.segments["source_description"] == "Sam Altman is the CEO of OpenAI."
     assert source.segments["segments"][0]["text"] == "Startups are hard"
     assert (tmp_path / "transcript.txt").read_text(encoding="utf-8") == "[00:00] Startups are hard\n"
     assert json.loads((tmp_path / "segments.json").read_text(encoding="utf-8"))["video_path"] == str(tmp_path / "source.mp4")

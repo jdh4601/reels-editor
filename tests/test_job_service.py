@@ -1282,8 +1282,16 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
     store.save(job)
     segments = _segments(video)
     (cached_source_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
-    malformed = json.dumps(_doc("복구 성공"), ensure_ascii=False).replace(
-        '"복구 성공 제목 1"', '“복구 성공 제목 1"', 1
+    recovered_doc = _doc("복구 성공")
+    recovered_doc["title_candidates"] = [
+        {"text": "복구 성공보다 중요했던 창업가의 제목 1", "keyword": "복구"},
+        {"text": "복구 성공했지만 조심해야 하는 제목 2", "keyword": "성공"},
+        {"text": "복구 성공을 망치는 의외의 제목 3", "keyword": "복구"},
+    ]
+    malformed = json.dumps(recovered_doc, ensure_ascii=False).replace(
+        '"복구 성공보다 중요했던 창업가의 제목 1"',
+        '“복구 성공보다 중요했던 창업가의 제목 1"',
+        1,
     )
     (store.job_dir(job.id) / "llm_raw_s1.txt").write_text(malformed, encoding="utf-8")
 
@@ -1292,7 +1300,7 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
 
     assert recovered.status is Status.READY
     assert story.status is Status.READY
-    assert story.title == "복구 성공 제목 1"
+    assert story.title == "복구 성공보다 중요했던 창업가의 제목 1"
     assert story.edl_path is not None
 
 

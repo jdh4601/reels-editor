@@ -7,12 +7,44 @@ MIN_TITLE_CHARS = 6
 ONE_LINE_MAX_CHARS = 11
 TWO_LINE_MIN_CHARS = 12
 MAX_TITLE_CHARS = 24
+MIN_GENERATED_TITLE_WORDS = 3
 
 _VARIATION_SELECTORS = range(0xFE00, 0xFE10)
 _SUPPLEMENTARY_VARIATION_SELECTORS = range(0xE0100, 0xE01F0)
 _EMOJI_MODIFIERS = range(0x1F3FB, 0x1F400)
 _REGIONAL_INDICATORS = range(0x1F1E6, 0x1F200)
 _PHRASE_ENDINGS = frozenset(",.!?;:，。、！？；：·/|—–-")
+_RHETORICAL_LINE_ENDINGS = (
+    "는데",
+    "지만",
+    "보다",
+    "들에게",
+    "에게",
+    "때",
+    "해서",
+    "아서",
+    "어서",
+    "명만",
+    "개만",
+    "원만",
+    "앱도",
+    "제품도",
+    "서비스도",
+    "마케팅도",
+    "브랜드도",
+    "아이디어도",
+    "전략도",
+    "팀도",
+    "회사도",
+    "창업자도",
+    "대표도",
+    "고객도",
+    "성공도",
+    "실패도",
+    "해도",
+    "인데도",
+    "수록",
+)
 
 
 def normalize_title(text: str) -> str:
@@ -74,10 +106,44 @@ def title_length_error(text: str) -> str | None:
     )
 
 
+def generated_title_length_error(text: str) -> str | None:
+    """Return an error when a newly generated title cannot render as two lines."""
+    length = title_char_count(text)
+    if length < TWO_LINE_MIN_CHARS:
+        return (
+            f"공백 제외 {length}자로 너무 짧음 — 생성 제목의 두 줄 표시를 위해 최소 "
+            f"{TWO_LINE_MIN_CHARS}자가 필요함 — 맥락과 반전을 더 구체화할 것"
+        )
+    return title_length_error(text)
+
+
+def generated_title_error(text: str) -> str | None:
+    """Return an error when a newly generated title breaks the hook contract."""
+    normalized = normalize_title(text)
+    length_error = generated_title_length_error(normalized)
+    if length_error:
+        return length_error
+    if len(normalized.split()) < MIN_GENERATED_TITLE_WORDS:
+        return (
+            "띄어쓰기가 부족함 — 두 의미 덩어리로 나뉘도록 자연스럽게 띄어쓴 "
+            f"{MIN_GENERATED_TITLE_WORDS}어절 이상으로 쓸 것"
+        )
+    return None
+
+
 def validate_title(text: str) -> str:
     """Normalize a title and raise ``ValueError`` when it violates the shared rule."""
     normalized = normalize_title(text)
     error = title_length_error(normalized)
+    if error:
+        raise ValueError(error)
+    return normalized
+
+
+def validate_generated_title(text: str) -> str:
+    """Normalize and validate a newly generated two-line on-video title."""
+    normalized = normalize_title(text)
+    error = generated_title_error(normalized)
     if error:
         raise ValueError(error)
     return normalized
@@ -135,7 +201,8 @@ def validate_editor_title_lines(upper: str, lower: str) -> tuple[str, str, str]:
     return normalized_upper, normalized_lower, combined
 
 
-def _balance_key(lines: tuple[str, str]) -> tuple[int, int, int]:
+def _balance_key(lines: tuple[str, str]) -> tuple[int, int, int, int]:
     left_count = title_char_count(lines[0])
     right_count = title_char_count(lines[1])
-    return abs(left_count - right_count), max(left_count, right_count), left_count
+    rhetorical_rank = 0 if lines[0].endswith(_RHETORICAL_LINE_ENDINGS) else 1
+    return rhetorical_rank, abs(left_count - right_count), max(left_count, right_count), left_count

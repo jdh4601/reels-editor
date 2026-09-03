@@ -35,6 +35,8 @@
     그렇지 않으면 직접 나온 alternate_role(예: `투자자`, `연쇄 창업가`)만 쓴다. 어느 것도 근거가 없으면
     name만 쓰고 나머지는 빈 문자열로 둔다. 기업/역할을 썼다면 evidence에 이를 뒷받침하는 원문 일부를
     정확히 복사한다.
+13. YouTube 영상 맥락이 제공된 작업은 최종 검수에서 화자의 이름과 직책을 모두 검사한다. company+role 또는
+    alternate_role이 비어 있으면 통과하지 못하므로, 영상 제목·채널·설명·SEGMENTS에서 직접 근거를 다시 찾아 채운다.
 
 {angle_block}
 {translation_block}

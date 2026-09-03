@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from reels_editor.storyteller import text_hook_principles
-from reels_editor.title_rules import normalize_title, validate_title
+from reels_editor.title_rules import normalize_title, validate_generated_title
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "title-suggestion.md"
 MAX_RETRIES = 2
@@ -53,9 +53,9 @@ def generate_title_suggestion(
         ))
         suggestion = _normalize_response(last_raw)
         try:
-            suggestion = validate_title(suggestion)
             if suggestion == normalized_current:
                 raise ValueError("현재 제목과 같음 — 다른 관점과 표현으로 다시 쓸 것")
+            suggestion = validate_generated_title(suggestion)
             return suggestion
         except ValueError as exc:
             last_error = str(exc)

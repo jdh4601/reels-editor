@@ -16,7 +16,10 @@ from reels_editor.storyteller import (
     is_declarative_sentence,
     text_hook_principles,
 )
-from reels_editor.title_rules import MAX_TITLE_CHARS, normalize_title, title_char_count
+from reels_editor.title_rules import (
+    generated_title_error,
+    normalize_title,
+)
 
 if TYPE_CHECKING:
     from reels_editor.jobs.models import ContentCandidate
@@ -29,9 +32,6 @@ TARGET_DURATION_S = 35
 MIN_DURATION_S = 20
 MAX_DURATION_S = 40
 MAX_RETRIES = 2
-MIN_CANDIDATE_TITLE_CHARS = 12
-MIN_CANDIDATE_TITLE_WORDS = 3
-
 CONTENT_TYPES: dict[str, dict[str, str]] = {
     "story": {
         "label": "스토리형",
@@ -233,23 +233,9 @@ def _text_hook_errors(candidates: list[ContentCandidate]) -> list[str]:
     errors: list[str] = []
     titled = [candidate for candidate in candidates if candidate.title]
     for index, candidate in enumerate(titled):
-        length = title_char_count(candidate.title)
-        if length < MIN_CANDIDATE_TITLE_CHARS:
-            errors.append(
-                f"candidates[{index}].title이 공백 제외 {length}자로 너무 짧음 — "
-                f"최소 {MIN_CANDIDATE_TITLE_CHARS}자로 구체화할 것"
-            )
-        elif length > MAX_TITLE_CHARS:
-            errors.append(
-                f"candidates[{index}].title이 공백 제외 {length}자로 최대 "
-                f"{MAX_TITLE_CHARS}자를 초과함"
-            )
-        words = candidate.title.split()
-        if len(words) < MIN_CANDIDATE_TITLE_WORDS:
-            errors.append(
-                f"candidates[{index}].title에 띄어쓰기가 부족함 — "
-                f"자연스럽게 띄어쓴 {MIN_CANDIDATE_TITLE_WORDS}어절 이상으로 쓸 것"
-            )
+        hook_error = generated_title_error(candidate.title)
+        if hook_error:
+            errors.append(f"candidates[{index}].title이 {hook_error}")
     if not errors and titled and all(is_declarative_sentence(c.title) for c in titled):
         errors.append(
             "모든 title이 서술형 완결 문장임 — 최소 1개는 명사구로 끝맺을 것"

@@ -13,6 +13,7 @@ from reels_editor.timebase import US
 YOUTUBE_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"})
 _MEDIA_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v"})
 MAX_DOWNLOAD_HEIGHT = 720
+MAX_SOURCE_DESCRIPTION_CHARS = 6_000
 DOWNLOAD_FORMAT = (
     f"bv*[height<={MAX_DOWNLOAD_HEIGHT}][ext=mp4]+ba[ext=m4a]/"
     f"b[height<={MAX_DOWNLOAD_HEIGHT}][ext=mp4]/"
@@ -114,6 +115,12 @@ def _thumbnail_url(info: dict[str, Any], video_id: str) -> str:
     return thumbnail_url_for_video(video_id) or ""
 
 
+def _source_description(info: dict[str, Any]) -> str:
+    """Return a bounded, plain-text metadata excerpt for identity grounding."""
+    description = " ".join(str(info.get("description") or "").split())
+    return description[:MAX_SOURCE_DESCRIPTION_CHARS].rstrip()
+
+
 def load_cached_youtube_source(
     source_dir: Path,
     source_url: str,
@@ -154,6 +161,13 @@ def load_cached_youtube_source(
             "source_channel",
             str(info.get("channel") or info.get("uploader") or "").strip(),
         )
+        if not str(segments.get("source_description") or "").strip():
+            segments["source_description"] = _source_description(info)
+        if segments != segments_payload:
+            (source_dir / "segments.json").write_text(
+                json.dumps(segments, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
         return YouTubeSource(
             video_path=video_path,
             segments=segments,
@@ -365,6 +379,7 @@ def download_youtube_source(
     segments["transcript_kind"] = track.kind
     segments["source_title"] = title
     segments["source_channel"] = str(info.get("channel") or info.get("uploader") or "").strip()
+    segments["source_description"] = _source_description(info)
     (output_dir / "transcript.txt").write_text(
         "\n".join(_transcript_line(item) for item in segments["segments"]) + "\n",
         encoding="utf-8",

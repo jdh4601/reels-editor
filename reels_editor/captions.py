@@ -33,11 +33,26 @@ _CLAUSE_ENDING = re.compile(
     r"(?:"
     r"고|며|면서|지만|는데|은데|인데|다가|거나|든지|"
     r"면|으면|라면|다면|니까|으니까|므로|으므로|"
-    r"해서|하여|아서|어서|여서|때문에|반면|대신"
+    r"해서|하여|아서|어서|여서|춰서|돼서|으나|때문에|반면|대신"
     r")$"
 )
 _CLAUSE_PUNCTUATION = ",;:，；："
 _BOUND_NOUNS = {"것", "수", "때", "점", "만큼", "듯", "데", "바", "줄", "리", "뿐"}
+_DEPENDENT_NOUNS = (_BOUND_NOUNS - {"바", "리"}) | {"중", "수준", "정도"}
+_COUNTERS = {
+    "명", "개", "번", "원", "년", "개월", "주", "일", "시간", "분", "초", "퍼센트"
+}
+_PARTICLES = {
+    "은", "는", "이", "가", "을", "를", "도", "만", "와", "과", "의", "에", "에서",
+    "에게", "한테", "로", "으로", "부터", "까지", "보다", "처럼", "에는", "에서는",
+    "으로는", "로는",
+}
+_DEPENDENT_CASE_PARTICLES = {"을", "를", "의", "에", "에서", "에게", "한테", "로", "으로"}
+_STANDALONE_PARTICLES = _PARTICLES | {"때문에", "위해", "대해", "통해"}
+_QUANTITY_DETERMINERS = {"한", "두", "세", "네", "몇", "여러", "모든"}
+_UNFINISHED_LEFT_TOKENS = {
+    "수", "바로", "정말", "가장", "아주", "더", "덜", "약", "총", "거의", "오직", "단", "딱",
+}
 
 
 def double_quotes_balanced(text: str) -> bool:
@@ -211,7 +226,7 @@ def semantic_phrase_chunks(text: str, max_chars: int = 20,
     긴 인용문도 같은 기준으로 나눈다. 의미 경계가 전혀 없는 매우 긴 문장만
     조사·의존명사 분리를 피한 공백 위치와 글자 경계를 최후 수단으로 사용한다.
     """
-    normalized = " ".join(str(text).split())
+    normalized = _normalize_korean_spacing(" ".join(str(text).split()))
     if not normalized or _visible_length(normalized) <= max_chars:
         return [normalized]
     if _is_outer_double_quote(normalized):
@@ -236,15 +251,28 @@ def semantic_phrase_chunks(text: str, max_chars: int = 20,
                 )
                 if _safe_fallback(normalized, start, boundary)
             ]
-            choices = safe_fallback or _eligible_boundaries(
-                normalized, start, fallback, max_chars, min_chars
-            )
-            if not choices:
-                boundary = _hard_boundary(normalized, start, max_chars)
+            if safe_fallback:
+                boundary = safe_fallback[-1]
             else:
-                boundary = choices[-1]
+                safe_outside_limit = [
+                    candidate
+                    for candidate in fallback
+                    if candidate > start
+                    and _visible_length(normalized[start:candidate]) >= min_chars
+                    and _safe_fallback(normalized, start, candidate)
+                ]
+                boundary = (
+                    min(
+                        safe_outside_limit,
+                        key=lambda candidate: abs(
+                            _visible_length(normalized[start:candidate]) - max_chars
+                        ),
+                    )
+                    if safe_outside_limit
+                    else _hard_boundary(normalized, start, max_chars)
+                )
             if boundary <= start:
-                break
+                boundary = _hard_boundary(normalized, start, max_chars)
         chunk = normalized[start:boundary].strip()
         if chunk:
             chunks.append(chunk)
@@ -306,10 +334,65 @@ def _safe_fallback(text: str, start: int, boundary: int) -> bool:
     right = text[boundary:].strip()
     if not left or not right:
         return False
-    if _DANGLING_KOREAN_ENDING.search(left):
+    last_left = left.split()[-1].strip(_CLAUSE_PUNCTUATION + _SENTENCE_PUNCTUATION)
+    if last_left in _UNFINISHED_LEFT_TOKENS:
         return False
-    first_right = right.split(maxsplit=1)[0].strip(_CLAUSE_PUNCTUATION)
-    return first_right not in _BOUND_NOUNS
+    if _token_has_stem_with_particle(
+        last_left,
+        {"수준", "정도"},
+        _DEPENDENT_CASE_PARTICLES,
+    ):
+        return False
+    right_tokens = right.split()
+    first_right = right_tokens[0].strip(
+        _CLAUSE_PUNCTUATION + _SENTENCE_PUNCTUATION + _CLOSING_MARKS
+    )
+    if first_right in _STANDALONE_PARTICLES or _is_dependent_right_token(first_right):
+        return False
+    if (
+        first_right in _QUANTITY_DETERMINERS
+        and len(right_tokens) > 1
+        and _is_counter_token(right_tokens[1])
+    ):
+        return False
+    return True
+
+
+def _is_dependent_right_token(token: str) -> bool:
+    return _token_has_stem(token, _DEPENDENT_NOUNS | _COUNTERS)
+
+
+def _is_counter_token(token: str) -> bool:
+    return _token_has_stem(token, _COUNTERS)
+
+
+def _token_has_stem(token: str, stems: set[str]) -> bool:
+    cleaned = token.strip(_CLAUSE_PUNCTUATION + _SENTENCE_PUNCTUATION + _CLOSING_MARKS)
+    if cleaned in stems:
+        return True
+    return any(
+        cleaned == stem + particle
+        for stem in stems
+        for particle in _PARTICLES
+    )
+
+
+def _token_has_stem_with_particle(
+    token: str,
+    stems: set[str],
+    particles: set[str],
+) -> bool:
+    cleaned = token.strip(_CLAUSE_PUNCTUATION + _SENTENCE_PUNCTUATION + _CLOSING_MARKS)
+    return any(
+        cleaned == stem + particle
+        for stem in stems
+        for particle in particles
+    )
+
+
+def _normalize_korean_spacing(text: str) -> str:
+    """Repair a small class of detached-particle spacing errors without rewriting words."""
+    return re.sub(r"(?<!\S)중\s+에서(?=\s|$)", "중에서", text)
 
 
 def _hard_boundary(text: str, start: int, max_chars: int) -> int:

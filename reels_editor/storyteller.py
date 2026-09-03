@@ -23,6 +23,9 @@ from reels_editor.title_rules import (
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "storytelling-30s.md"
 TEXT_HOOK_PATH = Path(__file__).parent.parent / "prompts" / "text-hook-principles.md"
+SUBTITLE_TRANSLATION_PATH = (
+    Path(__file__).parent.parent / "prompts" / "subtitle-translation-principles.md"
+)
 DEFAULT_SPEED = 1.2
 MAX_RETRIES = 2
 LONG_REEL_DURATION_S = 60
@@ -96,6 +99,8 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             "- 선택한 모든 seg_id를 subtitle_translations에 빠짐없이 넣고, 값은 짧고 자연스러운 한국어 자막으로 번역한다.\n"
             "- 숫자·고유명사·사실관계를 보존하고 원문에 없는 내용을 추가하지 않는다.\n"
             "- title_candidates 3개와 subtitle_keywords는 한국어로 쓴다.\n"
+            + subtitle_translation_principles()
+            + "\n"
         )
     else:
         translation = (
@@ -166,6 +171,11 @@ def extract_json(text: str) -> dict:
 def text_hook_principles() -> str:
     """제목을 만드는 모든 프롬프트가 공유하는 텍스트 훅 원칙."""
     return TEXT_HOOK_PATH.read_text(encoding="utf-8").strip()
+
+
+def subtitle_translation_principles() -> str:
+    """한국어 번역과 화면 자막 분할이 공유하는 의미 단위 원칙."""
+    return SUBTITLE_TRANSLATION_PATH.read_text(encoding="utf-8").strip()
 
 
 def is_declarative_sentence(text: str) -> bool:

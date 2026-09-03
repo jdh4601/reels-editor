@@ -57,6 +57,41 @@ def test_group_captions_splits_subscription_sentence_like_real_reel() -> None:
     assert all(len(group[2]) <= 22 for group in groups)
 
 
+@pytest.mark.parametrize(
+    ("text", "max_chars", "expected"),
+    [
+        (
+            "실제로 인터넷에서는 이길 수 있으나 현실에서는 달랐습니다.",
+            14,
+            ["실제로 인터넷에서는", "이길 수 있으나", "현실에서는 달랐습니다"],
+        ),
+        (
+            "사람들이 예상했던 반응과 인기 수준에 맞춰서 제품을 준비했습니다.",
+            20,
+            ["사람들이 예상했던 반응과", "인기 수준에 맞춰서 제품을 준비했습니다"],
+        ),
+        (
+            "제가 주목한 것 중 에서 하나는 아주 새로운 시장이었습니다.",
+            20,
+            ["제가 주목한 것 중에서 하나는", "아주 새로운 시장이었습니다"],
+        ),
+        (
+            "제가 가장 놀란 사람 한 명은 바로 그 창업자였습니다.",
+            20,
+            ["제가 가장 놀란 사람 한 명은", "바로 그 창업자였습니다"],
+        ),
+    ],
+)
+def test_group_captions_keeps_korean_meaning_units_together(
+    text: str,
+    max_chars: int,
+    expected: list[str],
+) -> None:
+    groups = render.group_captions([[0.0, 4.0, text]], max_chars=max_chars)
+
+    assert [group[2] for group in groups] == expected
+
+
 def test_group_captions_never_mixes_start_of_next_sentence() -> None:
     groups = render.group_captions([
         [0.0, 1.0, "이 일을 형편없이 합니다."],

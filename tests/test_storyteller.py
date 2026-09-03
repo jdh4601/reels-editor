@@ -86,6 +86,11 @@ def test_build_prompt_requires_korean_captions_for_english_transcript(segments: 
     assert "구간 선정과 의미 판단은 영어 원문" in prompt
     assert "선택한 모든 seg_id" in prompt
     assert "한국어 자막" in prompt
+    assert "이길 수" in prompt
+    assert "인기 수준" in prompt
+    assert "것 중에서" in prompt
+    assert "한 명" in prompt
+    assert "의미 단위" in prompt
     assert "{translation_block}" not in prompt
 
 

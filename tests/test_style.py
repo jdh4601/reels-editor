@@ -15,12 +15,12 @@ def test_load_done_preset() -> None:
     assert s.sub_highlight == "#FFFFFF"
     assert s.watermark_text == ""
     assert s.title_font.name == "A2Z-7Bold.otf"
-    assert s.title_upper_font.name == "A2Z-3Light.otf"
-    assert s.title_speaker_font.name == "Pretendard-Bold.otf"
-    assert s.sub_font.name == "Pretendard-Regular.otf"
-    assert s.sub_box_alpha == 0
-    assert s.sub_shadow_alpha == 180
-    assert s.watermark_font.name == "Pretendard-Bold.otf"
+    assert s.title_upper_font.name == "A2Z-5Medium.otf"
+    assert s.title_speaker_font.name == "A2Z-3Light.otf"
+    assert s.sub_font.name == "A2Z-3Light.otf"
+    assert s.sub_box_alpha == 200
+    assert s.sub_shadow_alpha == 0
+    assert s.watermark_font.name == "A2Z-5Medium.otf"
     assert s.title_size == 105
     assert s.title_emphasis_size is None
     assert s.title_line_gap == 24
@@ -36,7 +36,7 @@ def test_load_done_preset() -> None:
     assert s.sub_y == -400
     assert s.watermark_size == 75
     assert s.watermark_opacity == 255
-    assert s.watermark_y == -1150
+    assert s.watermark_y == -1190
     assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
     assert s.watermark_width == 212
     assert s.episode_text == "에피소드 1 / 1000"
@@ -64,7 +64,7 @@ def test_video_area_matches_reference_window() -> None:
 
 def test_missing_font_raises(tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
-    bad.write_text(STYLE.read_text().replace("Pretendard-Bold", "없는폰트"),
+    bad.write_text(STYLE.read_text().replace("A2Z-7Bold", "없는폰트"),
                    encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         load_style(bad)

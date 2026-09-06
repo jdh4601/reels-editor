@@ -98,6 +98,8 @@ def load_style(path: Path) -> StylePreset:
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     font_dir = Path(raw["font_dir"]).expanduser()
+    if not font_dir.is_absolute():
+        font_dir = (path.parent / font_dir).resolve()
     t, s, w = raw["title"], raw["subtitle"], raw["watermark"]
     title_font_dir = Path(t.get("font_dir", font_dir)).expanduser()
     if not title_font_dir.is_absolute():

@@ -139,10 +139,10 @@ def test_watermark_png_in_bottom_bar(tmp_path: Path) -> None:
     assert logo_bbox is not None and episode_bbox is not None
     logo_center_y = (logo_bbox[1] + logo_bbox[3]) / 2
     episode_center_y = (episode_bbox[1] + episode_bbox[3]) / 2
-    assert abs(logo_center_y - 1535) <= 2
+    assert abs(logo_center_y - 1555) <= 2
     assert abs(episode_center_y - 1460) <= 2
     assert episode_bbox[1] > style.canvas[1] - style.bottom_bar
-    assert 12 <= logo_bbox[1] - episode_bbox[3] <= 36
+    assert 32 <= logo_bbox[1] - episode_bbox[3] <= 56
     assert img.getchannel("A").getextrema()[1] == 255
 
 

@@ -3,15 +3,14 @@
 canvas: [1080, 1920]
 top_bar: 560        # 목표 캡처 기준 상단 블랙바 높이 px
 bottom_bar: 570     # 영상 영역 1080x790을 제외한 하단 블랙바 높이 px
-font_dir: ~/Library/Fonts
+font_dir: assets/fonts
 video:
   aspect: [9, 16]
   zoom: 1.3             # 영상 중앙을 기준으로 고정 130% 확대
 title:
-  font_dir: assets/fonts
   font: A2Z-7Bold.otf
-  upper_font: A2Z-3Light.otf
-  speaker_font: Pretendard-Bold.otf
+  upper_font: A2Z-5Medium.otf
+  speaker_font: A2Z-3Light.otf
   size: 105             # 한 줄 제목의 최대 크기. 폭에 맞춰 자동 축소
   y: 1120               # 제목+화자 그룹 중심, 캔버스 y=400px
   color: "#F06400"       # 상단 후킹 제목 전체 오렌지
@@ -25,25 +24,23 @@ title:
   upper_size: 70        # 2줄 제목의 첫 줄은 작은 흰색 전제 문구
   upper_color: "#FFFFFF"
 subtitle:
-  font: Pretendard-Regular.otf
+  font: A2Z-3Light.otf
   size: 40              # 편집기 표기 8 × 5
   opacity: 255          # 100%
   color: "#FFFFFF"
   highlight: "#FFFFFF"   # 자막은 강조색 없이 모두 흰색
-  box_alpha: 0           # 배경 없이 글자 그림자만 표시
-  shadow_alpha: 180
-  shadow_blur: 2
-  shadow_offset: [0, 2]
+  box_alpha: 200         # 가독성을 위한 반투명 검정 배경
+  shadow_alpha: 0
   y: -400                # 중앙 원점 편집 좌표(음수=아래), 캔버스 중심 y=1160px
   y_frac: 0.85           # 영상 영역 높이 기준 자막 baseline 위치(0=상단, 1=하단)
 watermark:
   text: ""
   image: assets/D.one.png
   width: 212            # 제공된 SVG의 원본 표시 폭 유지
-  font: Pretendard-Bold.otf
+  font: A2Z-5Medium.otf
   size: 75              # 편집기 표기 15 × 5
   opacity: 255          # SVG에 지정된 60% 투명도를 그대로 사용
-  y: -1150              # 에피소드 바로 아래, 캔버스 y=1535px
+  y: -1190              # 로고를 20px 아래로 이동, 캔버스 y=1555px
   episode_text: "에피소드 1 / 1000"
   episode_size: 48      # 에피소드 문구를 더 크고 선명하게 표시
   episode_color: "#FFFFFF"

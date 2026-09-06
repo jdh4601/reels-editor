@@ -323,6 +323,7 @@ class Job:
     phase: str | None = None
     progress: float = 0.0
     message: str | None = None
+    download_progress: dict[str, Any] | None = None
     revision: int = 0
     request_id: int = 0
     seq: int = 0
@@ -359,6 +360,7 @@ class Job:
             "phase": self.phase,
             "progress": self.progress,
             "message": self.message,
+            "download_progress": self.download_progress,
             "revision": self.revision,
             "request_id": self.request_id,
             "seq": self.seq,
@@ -408,6 +410,7 @@ class Job:
             phase=data.get("phase"),
             progress=float(data.get("progress", 0.0)),
             message=data.get("message"),
+            download_progress=data.get("download_progress"),
             revision=int(data.get("revision", 0)),
             request_id=int(data.get("request_id", 0)),
             seq=int(data.get("seq", data.get("request_id", 0))),

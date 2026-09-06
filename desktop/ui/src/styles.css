@@ -1387,3 +1387,6 @@ h2 {
   .candidate-workspace { animation: none; }
   .generation-progress-track > span { transition: none; }
 }
+
+.generation-progress-detail { margin: 12px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.generation-progress-note { margin: 6px 0 0; font-size: 12px; color: #687570; }

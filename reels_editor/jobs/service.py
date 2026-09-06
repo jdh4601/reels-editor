@@ -10,7 +10,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -1777,16 +1777,20 @@ class JobService:
                 message=f"YouTube 영상을 이 Mac으로 다운로드하는 중입니다. · {round(fraction * 100)}%",
             )
 
+        last_component_progress: tuple[str, int, bool] | None = None
+
         def on_download_progress_detail(detail: youtube.DownloadProgress) -> None:
-            nonlocal last_reported
-            if detail.fraction < 1.0 and detail.fraction - last_reported < 0.01:
+            nonlocal last_component_progress
+            current = (detail.component, round(detail.component_fraction * 100), detail.finished)
+            if current == last_component_progress:
                 return
-            last_reported = detail.fraction
+            last_component_progress = current
             self._set_job_progress(
                 job_id,
                 phase="downloading",
                 progress=0.04 + 0.10 * detail.fraction,
                 message=_download_progress_message(detail),
+                download_progress=asdict(detail),
             )
 
         source = self.deps.download_youtube_source(
@@ -2024,7 +2028,10 @@ class JobService:
                     storyline.progress = 1.0
                     self._save(job)
 
-    def _set_job_progress(self, job_id: str, *, phase: str, progress: float, message: str) -> None:
+    def _set_job_progress(
+        self, job_id: str, *, phase: str, progress: float, message: str,
+        download_progress: dict[str, Any] | None = None,
+    ) -> None:
         with self._lock:
             job = self.store.load(job_id)
             if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
@@ -2032,6 +2039,7 @@ class JobService:
             job.phase = phase
             job.progress = progress
             job.message = message
+            job.download_progress = download_progress
             self._save(job)
 
     def _set_storyline_render_progress(

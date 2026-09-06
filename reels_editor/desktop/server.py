@@ -559,6 +559,7 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "phase": job.phase,
         "progress": job.progress,
         "message": job.message,
+        "download_progress": job.download_progress,
         "error": job.error,
         "selected_storyline_id": job.selected_storyline_id or job.export.selected_storyline_id,
         "subtitles_on": _selected_subtitles(job),

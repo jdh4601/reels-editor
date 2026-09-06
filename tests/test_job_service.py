@@ -856,6 +856,17 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
         download_args["progress_snapshot"] = json.loads(
             (output_dir.parent / "job.json").read_text(encoding="utf-8")
         )
+        for percent in (80, 81):
+            kwargs["progress_detail_cb"](DownloadProgress(
+                fraction=0.9 + percent / 1000,
+                component="audio",
+                component_fraction=percent / 100,
+                downloaded_bytes=percent * 1024 * 1024,
+                total_bytes=100 * 1024 * 1024,
+            ))
+        download_args["audio_snapshot"] = json.loads(
+            (output_dir.parent / "job.json").read_text(encoding="utf-8")
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
         segments = _segments(video)
         (output_dir / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
@@ -888,6 +899,11 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     assert download_args["progress_snapshot"]["message"] == (
         "YouTube 영상 다운로드 중 · 50% · 50MB / 100MB"
     )
+    assert download_args["progress_snapshot"]["download_progress"]["component_fraction"] == 0.5
+    audio = download_args["audio_snapshot"]["download_progress"]
+    assert audio["component"] == "audio"
+    assert audio["component_fraction"] == 0.81
+    assert audio["downloaded_bytes"] == 81 * 1024 * 1024
     assert calls.durations == [35]
     assert calls.base == 3
 

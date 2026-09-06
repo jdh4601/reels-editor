@@ -92,12 +92,21 @@ type ContentCandidate = {
   takeaway: string;
 };
 
+type DownloadProgress = {
+  component: "video" | "audio" | "media";
+  component_fraction: number;
+  downloaded_bytes: number | null;
+  total_bytes: number | null;
+  finished: boolean;
+};
+
 type Snapshot = {
   jobId: string;
   jobStatus: JobStatus;
   jobPhase: string | null;
   jobProgress: number;
   jobMessage: string | null;
+  downloadProgress?: DownloadProgress | null;
   jobError: string | null;
   projectName: string;
   sourceUrl: string | null;
@@ -199,6 +208,7 @@ type ApiSnapshot = {
   phase?: string | null;
   progress?: number;
   message?: string | null;
+  download_progress?: DownloadProgress | null;
   error?: string | null;
   project_name?: string;
   projectName?: string;
@@ -740,6 +750,7 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
     jobPhase: payload.phase ?? null,
     jobProgress: progressPercent(payload.progress),
     jobMessage: payload.message ?? null,
+    downloadProgress: payload.download_progress ?? null,
     jobError: payload.error ?? null,
     projectName: payload.project_name ?? payload.projectName ?? "Reels Editor",
     sourceUrl: payload.source_url ?? payload.sourceUrl ?? null,
@@ -1064,6 +1075,13 @@ function App() {
   const generationActive = GENERATION_JOB_STATUSES.has(snapshot?.jobStatus ?? "idle");
   const activeGenerationStage = generationStageIndex(snapshot?.jobPhase, snapshot?.jobStatus ?? "idle");
   const generationProgress = snapshot?.jobProgress ?? 0;
+  const downloading = snapshot?.jobPhase === "downloading";
+  const download = snapshot?.downloadProgress;
+  const downloadLabel = download?.component === "audio" ? "오디오 다운로드" : "영상 다운로드";
+  const visibleProgress = downloading
+    ? (download ? progressPercent(download.component_fraction) : null)
+    : generationProgress;
+  const progressLabel = downloading ? downloadLabel : "전체 영상 생성 진행률";
   const estimatedStorylineCount = snapshot?.nStorylines || selectedCandidateIds.length || 3;
   const renderMinutes = estimatedRenderMinutes(estimatedStorylineCount);
   const remainingMinutes = estimatedRemainingMinutes(
@@ -2053,27 +2071,30 @@ function App() {
               <span className="generation-progress-icon" aria-hidden="true"><Loader2 size={16} className="spin" /></span>
               <div>
                 <p>현재 단계 · {activeGenerationStage + 1}/{GENERATION_STAGES.length}</p>
-                <h2 id="generation-progress-title">{GENERATION_STAGES[activeGenerationStage].label}</h2>
+                <h2 id="generation-progress-title">{downloading ? (download ? downloadLabel : "다운로드 준비 중") : GENERATION_STAGES[activeGenerationStage].label}</h2>
               </div>
             </div>
             <div className="generation-progress-summary">
-              <div className="generation-progress-eta">
+              {!downloading ? <div className="generation-progress-eta">
                 <span>예상 시간</span>
                 <strong>{remainingTimeLabel(remainingMinutes)}</strong>
               </div>
-              <strong className="generation-progress-percent">{generationProgress}%</strong>
+              : null}
+              <strong className="generation-progress-percent">{visibleProgress === null ? "준비 중" : `${visibleProgress}%`}</strong>
             </div>
           </div>
           <div
             className="generation-progress-track"
             role="progressbar"
-            aria-label="전체 영상 생성 진행률"
+            aria-label={progressLabel}
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={generationProgress}
+            aria-valuenow={visibleProgress ?? undefined}
           >
-            <span style={{ width: `${generationProgress}%` }} />
+            <span style={{ width: `${visibleProgress ?? 0}%` }} />
           </div>
+          {snapshot.jobMessage ? <p className="generation-progress-detail">{snapshot.jobMessage}</p> : null}
+          {downloading ? <p className="generation-progress-note">영상과 오디오는 각각 0–100%로 표시됩니다. 다운로드 후 두 파일을 합칩니다.</p> : null}
         </section>
       ) : null}
 

@@ -835,7 +835,9 @@ def test_job_service_validates_storyline_length_with_configured_playback_speed(t
     assert calls.speeds == [1.45]
 
 
-def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp_path: Path) -> None:
+def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp_path: Path, monkeypatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr("reels_editor.jobs.service.time.monotonic", lambda: clock[0])
     calls = Calls()
     deps = _deps(tmp_path, calls)
     video = tmp_path / "youtube-source.mp4"
@@ -865,6 +867,15 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
                 total_bytes=100 * 1024 * 1024,
             ))
         download_args["audio_snapshot"] = json.loads(
+            (output_dir.parent / "job.json").read_text(encoding="utf-8")
+        )
+        clock[0] += 2
+        kwargs["progress_detail_cb"](DownloadProgress(
+            fraction=0.9811, component="audio", component_fraction=0.811,
+            downloaded_bytes=81 * 1024 * 1024 + 1000,
+            total_bytes=100 * 1024 * 1024, speed_bytes_per_second=3500,
+        ))
+        download_args["slow_snapshot"] = json.loads(
             (output_dir.parent / "job.json").read_text(encoding="utf-8")
         )
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -904,6 +915,8 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     assert audio["component"] == "audio"
     assert audio["component_fraction"] == 0.81
     assert audio["downloaded_bytes"] == 81 * 1024 * 1024
+    assert download_args["slow_snapshot"]["download_progress"]["component_fraction"] == 0.811
+    assert "3KB/s · 전송 속도가 느립니다" in download_args["slow_snapshot"]["message"]
     assert calls.durations == [35]
     assert calls.base == 3
 

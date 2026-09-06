@@ -58,6 +58,7 @@ class DownloadProgress:
     downloaded_bytes: int | None = None
     total_bytes: int | None = None
     finished: bool = False
+    speed_bytes_per_second: float | None = None
 
 
 def validate_youtube_url(url: str) -> str:
@@ -340,6 +341,7 @@ def download_youtube_source(
             downloaded_bytes=round(downloaded) or None,
             total_bytes=round(total) if total else None,
             finished=finished,
+            speed_bytes_per_second=_positive_float(event.get("speed")),
         )
         if progress_detail_cb:
             progress_detail_cb(detail)
@@ -351,6 +353,11 @@ def download_youtube_source(
         "no_warnings": True,
         "noplaylist": True,
         "format": DOWNLOAD_FORMAT,
+        # Bound each request so a slow CDN connection is renewed more often.
+        "http_chunk_size": 1024 * 1024,
+        "socket_timeout": 20,
+        "retries": 3,
+        "fragment_retries": 3,
         "merge_output_format": "mp4",
         "outtmpl": str(output_dir / "source.%(ext)s"),
         "writesubtitles": track.kind == "manual",

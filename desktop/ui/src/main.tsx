@@ -1094,12 +1094,6 @@ function App() {
   const episodeValid = Number.isInteger(Number(episodeInput)) && Number(episodeInput) > 0 && String(Number(episodeInput)) === episodeInput.trim();
   const sourceThumbnailUrl = youtubeThumbnailUrl(youtubeUrl);
 
-  const stats = useMemo(() => {
-    const ready = storylines.filter((storyline) => storyline.status === "ready").length;
-    const failed = storylines.filter((storyline) => storyline.status === "failed").length;
-    return { ready, failed, total: storylines.length };
-  }, [storylines]);
-
   function updateStoryline(id: string, patch: Partial<Storyline>) {
     setSnapshot((current) => {
       if (!current) return current;
@@ -2229,23 +2223,6 @@ function App() {
           </div>
         </section>
       ) : null}
-
-      <section className="status-row" aria-label="작업 상태">
-        <div>
-          <span className={`connection-dot ${connection}`} />
-          <strong>{connection === "connected" ? "로컬 엔진 연결됨" : connection === "connecting" ? "연결 중" : "연결 끊김"}</strong>
-          <small>{snapshot.sourceLabel}</small>
-        </div>
-        <div>
-          <strong>{candidateSelectionActive ? `${snapshot.candidates.length}/10` : `${stats.ready}/${stats.total}`}</strong>
-          <small>{candidateSelectionActive ? "분석된 후보" : "준비된 대표 영상"}</small>
-        </div>
-        <div>
-          <strong>{candidateSelectionActive ? selectedCandidateIds.length : stats.failed}</strong>
-          <small>{candidateSelectionActive ? "선택한 후보" : "실패한 릴스"}</small>
-        </div>
-        <div><strong>{candidateSelectionActive ? "20–40초" : subtitlesEnabled ? "ON" : "OFF"}</strong><small>{candidateSelectionActive ? "허용 영상 길이" : "클립 자막"}</small></div>
-      </section>
 
       {connection === "disconnected" ? (
         <section className="notice" role="status">

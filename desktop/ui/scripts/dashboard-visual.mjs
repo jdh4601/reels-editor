@@ -136,7 +136,6 @@ async function assertNoCriticalOverlap(page) {
   const result = await page.evaluate(() => {
     const selectors = [
       ".topbar",
-      ".status-row",
       ".generation-progress",
       ".lane",
       ".phone-frame",

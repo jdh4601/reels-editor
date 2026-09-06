@@ -233,6 +233,8 @@ def test_download_youtube_source_persists_video_raw_transcript_and_segments(tmp_
     assert options_seen[1]["writesubtitles"] is True
     assert options_seen[1]["writeautomaticsub"] is False
     assert options_seen[1]["format"] == DOWNLOAD_FORMAT
+    assert options_seen[1]["retries"] == 3
+    assert options_seen[1]["http_chunk_size"] == 1024 * 1024
     assert "height<=720" in options_seen[1]["format"]
     assert "height<=1080" not in options_seen[1]["format"]
     assert progress == [0.5, 1.0]
@@ -253,6 +255,7 @@ def test_download_progress_ignores_subtitles_and_aggregates_video_and_audio(tmp_
             "status": "downloading",
             "filename": str(tmp_path / "source.f137.mp4.part"),
             "downloaded_bytes": 50,
+            "speed": 3500,
             "total_bytes": 100,
             "info_dict": {"vcodec": "avc1", "acodec": "none"},
         },
@@ -288,5 +291,6 @@ def test_download_progress_ignores_subtitles_and_aggregates_video_and_audio(tmp_
 
     assert [round(detail.fraction, 3) for detail in details] == [0.45, 0.9, 0.925, 1.0]
     assert [detail.component for detail in details] == ["video", "video", "audio", "audio"]
+    assert details[0].speed_bytes_per_second == 3500
     assert details[0].downloaded_bytes == 50
     assert details[0].total_bytes == 100

@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
@@ -1778,13 +1779,16 @@ class JobService:
             )
 
         last_component_progress: tuple[str, int, bool] | None = None
+        last_detail_at = 0.0
 
         def on_download_progress_detail(detail: youtube.DownloadProgress) -> None:
-            nonlocal last_component_progress
+            nonlocal last_component_progress, last_detail_at
             current = (detail.component, round(detail.component_fraction * 100), detail.finished)
-            if current == last_component_progress:
+            now = time.monotonic()
+            if current == last_component_progress and now - last_detail_at < 1.0:
                 return
             last_component_progress = current
+            last_detail_at = now
             self._set_job_progress(
                 job_id,
                 phase="downloading",
@@ -2392,7 +2396,12 @@ def _download_progress_message(detail: youtube.DownloadProgress) -> str:
             f" · {_human_file_size(detail.downloaded_bytes)}"
             f" / {_human_file_size(detail.total_bytes)}"
         )
-    return f"YouTube {label} 다운로드 중 · {percent}%{size_detail}"
+    speed_detail = ""
+    if detail.speed_bytes_per_second is not None:
+        speed_detail = f" · {_human_file_size(round(detail.speed_bytes_per_second))}/s"
+        if detail.speed_bytes_per_second < 50 * 1024:
+            speed_detail += " · 전송 속도가 느립니다"
+    return f"YouTube {label} 다운로드 중 · {percent}%{size_detail}{speed_detail}"
 
 
 def _human_file_size(value: int) -> str:

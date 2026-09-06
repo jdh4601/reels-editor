@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from reels_editor import captions, processes
 from reels_editor.storyteller import format_speaker_label
@@ -393,7 +393,7 @@ def render_title_png(
     safe_width = W - 120
     if len(lines) == 2:
         fonts = (
-            _fit_single_line_font(lines[0], style.title_font, style.title_upper_size, safe_width, d),
+            _fit_single_line_font(lines[0], style.title_upper_font or style.title_font, style.title_upper_size, safe_width, d),
             _fit_single_line_font(lines[1], style.title_font, style.title_size, safe_width, d),
         )
         colors = (_hex_rgba(style.title_upper_color), _hex_rgba(style.title_color))
@@ -407,7 +407,7 @@ def render_title_png(
         line_heights.append(line_bottom - line_top)
     line_gap = style.title_line_gap if style.title_line_gap is not None else 12
     title_height = sum(line_heights) + line_gap * (len(lines) - 1)
-    speaker_font = ImageFont.truetype(str(style.title_font), style.title_speaker_size)
+    speaker_font = ImageFont.truetype(str(style.title_speaker_font or style.title_font), style.title_speaker_size)
     speaker_height = 0
     if speaker_text:
         _left, speaker_top, _right, speaker_bottom = _ink_bbox(d, speaker_text, speaker_font)
@@ -558,9 +558,25 @@ def render_subtitle_pngs(groups: list[list], keywords: list[str],
         origin_x, origin_y = _centered_text_origin(d, t, font, (W // 2, center_y))
         ink_box = (origin_x + left, origin_y + top,
                    origin_x + right, origin_y + bottom)
-        d.rectangle((ink_box[0] - pad_x, ink_box[1] - pad_y,
-                     ink_box[2] + pad_x, ink_box[3] + pad_y),
-                    fill=(0, 0, 0, style.sub_box_alpha))
+        if style.sub_box_alpha:
+            d.rectangle((ink_box[0] - pad_x, ink_box[1] - pad_y,
+                         ink_box[2] + pad_x, ink_box[3] + pad_y),
+                        fill=(0, 0, 0, style.sub_box_alpha))
+        if style.sub_shadow_alpha:
+            shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            shadow_draw = ImageDraw.Draw(shadow)
+            dx, dy = style.sub_shadow_offset
+            _draw_highlighted_line(
+                shadow_draw,
+                (round(origin_x) + dx, round(origin_y) + dy),
+                t, [], font,
+                (0, 0, 0, round(style.sub_shadow_alpha * style.sub_opacity / 255)),
+                (0, 0, 0, 0),
+            )
+            img = Image.alpha_composite(img, shadow.filter(
+                ImageFilter.GaussianBlur(style.sub_shadow_blur)
+            ))
+            d = ImageDraw.Draw(img)
         _draw_highlighted_line(
             d,
             (round(origin_x), round(origin_y)),

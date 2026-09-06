@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-TITLE_ORANGE = "#FF7A00"
+TITLE_ORANGE = "#F06400"
 EPISODE_TOTAL = 1000
 
 
@@ -37,6 +37,11 @@ class StylePreset:
     watermark_font: Path
     watermark_size: int
     speed: float
+    title_upper_font: Path | None = None
+    title_speaker_font: Path | None = None
+    sub_shadow_alpha: int = 0
+    sub_shadow_blur: float = 2.0
+    sub_shadow_offset: tuple[int, int] = (0, 2)
     title_emphasis_size: int | None = None
     title_line_gap: int | None = None
     sub_opacity: int = 255
@@ -94,11 +99,14 @@ def load_style(path: Path) -> StylePreset:
         raw = yaml.safe_load(f)
     font_dir = Path(raw["font_dir"]).expanduser()
     t, s, w = raw["title"], raw["subtitle"], raw["watermark"]
+    title_font_dir = Path(t.get("font_dir", font_dir)).expanduser()
+    if not title_font_dir.is_absolute():
+        title_font_dir = path.parent / title_font_dir
     video = raw.get("video", {})
     return StylePreset(
         canvas=tuple(raw["canvas"]),
         top_bar=raw["top_bar"], bottom_bar=raw["bottom_bar"],
-        title_font=_font(font_dir, t["font"]), title_size=t["size"],
+        title_font=_font(title_font_dir, t["font"]), title_size=t["size"],
         title_color=str(t.get("color", TITLE_ORANGE)).upper(),
         title_highlight=str(t.get("highlight", TITLE_ORANGE)).upper(),
         title_max_lines=t["max_lines"],
@@ -108,6 +116,11 @@ def load_style(path: Path) -> StylePreset:
         watermark_text=w["text"], watermark_font=_font(font_dir, w["font"]),
         watermark_size=w["size"],
         speed=float(raw["speed"]),
+        title_upper_font=_font(title_font_dir, t["upper_font"]) if "upper_font" in t else None,
+        title_speaker_font=_font(font_dir, t["speaker_font"]) if "speaker_font" in t else None,
+        sub_shadow_alpha=int(s.get("shadow_alpha", 0)),
+        sub_shadow_blur=float(s.get("shadow_blur", 2)),
+        sub_shadow_offset=tuple(s.get("shadow_offset", (0, 2))),
         title_emphasis_size=t.get("emphasis_size"),
         title_line_gap=int(t["line_gap"]) if "line_gap" in t else None,
         sub_opacity=int(s.get("opacity", 255)),

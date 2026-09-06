@@ -10,12 +10,16 @@ STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
 def test_load_done_preset() -> None:
     s = load_style(STYLE)
     assert s.canvas == (1080, 1920)
-    assert s.title_highlight == "#FF7A00"
-    assert s.title_color == "#FF7A00"
+    assert s.title_highlight == "#F06400"
+    assert s.title_color == "#F06400"
     assert s.sub_highlight == "#FFFFFF"
     assert s.watermark_text == ""
-    assert s.title_font.name == "Pretendard-Bold.otf"
-    assert s.sub_font.name == "Pretendard-Bold.otf"
+    assert s.title_font.name == "A2Z-7Bold.otf"
+    assert s.title_upper_font.name == "A2Z-3Light.otf"
+    assert s.title_speaker_font.name == "Pretendard-Bold.otf"
+    assert s.sub_font.name == "Pretendard-Regular.otf"
+    assert s.sub_box_alpha == 0
+    assert s.sub_shadow_alpha == 180
     assert s.watermark_font.name == "Pretendard-Bold.otf"
     assert s.title_size == 105
     assert s.title_emphasis_size is None
@@ -32,7 +36,7 @@ def test_load_done_preset() -> None:
     assert s.sub_y == -400
     assert s.watermark_size == 75
     assert s.watermark_opacity == 255
-    assert s.watermark_y == -1410
+    assert s.watermark_y == -1150
     assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
     assert s.watermark_width == 212
     assert s.episode_text == "에피소드 1 / 1000"

@@ -15,13 +15,13 @@ def test_title_png_canvas_size_with_highlight(tmp_path: Path) -> None:
     img = Image.open(p).convert("RGBA")
     assert img.size == style.canvas
     colors = {c for _n, c in img.getcolors(maxcolors=1_000_000)}
-    assert (255, 122, 0, 255) in colors      # #FF7A00 오렌지 후킹 제목
+    assert (240, 100, 0, 255) in colors      # #F06400 오렌지 후킹 제목
     assert (255, 255, 255, 255) in colors    # 2줄 제목의 작은 흰색 첫 줄
 
     orange = img.getchannel("A").point(lambda _a: 0)
     white = img.getchannel("A").point(lambda _a: 0)
     pixels = list(img.get_flattened_data())
-    orange.putdata([255 if pixel[:3] == (255, 122, 0) else 0 for pixel in pixels])
+    orange.putdata([255 if pixel[:3] == (240, 100, 0) else 0 for pixel in pixels])
     white.putdata([255 if pixel[:3] == (255, 255, 255) else 0 for pixel in pixels])
     orange_bbox = orange.getbbox()
     white_bbox = white.getbbox()
@@ -45,7 +45,7 @@ def test_two_line_title_keeps_large_orange_second_line_anchored(tmp_path: Path) 
     pixels = list(img.get_flattened_data())
     orange = img.getchannel("A").point(lambda _a: 0)
     white = img.getchannel("A").point(lambda _a: 0)
-    orange.putdata([255 if pixel[:3] == (255, 122, 0) else 0 for pixel in pixels])
+    orange.putdata([255 if pixel[:3] == (240, 100, 0) else 0 for pixel in pixels])
     white.putdata([255 if pixel[:3] == (255, 255, 255) else 0 for pixel in pixels])
     orange_bbox = orange.getbbox()
     upper_white_bbox = white.crop((0, 0, style.canvas[0], 368)).getbbox()
@@ -95,7 +95,7 @@ def test_title_png_uses_one_safe_line_and_white_speaker_label(tmp_path: Path) ->
     orange = img.getchannel("A").point(lambda _a: 0)
     white = img.getchannel("A").point(lambda _a: 0)
     pixels = list(img.get_flattened_data())
-    orange.putdata([255 if pixel[:3] == (255, 122, 0) else 0 for pixel in pixels])
+    orange.putdata([255 if pixel[:3] == (240, 100, 0) else 0 for pixel in pixels])
     white.putdata([255 if pixel[:3] == (255, 255, 255) else 0 for pixel in pixels])
     orange_bbox = orange.getbbox()
     white_bbox = white.getbbox()
@@ -115,8 +115,8 @@ def test_watermark_png_in_bottom_bar(tmp_path: Path) -> None:
     img = Image.open(p).convert("RGBA")
     assert img.size == style.canvas
     alpha = img.getchannel("A")
-    logo_region_top = 1600
-    episode_region_bottom = 1550
+    logo_region_top = 1490
+    episode_region_bottom = 1490
     logo_local_bbox = alpha.crop((0, logo_region_top, style.canvas[0], style.canvas[1])).getbbox()
     episode_bbox = alpha.crop((0, 1350, style.canvas[0], episode_region_bottom)).getbbox()
     logo_bbox = (
@@ -139,10 +139,10 @@ def test_watermark_png_in_bottom_bar(tmp_path: Path) -> None:
     assert logo_bbox is not None and episode_bbox is not None
     logo_center_y = (logo_bbox[1] + logo_bbox[3]) / 2
     episode_center_y = (episode_bbox[1] + episode_bbox[3]) / 2
-    assert abs(logo_center_y - 1665) <= 2
+    assert abs(logo_center_y - 1535) <= 2
     assert abs(episode_center_y - 1460) <= 2
     assert episode_bbox[1] > style.canvas[1] - style.bottom_bar
-    assert episode_bbox[3] < logo_bbox[1]
+    assert 12 <= logo_bbox[1] - episode_bbox[3] <= 36
     assert img.getchannel("A").getextrema()[1] == 255
 
 

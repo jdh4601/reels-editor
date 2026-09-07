@@ -39,7 +39,7 @@ watermark:
   width: 212            # 제공된 SVG의 원본 표시 폭 유지
   font: A2Z-5Medium.otf
   size: 75              # 편집기 표기 15 × 5
-  opacity: 255          # SVG에 지정된 60% 투명도를 그대로 사용
+  opacity: 255          # 투명도 0%, 선명한 흰색 로고
   y: -1190              # 로고를 20px 아래로 이동, 캔버스 y=1555px
   episode_text: "에피소드 1 / 1000"
   episode_size: 48      # 에피소드 문구를 더 크고 선명하게 표시

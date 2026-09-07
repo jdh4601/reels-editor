@@ -143,7 +143,10 @@ def test_watermark_png_in_bottom_bar(tmp_path: Path) -> None:
     assert abs(episode_center_y - 1460) <= 2
     assert episode_bbox[1] > style.canvas[1] - style.bottom_bar
     assert 32 <= logo_bbox[1] - episode_bbox[3] <= 56
-    assert img.getchannel("A").getextrema()[1] == 255
+    logo_region = img.crop((0, logo_region_top, style.canvas[0], style.canvas[1]))
+    assert (255, 255, 255, 255) in {
+        color for _, color in logo_region.getcolors(maxcolors=1_000_000)
+    }
 
 
 def test_watermark_accepts_job_episode_number(tmp_path: Path) -> None:

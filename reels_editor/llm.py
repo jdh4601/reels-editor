@@ -101,9 +101,24 @@ def _codex_cli_runner(model: str) -> Callable[[str], str]:
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()[-2000:]
                 raise RuntimeError(f"codex exec 실패:\n{detail}")
-            if not output_path.is_file():
-                raise RuntimeError("codex exec가 최종 응답 파일을 생성하지 않았습니다.")
-            return output_path.read_text(encoding="utf-8")
+            output = (
+                output_path.read_text(encoding="utf-8")
+                if output_path.is_file()
+                else ""
+            )
+            if output.strip():
+                return output
+
+            # In non-JSON mode Codex also writes the final answer to stdout.
+            # Some successful CLI runs have omitted --output-last-message, so
+            # retain that response instead of failing every selected reel.
+            if result.stdout.strip():
+                return result.stdout
+
+            detail = result.stderr.strip()[-2000:]
+            if not detail:
+                detail = "종료 코드 0 (응답 및 오류 출력 없음)"
+            raise RuntimeError(f"codex exec가 최종 응답을 생성하지 않았습니다.\n{detail}")
     return run
 
 

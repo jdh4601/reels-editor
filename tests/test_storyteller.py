@@ -94,6 +94,19 @@ def test_build_prompt_requires_korean_captions_for_english_transcript(segments: 
     assert "{translation_block}" not in prompt
 
 
+def test_build_prompt_prioritizes_caption_continuity_over_clip_pacing(segments: dict) -> None:
+    english_segments = {**segments, "transcript_language": "en-orig"}
+
+    prompt = storyteller.build_prompt(english_segments, duration_s=30, feedback=None)
+
+    assert "맥락의 자립성을 최우선" in prompt
+    assert "전체 발화를 먼저" in prompt
+    assert "개별 seg_id를 따로 번역" in prompt
+    assert "지시어의 선행사" in prompt
+    assert "원문 시간 순서" in prompt
+    assert "길이 제한보다 의미 단위" in prompt
+
+
 def test_build_prompt_includes_youtube_context_and_speaker_contract(segments: dict) -> None:
     youtube_segments = {
         **segments,
@@ -168,7 +181,7 @@ def test_generate_script_requires_translation_for_each_selected_english_segment(
     translated = {
         **edl_doc,
         "subtitle_translations": {
-            "t1": "하지만 꿈을 포기할 수 없었어요.",
+            "t1": "저는 꿈을 포기할 수 없었어요.",
             "t2": "그래서 바로 시작했죠.",
         },
     }
@@ -181,7 +194,7 @@ def test_generate_script_requires_translation_for_each_selected_english_segment(
 
     assert len(calls) == 2
     assert "subtitle_translations는 객체여야 함" in calls[1]
-    assert out["subtitle_translations"]["t1"] == "하지만 꿈을 포기할 수 없었어요."
+    assert out["subtitle_translations"]["t1"] == "저는 꿈을 포기할 수 없었어요."
 
 
 def test_generate_script_retries_when_translated_caption_ends_mid_quote(
@@ -212,6 +225,95 @@ def test_generate_script_retries_when_translated_caption_ends_mid_quote(
     assert len(calls) == 2
     assert "큰따옴표가 닫힐 때까지" in calls[1]
     assert out["subtitle_translations"]["t2"].startswith("포기해야 한다\"")
+
+
+def test_generate_script_allows_connector_when_previous_cut_supplies_context(
+        segments: dict, edl_doc: dict) -> None:
+    english_segments = {**segments, "transcript_language": "en"}
+    base = {
+        **edl_doc,
+        "cuts": [
+            {"beat": "훅", "seg_ids": ["t0"], "broll_marker": None},
+            {"beat": "결론", "seg_ids": ["t2"], "broll_marker": None},
+        ],
+    }
+    valid = {
+        **base,
+        "subtitle_translations": {
+            "t0": "열 번 중 아홉 번은 정말 나쁜 투자였습니다.",
+            "t2": "하지만 다음 날에도 열정이 있다면 모든 게 쉽습니다.",
+        },
+    }
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(valid, ensure_ascii=False)
+
+    out = storyteller.generate_script(english_segments, runner=runner)
+
+    assert len(calls) == 1
+    assert out["subtitle_translations"]["t2"].startswith("하지만 다음 날에도")
+
+
+def test_generate_script_retries_context_dependent_first_caption(
+        segments: dict, edl_doc: dict) -> None:
+    english_segments = {**segments, "transcript_language": "en"}
+    bad = {
+        **edl_doc,
+        "subtitle_translations": {
+            "t1": "그런데 정말 포기할 수 없었습니다.",
+            "t2": "그래서 바로 시작했습니다.",
+        },
+    }
+    good = {
+        **edl_doc,
+        "subtitle_translations": {
+            "t1": "저는 창업의 꿈을 포기할 수 없었습니다.",
+            "t2": "그래서 바로 시작했습니다.",
+        },
+    }
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(bad if len(calls) == 1 else good, ensure_ascii=False)
+
+    out = storyteller.generate_script(english_segments, runner=runner)
+
+    assert len(calls) == 2
+    assert "첫 자막" in calls[1]
+    assert out["subtitle_translations"]["t1"].startswith("저는 창업의 꿈을")
+
+
+def test_generate_script_retries_first_caption_with_missing_subject(
+        segments: dict, edl_doc: dict) -> None:
+    english_segments = {**segments, "transcript_language": "en"}
+    bad = {
+        **edl_doc,
+        "subtitle_translations": {
+            "t1": "효과가 있다고 느끼지 못했습니다.",
+            "t2": "그래서 바로 시작했습니다.",
+        },
+    }
+    good = {
+        **edl_doc,
+        "subtitle_translations": {
+            "t1": "기존 광고에서는 효과를 느끼지 못했습니다.",
+            "t2": "그래서 바로 시작했습니다.",
+        },
+    }
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(bad if len(calls) == 1 else good, ensure_ascii=False)
+
+    out = storyteller.generate_script(english_segments, runner=runner)
+
+    assert len(calls) == 2
+    assert "무엇의 효과" in calls[1]
+    assert out["subtitle_translations"]["t1"].startswith("기존 광고에서는")
 
 
 def test_generate_script_retries_then_fails(segments: dict) -> None:

@@ -92,6 +92,66 @@ def test_group_captions_keeps_korean_meaning_units_together(
     assert [group[2] for group in groups] == expected
 
 
+def test_group_captions_keeps_spatial_noun_with_its_predicate() -> None:
+    groups = render.group_captions([[
+        0.0,
+        5.0,
+        "개인적인 기회주의적 아이디어가 테이블 위에 떠돌더라도 이성적으로 결정합니다",
+    ]])
+
+    captions = [group[2] for group in groups]
+
+    assert not any(
+        left.endswith("테이블") and right.startswith("위에")
+        for left, right in zip(captions, captions[1:])
+    )
+
+
+def test_group_captions_keeps_required_action_phrase_together() -> None:
+    groups = render.group_captions([[
+        0.0,
+        4.0,
+        "그리고 그게 바로 우리가 지금 세워야 할 구조이자 우리가 해결해야 할 일입니다",
+    ]])
+
+    captions = [group[2] for group in groups]
+
+    assert not any(
+        left.endswith("세워야") and right.startswith("할 ")
+        for left, right in zip(captions, captions[1:])
+    )
+
+
+def test_group_captions_does_not_leave_object_without_predicate() -> None:
+    groups = render.group_captions([[
+        0.0,
+        4.0,
+        "그리고 커뮤니티가 이 모든 것을 움직이는 핵심 동력이에요",
+    ]])
+
+    captions = [group[2] for group in groups]
+
+    assert not any(
+        left.endswith("것을") and right.startswith("움직이는")
+        for left, right in zip(captions, captions[1:])
+    )
+
+
+def test_group_captions_does_not_orphan_demonstrative_modifier() -> None:
+    groups = render.group_captions([[
+        0.0,
+        4.0,
+        "그런데 이제는 그게 더 이상 이 규모의 회사에서는 불가능합니다",
+    ]])
+
+    captions = [group[2] for group in groups]
+
+    assert not any(
+        left.endswith(" 이") and right.startswith("규모")
+        for left, right in zip(captions, captions[1:])
+    )
+
+
 def test_group_captions_never_mixes_start_of_next_sentence() -> None:
     groups = render.group_captions([
         [0.0, 1.0, "이 일을 형편없이 합니다."],

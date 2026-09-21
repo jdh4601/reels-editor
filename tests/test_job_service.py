@@ -342,6 +342,26 @@ def test_job_service_uses_fixed_35_second_target(tmp_path: Path) -> None:
     assert calls.durations == [35]
 
 
+def test_job_service_notifies_after_candidates_and_final_renders(tmp_path: Path) -> None:
+    calls = Calls()
+    notifications: list[tuple[str, str]] = []
+    service = JobService(
+        store=JobStore(tmp_path / "jobs"),
+        deps=_deps(tmp_path, calls),
+        notify=lambda title, message: notifications.append((title, message)),
+    )
+
+    ready = _run_ready(service, candidate_count=2)
+
+    assert ready.status is Status.READY
+    assert [title for title, _message in notifications] == [
+        "콘텐츠 후보가 준비되었습니다",
+        "릴스 생성이 완료되었습니다",
+    ]
+    assert "다운로드와 분석이 끝났습니다" in notifications[0][1]
+    assert "릴스 2개가 모두 준비되었습니다" in notifications[1][1]
+
+
 def test_job_service_generates_and_persists_caption_for_selected_reel(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))

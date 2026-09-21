@@ -39,6 +39,7 @@ _CLAUSE_ENDING = re.compile(
 _CLAUSE_PUNCTUATION = ",;:，；："
 _BOUND_NOUNS = {"것", "수", "때", "점", "만큼", "듯", "데", "바", "줄", "리", "뿐"}
 _DEPENDENT_NOUNS = (_BOUND_NOUNS - {"바", "리"}) | {"중", "수준", "정도"}
+_SPATIAL_NOUNS = {"위", "아래", "안", "밖", "앞", "뒤", "옆", "사이", "가운데", "내부"}
 _COUNTERS = {
     "명", "개", "번", "원", "년", "개월", "주", "일", "시간", "분", "초", "퍼센트"
 }
@@ -52,6 +53,7 @@ _STANDALONE_PARTICLES = _PARTICLES | {"때문에", "위해", "대해", "통해"}
 _QUANTITY_DETERMINERS = {"한", "두", "세", "네", "몇", "여러", "모든"}
 _UNFINISHED_LEFT_TOKENS = {
     "수", "바로", "정말", "가장", "아주", "더", "덜", "약", "총", "거의", "오직", "단", "딱",
+    "이", "그", "저", "이런", "그런", "저런", "어떤", "무슨", "각", "모든",
 }
 
 
@@ -337,6 +339,8 @@ def _safe_fallback(text: str, start: int, boundary: int) -> bool:
     last_left = left.split()[-1].strip(_CLAUSE_PUNCTUATION + _SENTENCE_PUNCTUATION)
     if last_left in _UNFINISHED_LEFT_TOKENS:
         return False
+    if len(last_left) > 1 and last_left.endswith(("을", "를")):
+        return False
     if _token_has_stem_with_particle(
         last_left,
         {"수준", "정도"},
@@ -347,6 +351,8 @@ def _safe_fallback(text: str, start: int, boundary: int) -> bool:
     first_right = right_tokens[0].strip(
         _CLAUSE_PUNCTUATION + _SENTENCE_PUNCTUATION + _CLOSING_MARKS
     )
+    if last_left.endswith("야") and first_right in {"할", "될"}:
+        return False
     if first_right in _STANDALONE_PARTICLES or _is_dependent_right_token(first_right):
         return False
     if (
@@ -359,7 +365,7 @@ def _safe_fallback(text: str, start: int, boundary: int) -> bool:
 
 
 def _is_dependent_right_token(token: str) -> bool:
-    return _token_has_stem(token, _DEPENDENT_NOUNS | _COUNTERS)
+    return _token_has_stem(token, _DEPENDENT_NOUNS | _SPATIAL_NOUNS | _COUNTERS)
 
 
 def _is_counter_token(token: str) -> bool:

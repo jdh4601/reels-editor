@@ -2,6 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import {
   Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   CircleAlert,
   CloudUpload,
   Clock3,
@@ -842,6 +847,7 @@ function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedExportIds, setSelectedExportIds] = useState<string[]>([]);
+  const [expandedDetailsId, setExpandedDetailsId] = useState<string | null>(null);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [exportState, setExportState] = useState<ExportState>("idle");
@@ -889,15 +895,14 @@ function App() {
   const eventSeqRef = useRef(0);
   const activeJobIdRef = useRef<string | null>(null);
   const archiveModeRef = useRef(false);
-  const exportSelectionSeededRef = useRef(false);
   const speedSaveTimerRef = useRef<number | undefined>(undefined);
 
   const applySnapshot = useCallback((next: Snapshot) => {
     const jobChanged = activeJobIdRef.current !== next.jobId;
     activeJobIdRef.current = next.jobId;
-    if (jobChanged) exportSelectionSeededRef.current = false;
     const defaultSelectedId = next.selectedStorylineId
       ?? next.storylines.find((storyline) => storyline.status === "ready")?.id
+      ?? next.storylines[0]?.id
       ?? null;
     const availableIds = new Set(next.storylines.map((storyline) => storyline.id));
     setSnapshot(next);
@@ -913,12 +918,7 @@ function App() {
     setSelectedId((current) => current && availableIds.has(current) ? current : defaultSelectedId);
     setSelectedExportIds((current) => {
       if (jobChanged) current = [];
-      const retained = current.filter((id) => availableIds.has(id));
-      if (!exportSelectionSeededRef.current && defaultSelectedId) {
-        exportSelectionSeededRef.current = true;
-        return [defaultSelectedId];
-      }
-      return retained;
+      return current.filter((id) => availableIds.has(id));
     });
     setSubtitlesEnabled(next.subtitlesEnabled);
     if (jobChanged) {
@@ -935,6 +935,7 @@ function App() {
       setTitleErrors({});
       setExportState("idle");
       setExportPath(null);
+      setExpandedDetailsId(null);
     }
     setConnection(next.connection);
     eventSeqRef.current = jobChanged ? next.eventSeq : Math.max(eventSeqRef.current, next.eventSeq);
@@ -1651,12 +1652,6 @@ function App() {
     );
   }
 
-  function focusLane(index: number) {
-    const story = storylines[index - 1];
-    const video = story ? videoRefs.current[story.id] : null;
-    video?.focus();
-  }
-
   function playSelected() {
     if (!selectedStoryline) return;
     const selectedVideo = videoRefs.current[selectedStoryline.id];
@@ -1668,24 +1663,60 @@ function App() {
     else selectedVideo.pause();
   }
 
+  const selectedStorylineIndex = Math.max(0, storylines.findIndex((storyline) => storyline.id === selectedId));
+
+  function moveToStoryline(offset: number) {
+    if (storylines.length === 0) return;
+    const nextIndex = Math.min(storylines.length - 1, Math.max(0, selectedStorylineIndex + offset));
+    const next = storylines[nextIndex];
+    if (!next || next.id === selectedId) return;
+    setSelectedId(next.id);
+    setExpandedDetailsId(null);
+    setLiveMessage(`${next.label}로 이동했습니다. ${nextIndex + 1}/${storylines.length}`);
+  }
+
+  function toggleSelectedForExport() {
+    if (selectedStoryline?.status === "ready") selectForExport(selectedStoryline);
+  }
+
+  function toggleDetails(storyline: Storyline) {
+    const opening = expandedDetailsId !== storyline.id;
+    setExpandedDetailsId(opening ? storyline.id : null);
+    if (opening) {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`${storyline.id}-details`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }
+
+  useEffect(() => {
+    if (!selectedStoryline?.videoUrl || selectedStoryline.status !== "ready") return;
+    const frame = window.requestAnimationFrame(() => {
+      const video = videoRefs.current[selectedStoryline.id];
+      if (!video) return;
+      video.muted = true;
+      void video.play().catch(() => undefined);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedStoryline?.id, selectedStoryline?.videoUrl, selectedStoryline?.status]);
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      if (target?.matches("input, textarea, select, button, a, [contenteditable='true']")) return;
       const key = event.key.toLowerCase();
-      if (event.metaKey && key === "e") {
+      if (event.key === "Enter" || (event.metaKey && key === "e")) {
         event.preventDefault();
         void exportSelected();
-      } else if (event.altKey && ["1", "2", "3"].includes(event.key)) {
+      } else if (event.key === "ArrowLeft") {
         event.preventDefault();
-        focusLane(Number(event.key));
-      } else if (["1", "2", "3"].includes(event.key) && !event.metaKey && !event.ctrlKey) {
+        moveToStoryline(-1);
+      } else if (event.key === "ArrowRight") {
         event.preventDefault();
-        const story = storylines[Number(event.key) - 1];
-        if (story?.status === "ready") selectForExport(story);
+        moveToStoryline(1);
       } else if (event.code === "Space") {
         event.preventDefault();
-        playSelected();
+        toggleSelectedForExport();
       } else if (key === "s" && !event.metaKey && !event.ctrlKey) {
         event.preventDefault();
         toggleSubtitles();
@@ -2232,18 +2263,20 @@ function App() {
         </section>
       ) : null}
 
-      <section className="lane-scroller" aria-label="생성된 릴스 비교" hidden={storylines.length === 0}>
-        <div className="lanes">
-          {storylines.map((storyline) => {
-            const titleDraft = titleDrafts[storyline.id]
-              ?? { upper: storyline.titleUpper, lower: storyline.titleLower };
-            const titleChanged = titleDraft.upper.trim() !== storyline.titleUpper
-              || titleDraft.lower.trim() !== storyline.titleLower;
-            return (
-            <article className={`lane ${selectedExportIds.includes(storyline.id) ? "selected-lane" : ""}`} key={storyline.id} aria-labelledby={`${storyline.id}-title`}>
-              <header className="lane-header">
+      <section className="reel-deck" aria-label="생성된 릴스 탐색" hidden={storylines.length === 0}>
+        {selectedStoryline ? (() => {
+          const storyline = selectedStoryline;
+          const selectedForExport = selectedExportIds.includes(storyline.id);
+          const detailsOpen = expandedDetailsId === storyline.id;
+          const titleDraft = titleDrafts[storyline.id]
+            ?? { upper: storyline.titleUpper, lower: storyline.titleLower };
+          const titleChanged = titleDraft.upper.trim() !== storyline.titleUpper
+            || titleDraft.lower.trim() !== storyline.titleLower;
+          return (
+            <article className={selectedForExport ? "reel-card selected-reel" : "reel-card"} key={storyline.id} aria-labelledby={`${storyline.id}-title`}>
+              <header className="deck-header">
                 <div>
-                  <p className="eyebrow">{storyline.label}</p>
+                  <p className="eyebrow">{storyline.label} · {selectedStorylineIndex + 1}/{storylines.length}</p>
                   <h2 id={`${storyline.id}-title`}>{storyline.hook}</h2>
                 </div>
                 <span className={`status-pill ${statusTone(storyline.status)}`}>
@@ -2252,194 +2285,139 @@ function App() {
                 </span>
               </header>
 
-              <div className="phone-frame">
-                {storyline.videoUrl ? (
-                  <video
-                    ref={(node) => { videoRefs.current[storyline.id] = node; }}
-                    controls
-                    preload="metadata"
-                    muted={selectedId !== storyline.id}
-                    src={storyline.videoUrl}
-                    onPlay={() => onVideoPlay(storyline.id)}
-                    aria-label={`${storyline.label} 대표 영상`}
-                  />
-                ) : (
-                  <div className="video-placeholder">렌더 대기 중</div>
-                )}
-                {storyline.status !== "ready" ? (
-                  <div className="render-overlay" aria-live="polite">
-                    {storyline.status === "failed" ? "렌더 실패" : `${storyline.progress}%`}
-                  </div>
-                ) : null}
-              </div>
-
-              <section className="story-structure" aria-label={`${storyline.label} 콘텐츠 구성`}>
-                <div className="story-structure-heading">
-                  <strong>콘텐츠 구성</strong>
-                  <span>{storyline.sections.length > 0 ? `${storyline.sections.length}개 구간` : "구성 대기"}</span>
-                </div>
-                {storyline.sections.length > 0 ? (
-                  <ol className="story-beats">
-                    {storyline.sections.map((section, sectionIndex) => (
-                      <li
-                        className={section.beat.includes("훅") ? "story-beat is-hook" : "story-beat"}
-                        key={`${section.beat}-${sectionIndex}`}
-                      >
-                        <span className="story-beat-index" aria-hidden="true">{String(sectionIndex + 1).padStart(2, "0")}</span>
-                        <div className="story-beat-content">
-                          <div className="story-beat-heading">
-                            <strong>{section.beat}</strong>
-                            <span>{section.role}</span>
-                          </div>
-                          <p>{section.text}</p>
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
-                ) : (
-                  <p className="summary">{storyline.summary}</p>
-                )}
-              </section>
-
-              {storyline.status === "ready" ? (
-                <div className="lane-title title-editor">
-                  <div className="title-editor-heading">
-                    <p className="eyebrow">화면 제목</p>
-                    <span>{titleDisplayLength(combineTitleLines(titleDraft))}/24자</span>
-                  </div>
-                  <div className="title-editor-controls">
-                    <div className="title-editor-fields">
-                      {([
-                        { key: "upper", label: "첫 번째 제목", tone: "흰색" },
-                        { key: "lower", label: "두 번째 제목", tone: "주황색" },
-                      ] as const).map(({ key, label, tone }) => (
-                        <label className={`title-editor-field ${key}`} key={key} htmlFor={`${storyline.id}-title-${key}`}>
-                          <span><i aria-hidden="true" />{label}<small>{tone}</small></span>
-                          <input
-                            id={`${storyline.id}-title-${key}`}
-                            type="text"
-                            value={titleDraft[key]}
-                            disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"}
-                            aria-invalid={Boolean(titleErrors[storyline.id])}
-                            aria-describedby={`${storyline.id}-title-help`}
-                            onChange={(event) => {
-                              const nextDraft = { ...titleDraft, [key]: event.target.value };
-                              setTitleDrafts((current) => ({ ...current, [storyline.id]: nextDraft }));
-                              setTitleStates((current) => ({ ...current, [storyline.id]: "idle" }));
-                              setTitleErrors((current) => ({ ...current, [storyline.id]: titleValidationMessage(nextDraft) }));
-                            }}
-                          />
-                        </label>
-                      ))}
-                    </div>
-                    <div className="title-editor-actions">
-                      <button
-                        type="button"
-                        className="title-regenerate-button"
-                        disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"}
-                        onClick={() => { void regenerateTitle(storyline); }}
-                      >
-                        {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
-                        {titleStates[storyline.id] === "generating" ? "생성 중" : "다시 생성"}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating" || !titleChanged}
-                        onClick={() => { void updateTitle(storyline); }}
-                      >
-                        {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}
-                        {titleStates[storyline.id] === "saving" ? "반영 중" : "수정하기"}
-                      </button>
-                    </div>
-                  </div>
-                  <p
-                    id={`${storyline.id}-title-help`}
-                    className={titleErrors[storyline.id] ? "title-editor-help error" : titleStates[storyline.id] === "saved" ? "title-editor-help success" : "title-editor-help"}
-                    role={titleErrors[storyline.id] ? "alert" : "status"}
-                  >
-                    {titleErrors[storyline.id]
-                      ?? (titleStates[storyline.id] === "generating"
-                        ? "릴스의 실제 대본을 바탕으로 다른 제목을 만들고 있습니다."
-                        : titleStates[storyline.id] === "saving"
-                        ? "기존 영상은 유지한 채 제목 오버레이를 다시 렌더링합니다."
-                        : titleStates[storyline.id] === "saved"
-                          ? "화면 제목과 재생 영상에 수정 내용이 반영되었습니다."
-                          : titleStates[storyline.id] === "suggested"
-                            ? "새 제목을 제안했습니다. 문구를 다듬은 뒤 수정하기를 누르세요."
-                          : "두 입력창의 문구가 영상의 흰색·주황색 제목에 각각 반영됩니다.")}
-                  </p>
-                </div>
-              ) : (
-                <div className="lane-title">
-                  <p className="eyebrow">화면 제목</p>
-                  <strong>{storyline.title}</strong>
-                </div>
-              )}
-
-              <section className={storyline.instagramCaption ? "caption-tool has-caption" : "caption-tool"} aria-label={`${storyline.label} Instagram 캡션`}>
-                <div className="caption-tool-heading">
-                  <div>
-                    <MessageSquareText size={16} aria-hidden="true" />
-                    <h3>Instagram 캡션</h3>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={storyline.status !== "ready" || captionStates[storyline.id] === "generating"}
-                    onClick={() => { void generateInstagramCaption(storyline); }}
-                  >
-                    {captionStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <MessageSquareText size={15} />}
-                    {captionStates[storyline.id] === "generating"
-                      ? "캡션 생성 중"
-                      : storyline.instagramCaption
-                        ? "다시 생성"
-                        : "캡션 생성하기"}
-                  </button>
-                </div>
-                {storyline.instagramCaption ? (
-                  <div className="caption-result">
-                    <div className="caption-text" tabIndex={0}>{storyline.instagramCaption}</div>
-                    <button type="button" className="caption-copy" onClick={() => { void copyInstagramCaption(storyline); }}>
-                      {captionStates[storyline.id] === "copied" ? <Check size={15} /> : <Copy size={15} />}
-                      {captionStates[storyline.id] === "copied" ? "복사됨" : "캡션 복사"}
-                    </button>
-                  </div>
-                ) : (
-                  <p>이 릴스의 실제 내용에 맞춘 게시글 캡션을 만듭니다.</p>
-                )}
-                {captionStates[storyline.id] === "error" ? (
-                  <p className="caption-error" role="alert">
-                    {captionErrors[storyline.id] ?? "캡션 작업에 실패했습니다. 다시 시도해주세요."}
-                  </p>
-                ) : null}
-              </section>
-
-              <div className="lane-footer">
-                <label className="select-video">
-                  <input
-                    type="checkbox"
-                    name="selected-video"
-                    checked={selectedExportIds.includes(storyline.id)}
-                    disabled={storyline.status !== "ready"}
-                    onChange={(event) => selectForExport(storyline, event.target.checked)}
-                  />
-                  <span>내보내기 선택</span>
-                </label>
-              {storyline.status === "failed" && !archiveMode ? (
-                <button
-                  type="button"
-                  disabled={jobBusy}
-                  onClick={() => rerenderStoryline(storyline)}
-                  aria-label={`${storyline.label} 리렌더링`}
-                >
-                  <RefreshCcw size={15} aria-hidden="true" /> 리렌더링
+              <div className="deck-stage">
+                <button type="button" className="deck-arrow previous" aria-label="이전 릴스" disabled={selectedStorylineIndex === 0} onClick={() => moveToStoryline(-1)}>
+                  <ChevronLeft size={30} />
                 </button>
-              ) : null}
+                <div className="reel-phone-frame">
+                  {storyline.videoUrl ? (
+                    <video
+                      ref={(node) => { videoRefs.current[storyline.id] = node; }}
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      preload="auto"
+                      src={storyline.videoUrl}
+                      onClick={playSelected}
+                      onPlay={() => onVideoPlay(storyline.id)}
+                      aria-label={`${storyline.label} 대표 영상. 클릭하면 재생하거나 일시정지합니다.`}
+                    />
+                  ) : <div className="video-placeholder">렌더 대기 중</div>}
+                  {selectedForExport ? (
+                    <div className="selection-confirmation" aria-live="polite">
+                      <CheckCircle2 size={58} strokeWidth={2.4} />
+                      <strong>내보내기 선택됨</strong>
+                    </div>
+                  ) : null}
+                  {storyline.status !== "ready" ? (
+                    <div className="render-overlay" aria-live="polite">
+                      {storyline.status === "failed" ? "렌더 실패" : `${storyline.progress}%`}
+                    </div>
+                  ) : null}
+                </div>
+                <button type="button" className="deck-arrow next" aria-label="다음 릴스" disabled={selectedStorylineIndex === storylines.length - 1} onClick={() => moveToStoryline(1)}>
+                  <ChevronRight size={30} />
+                </button>
               </div>
-              {storyline.error ? <p className="lane-error" role="alert">{storyline.error}</p> : null}
+
+              <div className="deck-shortcuts" aria-label="키보드 단축키">
+                <span><kbd>←</kbd> 이전</span>
+                <button type="button" className={selectedForExport ? "space-action selected" : "space-action"} disabled={storyline.status !== "ready"} onClick={toggleSelectedForExport}>
+                  {selectedForExport ? <CheckCircle2 size={17} /> : null}<kbd>Space</kbd> {selectedForExport ? "선택됨" : "내보내기 선택"}
+                </button>
+                <span>다음 <kbd>→</kbd></span>
+                <span><kbd>Enter</kbd> 내보내기</span>
+              </div>
+
+              <button type="button" className="details-toggle" aria-expanded={detailsOpen} aria-controls={`${storyline.id}-details`} onClick={() => toggleDetails(storyline)}>
+                <Pencil size={16} /> {detailsOpen ? "수정 내용 접기" : "제목·캡션·시나리오 수정하기"}
+                {detailsOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
+              </button>
+
+              {detailsOpen ? (
+                <div className="reel-details" id={`${storyline.id}-details`}>
+                  <section className="story-structure" aria-label={`${storyline.label} 시나리오`}>
+                    <div className="story-structure-heading">
+                      <strong>시나리오</strong>
+                      <span>{storyline.sections.length > 0 ? `${storyline.sections.length}개 구간` : "구성 대기"}</span>
+                    </div>
+                    {storyline.sections.length > 0 ? (
+                      <ol className="story-beats">
+                        {storyline.sections.map((section, sectionIndex) => (
+                          <li className={section.beat.includes("훅") ? "story-beat is-hook" : "story-beat"} key={`${section.beat}-${sectionIndex}`}>
+                            <span className="story-beat-index" aria-hidden="true">{String(sectionIndex + 1).padStart(2, "0")}</span>
+                            <div className="story-beat-content">
+                              <div className="story-beat-heading"><strong>{section.beat}</strong><span>{section.role}</span></div>
+                              <p>{section.text}</p>
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : <p className="summary">{storyline.summary}</p>}
+                  </section>
+
+                  {storyline.status === "ready" ? (
+                    <div className="lane-title title-editor">
+                      <div className="title-editor-heading"><p className="eyebrow">화면 제목</p><span>{titleDisplayLength(combineTitleLines(titleDraft))}/24자</span></div>
+                      <div className="title-editor-controls">
+                        <div className="title-editor-fields">
+                          {([{ key: "upper", label: "첫 번째 제목", tone: "흰색" }, { key: "lower", label: "두 번째 제목", tone: "주황색" }] as const).map(({ key, label, tone }) => (
+                            <label className={`title-editor-field ${key}`} key={key} htmlFor={`${storyline.id}-title-${key}`}>
+                              <span><i aria-hidden="true" />{label}<small>{tone}</small></span>
+                              <input id={`${storyline.id}-title-${key}`} type="text" value={titleDraft[key]}
+                                disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"}
+                                aria-invalid={Boolean(titleErrors[storyline.id])} aria-describedby={`${storyline.id}-title-help`}
+                                onChange={(event) => {
+                                  const nextDraft = { ...titleDraft, [key]: event.target.value };
+                                  setTitleDrafts((current) => ({ ...current, [storyline.id]: nextDraft }));
+                                  setTitleStates((current) => ({ ...current, [storyline.id]: "idle" }));
+                                  setTitleErrors((current) => ({ ...current, [storyline.id]: titleValidationMessage(nextDraft) }));
+                                }} />
+                            </label>
+                          ))}
+                        </div>
+                        <div className="title-editor-actions">
+                          <button type="button" className="title-regenerate-button" disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"} onClick={() => { void regenerateTitle(storyline); }}>
+                            {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{titleStates[storyline.id] === "generating" ? "생성 중" : "다시 생성"}
+                          </button>
+                          <button type="button" disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating" || !titleChanged} onClick={() => { void updateTitle(storyline); }}>
+                            {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{titleStates[storyline.id] === "saving" ? "반영 중" : "수정하기"}
+                          </button>
+                        </div>
+                      </div>
+                      <p id={`${storyline.id}-title-help`} className={titleErrors[storyline.id] ? "title-editor-help error" : titleStates[storyline.id] === "saved" ? "title-editor-help success" : "title-editor-help"} role={titleErrors[storyline.id] ? "alert" : "status"}>
+                        {titleErrors[storyline.id] ?? (titleStates[storyline.id] === "saving" ? "제목 오버레이를 다시 렌더링합니다." : titleStates[storyline.id] === "saved" ? "수정 내용이 영상에 반영되었습니다." : "두 문구가 영상의 흰색·주황색 제목에 반영됩니다.")}
+                      </p>
+                    </div>
+                  ) : <div className="lane-title"><p className="eyebrow">화면 제목</p><strong>{storyline.title}</strong></div>}
+
+                  <section className={storyline.instagramCaption ? "caption-tool has-caption" : "caption-tool"} aria-label={`${storyline.label} Instagram 캡션`}>
+                    <div className="caption-tool-heading">
+                      <div><MessageSquareText size={16} aria-hidden="true" /><h3>Instagram 캡션</h3></div>
+                      <button type="button" disabled={storyline.status !== "ready" || captionStates[storyline.id] === "generating"} onClick={() => { void generateInstagramCaption(storyline); }}>
+                        {captionStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <MessageSquareText size={15} />}
+                        {captionStates[storyline.id] === "generating" ? "캡션 생성 중" : storyline.instagramCaption ? "다시 생성" : "캡션 생성하기"}
+                      </button>
+                    </div>
+                    {storyline.instagramCaption ? (
+                      <div className="caption-result">
+                        <div className="caption-text" tabIndex={0}>{storyline.instagramCaption}</div>
+                        <button type="button" className="caption-copy" onClick={() => { void copyInstagramCaption(storyline); }}>
+                          {captionStates[storyline.id] === "copied" ? <Check size={15} /> : <Copy size={15} />}{captionStates[storyline.id] === "copied" ? "복사됨" : "캡션 복사"}
+                        </button>
+                      </div>
+                    ) : <p>이 릴스의 실제 내용에 맞춘 게시글 캡션을 만듭니다.</p>}
+                    {captionStates[storyline.id] === "error" ? <p className="caption-error" role="alert">{captionErrors[storyline.id] ?? "캡션 작업에 실패했습니다. 다시 시도해주세요."}</p> : null}
+                  </section>
+
+                  {storyline.status === "failed" && !archiveMode ? <button type="button" disabled={jobBusy} onClick={() => rerenderStoryline(storyline)}><RefreshCcw size={15} /> 리렌더링</button> : null}
+                  {storyline.error ? <p className="lane-error" role="alert">{storyline.error}</p> : null}
+                </div>
+              ) : null}
             </article>
-            );
-          })}
-        </div>
+          );
+        })() : null}
       </section>
 
       <section className="export-bar" aria-label="내보내기" hidden={storylines.length === 0}>

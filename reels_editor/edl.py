@@ -12,10 +12,12 @@ def validate_edl(edl_doc: dict, segments: dict) -> list[str]:
     idx = _seg_index(segments)
     errors: list[str] = []
     cuts = edl_doc.get("cuts", [])
+    selected_ids: list[str] = []
     if not cuts:
         errors.append("cuts가 비어 있음 — 최소 1개 비트 필요")
     for c, cut in enumerate(cuts):
         ids = cut.get("seg_ids", [])
+        selected_ids.extend(str(sid) for sid in ids)
         if not ids:
             errors.append(f"cut {c}: seg_ids 비어있음")
         for sid in ids:
@@ -27,6 +29,14 @@ def validate_edl(edl_doc: dict, segments: dict) -> list[str]:
             if cut["text"].strip() != joined.strip():
                 errors.append(f"cut {c}: verbatim 불일치 — 원문 그대로만 허용 "
                               f"(기대: {joined!r})")
+    known_ids = [sid for sid in selected_ids if sid in idx]
+    for previous_id, current_id in zip(known_ids, known_ids[1:]):
+        if idx[current_id]["source_start_us"] < idx[previous_id]["source_start_us"]:
+            errors.append(
+                f"선택 seg_id가 원문 시간 순서를 거슬렀음: "
+                f"{previous_id} → {current_id}"
+            )
+            break
     return errors
 
 

@@ -88,6 +88,7 @@ class JobService:
         config: AppConfig | None = None,
         archive_root: Path | None = None,
         export_root: Path | None = None,
+        notify: Callable[[str, str], None] | None = None,
     ) -> None:
         self.store = store or JobStore()
         self.deps = deps or JobServiceDeps()
@@ -112,6 +113,15 @@ class JobService:
         self._operation_counts: dict[str, int] = {}
         self._shutdown = threading.Event()
         self._archive_lock = threading.RLock()
+        self._notify_callback = notify
+
+    def _notify(self, title: str, message: str) -> None:
+        if self._notify_callback is None:
+            return
+        try:
+            self._notify_callback(title, message)
+        except Exception:  # noqa: BLE001 - notifications must not fail job processing
+            pass
 
     def _default_archive_root(self) -> Path:
         if self.store.root == JobStore.default_root():
@@ -1608,6 +1618,10 @@ class JobService:
             job.error = None
             job.message = "분석이 끝났습니다. 만들 후보를 선택하세요."
             self._save(job)
+        self._notify(
+            "콘텐츠 후보가 준비되었습니다",
+            f"{project_name} 다운로드와 분석이 끝났습니다. 만들 릴스를 선택하세요.",
+        )
 
     def _prepare_selected_generation(self, job_id: str, candidate_ids: list[str]) -> Job:
         job = self.store.load(job_id)
@@ -1740,6 +1754,18 @@ class JobService:
                     job.error = f"선택한 릴스 {len(ready)}/{job.n_storylines}개만 준비되었습니다."
                     job.message = job.error
             self._save(job)
+            completed_title = job.project_name or "릴스"
+            completed_count = len(ready)
+            expected_count = job.n_storylines
+            completed_cleanly = job.status is Status.READY
+        self._notify(
+            "릴스 생성이 완료되었습니다" if completed_cleanly else "릴스 생성이 끝났습니다",
+            (
+                f"{completed_title} 릴스 {completed_count}개가 모두 준비되었습니다."
+                if completed_cleanly
+                else f"{completed_title} 릴스 {completed_count}/{expected_count}개가 준비되었습니다. 앱에서 결과를 확인하세요."
+            ),
+        )
 
     def _prepare_youtube_source(self, job_id: str, job: Job) -> youtube.YouTubeSource:
         source_url = job.source_url

@@ -16,6 +16,7 @@ from reels_editor.jobs import JobService, JobStore
 from reels_editor.storyteller import build_prompt
 
 from .dialogs import FakeDialogProvider, MutableDialogProvider, WebviewDialogProvider
+from .notifications import show_macos_notification
 from .server import UvicornThread, create_app
 from .tools import inject_tool_paths
 
@@ -114,7 +115,11 @@ def build_desktop_app(
 ):
     store = JobStore(APP_SUPPORT_DIR / "jobs")
     store.recover_interrupted()
-    service = JobService(store=store, config=load_desktop_config())
+    service = JobService(
+        store=store,
+        config=load_desktop_config(),
+        notify=show_macos_notification,
+    )
     service.deps.load_style(service.style_path)
     app = create_app(
         static_dir=static_dir,

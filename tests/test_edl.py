@@ -24,6 +24,18 @@ def test_validate_empty_cuts(segments: dict) -> None:
     assert any("cuts" in e for e in errs)
 
 
+def test_validate_rejects_segments_that_reverse_source_time(
+        edl_doc: dict, segments: dict) -> None:
+    edl_doc["cuts"] = [
+        {"beat": "결론", "seg_ids": ["t2"]},
+        {"beat": "원인", "seg_ids": ["t0"]},
+    ]
+
+    errs = edl.validate_edl(edl_doc, segments)
+
+    assert any("원문 시간 순서" in error for error in errs)
+
+
 def test_ordered_segments_flattens_in_edl_order(edl_doc: dict, segments: dict) -> None:
     out = edl.ordered_segments(edl_doc, segments)
     assert [o["text"] for o in out] == [

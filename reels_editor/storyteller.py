@@ -32,6 +32,14 @@ LONG_REEL_DURATION_S = 60
 LONG_REEL_GRACE_S = 5
 # 서술형 종결어미. 완결된 문장보다 명사구가 텍스트 훅으로 더 강하게 읽힌다.
 _DECLARATIVE_ENDING_RE = re.compile(r"[다요죠][.!]?$")
+_CONTEXT_DEPENDENT_OPENER_RE = re.compile(
+    r"^(?:하지만|그런데|그래서|그러니까|왜냐하면|그럼에도|그러나|"
+    r"그리고|또한|앞서\s+말한|방금\s+말한)\b"
+)
+_CONTEXTLESS_FIRST_CAPTION_RE = re.compile(
+    r"^(?:효과가|결과가|반응이|문제라고\s+한다면|"
+    r"그게|이게|그것|이것|그들|그때|그\s+부분|이\s+부분)\b"
+)
 
 _COMPANY_ROLE_PATTERNS: tuple[tuple[re.Pattern[str], str, int], ...] = (
     (re.compile(r"^(?:co-?founder|founder)\s+(?:of|at)\s+(.+)$", re.I), "창업자", 1),
@@ -420,12 +428,20 @@ def generate_script(segments: dict, duration_s: int = 30,
         speaker_errs = validate_and_normalize_speaker(doc, segments)
         translation_errs = validate_subtitle_translations(doc, segments)
         edl_errs = edl_mod.validate_edl(doc, segments)
+        continuity_errs = (
+            validate_caption_continuity(doc, segments)
+            if not translation_errs and not edl_errs
+            else []
+        )
         caption_errs = (
             validate_caption_completeness(doc, segments)
             if not translation_errs and not edl_errs
             else []
         )
-        errs = title_errs + speaker_errs + translation_errs + edl_errs + caption_errs
+        errs = (
+            title_errs + speaker_errs + translation_errs + edl_errs
+            + continuity_errs + caption_errs
+        )
         if not errs:
             actual_duration = edl_mod.estimate_duration_s(doc, segments, speed)
             maximum_s = max_duration_s if max_duration_s is not None else maximum_duration_s(duration_s)
@@ -524,6 +540,47 @@ def validate_caption_completeness(doc: dict[str, Any], segments: dict[str, Any])
         "선택 자막이 완결되지 않음 — 마지막 문장과 큰따옴표가 닫힐 때까지 "
         "인접한 다음 seg_id를 포함할 것 (" + "; ".join(errors) + ")"
     ]
+
+
+def validate_caption_continuity(doc: dict[str, Any], segments: dict[str, Any]) -> list[str]:
+    """클립 자체에 앞 맥락이 없는 첫 자막 파편을 검사한다.
+
+    이후 cut의 접속어는 바로 앞에 선택된 cut을 받을 수 있다. 원본 cue 번호의
+    간격만으로는 생략된 맞장구·필러와 실제 맥락 누락을 구별할 수 없으므로,
+    이를 기계적으로 실패 처리하지 않는다.
+    """
+    language = str(segments.get("transcript_language", "")).lower()
+    if not language.startswith("en"):
+        return []
+    translations = doc.get("subtitle_translations", {})
+    if not isinstance(translations, dict):
+        return []
+    positions = {
+        str(segment.get("id")): index
+        for index, segment in enumerate(segments.get("segments", []))
+        if isinstance(segment, dict) and segment.get("id")
+    }
+    cuts = [cut for cut in doc.get("cuts", []) if isinstance(cut, dict)]
+    errors: list[str] = []
+    for cut_index, cut in enumerate(cuts, start=1):
+        ids = [str(segment_id) for segment_id in cut.get("seg_ids", [])]
+        known_positions = [positions[segment_id] for segment_id in ids if segment_id in positions]
+        if not known_positions:
+            continue
+        first_text = str(translations.get(ids[0], "")).strip()
+        starts_dependent = bool(_CONTEXT_DEPENDENT_OPENER_RE.match(first_text))
+        starts_without_subject = bool(_CONTEXTLESS_FIRST_CAPTION_RE.match(first_text))
+        if cut_index == 1 and starts_without_subject:
+            errors.append(
+                f"cut {cut_index}: 첫 자막 '{first_text[:24]}'에서 주제가 빠져 무엇의 효과·"
+                "결과·문제인지 알 수 없음 — 주제와 대상이 포함된 자립적인 첫 문장을 선택할 것"
+            )
+        elif cut_index == 1 and starts_dependent:
+            errors.append(
+                f"cut {cut_index}: 첫 자막이 '{first_text[:24]}'로 시작해 앞에 생략된 "
+                "맥락에 의존함 — 주제·주체·핵심 행동이 드러나는 독립적인 첫 문장을 선택할 것"
+            )
+    return errors
 
 
 def trim_overlong_edl(

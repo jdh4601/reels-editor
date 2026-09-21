@@ -198,6 +198,37 @@ def test_codex_cli_runner_returns_last_message(monkeypatch) -> None:
     assert "--output-last-message" in captured["args"]
 
 
+def test_codex_cli_runner_falls_back_to_stdout_when_last_message_is_missing(monkeypatch) -> None:
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout='{"recovered": true}',
+            stderr="codex diagnostic output",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = build_runner(AppConfig(provider="codex-cli"))
+
+    assert run("프롬프트") == '{"recovered": true}'
+
+
+def test_codex_cli_runner_empty_success_includes_diagnostics(monkeypatch) -> None:
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="",
+            stderr="stream ended before final response",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = build_runner(AppConfig(provider="codex-cli"))
+
+    with pytest.raises(RuntimeError, match="stream ended before final response"):
+        run("프롬프트")
+
+
 def test_codex_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         raise FileNotFoundError("[Errno 2] No such file or directory: 'codex'")

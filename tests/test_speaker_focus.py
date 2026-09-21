@@ -6,6 +6,7 @@ from reels_editor import speaker_focus
 from reels_editor.speaker_focus import (
     FaceSignal,
     build_focus_windows,
+    build_tracking_windows,
     choose_active_face,
 )
 
@@ -43,8 +44,8 @@ def test_choose_active_face_prefers_speaking_face_and_zooms_wide_shot() -> None:
 
     assert point is not None
     assert point.x == 0.14
-    assert point.y == 0.31
-    assert point.zoom == 1.4
+    assert point.y == 0.5
+    assert point.zoom == 1.0
 
 
 def test_choose_active_face_keeps_close_single_speaker_at_normal_zoom() -> None:
@@ -53,7 +54,45 @@ def test_choose_active_face_keeps_close_single_speaker_at_normal_zoom() -> None:
     point = choose_active_face(frames)
 
     assert point is not None
-    assert point.x == 0.47
+    assert point.x == 0.5
+    assert point.y == 0.5
+    assert point.zoom == 1.0
+
+
+def test_build_tracking_windows_rechecks_long_segments_every_two_seconds() -> None:
+    ordered = [{"source_start_us": 5_000_000, "source_end_us": 10_500_000}]
+
+    windows = build_tracking_windows(ordered)
+
+    assert [(window.start_s, window.end_s) for window in windows] == [
+        (5.0, 7.0),
+        (7.0, 9.0),
+        (9.0, 10.5),
+    ]
+    assert [window.segment_indexes for window in windows] == [(0,), (0,), (0,)]
+
+
+def test_choose_active_face_does_not_move_single_person_frame_even_off_center() -> None:
+    frames = [
+        [FaceSignal(0.82, 0.18, openness, y=0.38)]
+        for openness in (0.3, 0.8, 0.4, 0.9, 0.5)
+    ]
+
+    assert choose_active_face(frames) == speaker_focus.FocusPoint()
+
+
+def test_choose_active_face_reframes_distant_person_when_other_face_is_missed() -> None:
+    """와이드 투샷에서 한 얼굴만 잡혀도 얼굴이 작으면 그 인물 쪽으로 이동한다."""
+    frames = [
+        [FaceSignal(0.84, 0.055, openness, y=0.38)]
+        for openness in (0.2, 0.4, 0.3, 0.5, 0.2)
+    ]
+
+    point = choose_active_face(frames)
+
+    assert point is not None
+    assert point.x == 0.84
+    assert point.y == 0.5
     assert point.zoom == 1.0
 
 
@@ -83,7 +122,7 @@ def test_analysis_cache_skips_reextracting_the_same_source_window(
     )
 
     assert first == second
-    assert len(extraction_calls) == 1
+    assert len(extraction_calls) == len(build_tracking_windows(ordered))
     report = (tmp_path / "render-2" / "speaker-focus" / "plan.json").read_text(
         encoding="utf-8",
     )

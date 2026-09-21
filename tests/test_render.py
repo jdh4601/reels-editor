@@ -328,6 +328,37 @@ def test_build_base_filter_applies_one_fixed_center_crop_after_concat(
     assert filt.index("concat=n=2:v=1:a=1[vc][a]") < filt.index(crop_filter)
 
 
+def test_build_base_filter_moves_crop_only_for_detected_two_person_windows(
+    edl_doc: dict, segments: dict
+) -> None:
+    from reels_editor.speaker_focus import FocusPoint, FocusSlice
+
+    style = load_style(STYLE)
+    ordered = edl.ordered_segments(edl_doc, segments)
+    slices = [
+        FocusSlice(0, 5.0, 7.0, FocusPoint()),
+        FocusSlice(0, 7.0, 9.0, FocusPoint(x=0.14)),
+        FocusSlice(0, 9.0, 15.0, FocusPoint(x=0.86)),
+        FocusSlice(1, 15.0, 23.0, FocusPoint()),
+    ]
+
+    filt = render.build_base_filter(
+        ordered,
+        1.2,
+        style,
+        in_size=(1920, 1080),
+        focus_slices=slices,
+    )
+
+    centered = render.video_crop_box((1920, 1080), style)
+    left = render.video_crop_box((1920, 1080), style, focus_x=0.14)
+    right = render.video_crop_box((1920, 1080), style, focus_x=0.86)
+    assert f"crop={centered[0]}:{centered[1]}:{centered[2]}:{centered[3]}" in filt
+    assert f"crop={left[0]}:{left[1]}:{left[2]}:{left[3]}" in filt
+    assert f"crop={right[0]}:{right[1]}:{right[2]}:{right[3]}" in filt
+    assert "concat=n=4:v=1:a=1[v][a]" in filt
+
+
 def test_parse_cropdetect_picks_most_common() -> None:
     lines = [
         "[Parsed_cropdetect_0] x1:656 ... crop=608:1080:656:0",

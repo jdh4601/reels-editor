@@ -21,10 +21,11 @@ SAMPLE_QUALITY = 2
 SAMPLES_PER_SECOND = 5.0
 MIN_SAMPLES = 6
 MAX_SAMPLES = 48
+TRACKING_WINDOW_SECONDS = 2.0
 TRACK_DISTANCE = 0.22
 WIDE_SHOT_FACE_WIDTH = 0.14
-WIDE_SHOT_ZOOM = 1.4
-ANALYSIS_CACHE_VERSION = 2
+MIN_TWO_PERSON_FRAME_RATIO = 0.35
+ANALYSIS_CACHE_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,14 @@ class FocusWindow:
     segment_indexes: tuple[int, ...]
     start_s: float
     end_s: float
+
+
+@dataclass(frozen=True)
+class FocusSlice:
+    segment_index: int
+    start_s: float
+    end_s: float
+    point: FocusPoint
 
 
 def vision_available() -> bool:
@@ -80,6 +89,20 @@ def build_focus_windows(ordered: list[dict[str, Any]], cut_sizes: list[int]) -> 
     return windows
 
 
+def build_tracking_windows(ordered: list[dict[str, Any]]) -> list[FocusWindow]:
+    """긴 자막 구간 안에서도 화면 전환을 따라가도록 짧은 분석창으로 나눈다."""
+    windows: list[FocusWindow] = []
+    for segment_index, item in enumerate(ordered):
+        start_s = float(item["source_start_us"]) / US
+        end_s = float(item["source_end_us"]) / US
+        cursor = start_s
+        while cursor < end_s:
+            window_end = min(end_s, cursor + TRACKING_WINDOW_SECONDS)
+            windows.append(FocusWindow((segment_index,), cursor, window_end))
+            cursor = window_end
+    return windows
+
+
 def sample_count_for(duration_s: float) -> int:
     """구간 길이에 비례해 입술 움직임을 잴 수 있는 표본 수를 정한다."""
     target = round(max(0.0, duration_s) * SAMPLES_PER_SECOND)
@@ -87,7 +110,12 @@ def sample_count_for(duration_s: float) -> int:
 
 
 def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
-    """프레임 사이 얼굴을 x좌표로 묶고 입 벌림·움직임이 큰 얼굴을 고른다."""
+    """투샷일 때만 입술 움직임이 큰 인물 쪽으로 수평 초점을 옮긴다."""
+    two_person_frames = sum(len(frame) >= 2 for frame in frames)
+    required_two_person_frames = max(
+        2,
+        math.ceil(len(frames) * MIN_TWO_PERSON_FRAME_RATIO),
+    )
     tracks: list[list[tuple[int, FaceSignal]]] = []
     for frame_index, faces in enumerate(frames):
         used: set[int] = set()
@@ -127,14 +155,19 @@ def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
     chosen = max(viable, key=score)
     chosen_signals = [signal for _index, signal in chosen]
     x = statistics.median(signal.x for signal in chosen_signals)
-    y = statistics.median(signal.y for signal in chosen_signals)
     mean_width = statistics.fmean(signal.width for signal in chosen_signals)
-    max_faces = max((len(frame) for frame in frames), default=0)
-    zoom = WIDE_SHOT_ZOOM if max_faces >= 2 or mean_width < WIDE_SHOT_FACE_WIDTH else 1.0
+    is_wide_layout = (
+        two_person_frames >= required_two_person_frames
+        or mean_width < WIDE_SHOT_FACE_WIDTH
+    )
+    if not is_wide_layout:
+        return FocusPoint()
     return FocusPoint(
         x=max(0.0, min(1.0, x)),
-        y=max(0.0, min(1.0, y)),
-        zoom=zoom,
+        # 요청한 규칙은 좌우 이동만 적용한다. 단독 샷과 같은 세로 구도와
+        # 확대율을 유지해 화면 전환 때 머리 위치나 크기가 튀지 않게 한다.
+        y=0.5,
+        zoom=1.0,
     )
 
 
@@ -145,14 +178,15 @@ def analyze_speaker_focus(
     source_size: tuple[int, int],
     content_crop: tuple[int, int, int, int] | None,
     work_dir: Path,
-) -> list[FocusPoint] | None:
+) -> list[FocusSlice] | None:
     """각 EDL 컷의 발화자 위치를 계산한다. 실패하면 중앙 크롭으로 안전하게 폴백한다."""
-    windows = build_focus_windows(ordered, cut_sizes)
+    _ = cut_sizes  # 이전 호출부와의 호환성. 추적 주기는 EDL 컷보다 촘촘하다.
+    windows = build_tracking_windows(ordered)
     if not windows:
         return None
     focus_root = work_dir / "speaker-focus"
     focus_root.mkdir(parents=True, exist_ok=True)
-    points = [FocusPoint() for _item in ordered]
+    slices: list[FocusSlice] = []
     report: dict[str, Any] = {"windows": [], "error": None}
     detected_faces = 0
     try:
@@ -196,8 +230,12 @@ def analyze_speaker_focus(
                 )
                 cache_hit = True
             detected_faces += int(cached.get("detected_faces", 0))
-            for segment_index in window.segment_indexes:
-                points[segment_index] = point
+            slices.append(FocusSlice(
+                segment_index=window.segment_indexes[0],
+                start_s=window.start_s,
+                end_s=window.end_s,
+                point=point,
+            ))
             report["windows"].append({
                 "index": window_index,
                 "start_s": window.start_s,
@@ -212,7 +250,10 @@ def analyze_speaker_focus(
         _write_report(focus_root / "plan.json", report)
         return None
     _write_report(focus_root / "plan.json", report)
-    return points if detected_faces else None
+    if not detected_faces:
+        return None
+    # 단독 샷만 있는 릴스는 기존 중앙 고정 필터를 그대로 사용한다.
+    return slices if any(abs(item.point.x - 0.5) >= 0.05 for item in slices) else None
 
 
 def _extract_sample_frames(video_path: Path, window: FocusWindow, out_dir: Path) -> list[Path]:

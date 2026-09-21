@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-from reels_editor import captions, processes
+from reels_editor import captions, processes, speaker_focus
 from reels_editor.storyteller import format_speaker_label
 from reels_editor.style import StylePreset
 from reels_editor.timebase import US
@@ -207,8 +207,10 @@ def _center_crop_box(in_w: int, in_h: int,
 def video_crop_box(
     in_size: tuple[int, int],
     style: StylePreset,
+    *,
+    focus_x: float = 0.5,
 ) -> tuple[int, int, int, int]:
-    """영상 중앙을 기준으로 고정 확대한 크롭 영역을 반환한다."""
+    """현재 확대율을 유지하면서 필요한 경우에만 수평 초점을 옮긴다."""
     in_w, in_h = in_size
     video_w, video_h = style.video_area()
     frame_w, frame_h, _frame_x, _frame_y = _center_crop_box(
@@ -217,7 +219,9 @@ def video_crop_box(
     zoom = max(style.video_zoom, 1.0)
     crop_w = _even_crop_size(frame_w / zoom, frame_w)
     crop_h = _even_crop_size(frame_h / zoom, frame_h)
-    return crop_w, crop_h, (in_w - crop_w) // 2, (in_h - crop_h) // 2
+    desired_x = round(max(0.0, min(1.0, focus_x)) * in_w - crop_w / 2)
+    crop_x = min(in_w - crop_w, max(0, desired_x))
+    return crop_w, crop_h, crop_x, (in_h - crop_h) // 2
 
 
 def parse_cropdetect(lines: list[str]) -> tuple[int, int, int, int] | None:
@@ -241,7 +245,8 @@ def detect_content_crop(video_path: Path, at_s: float,
 
 def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
                       in_size: tuple[int, int],
-                      content_crop: tuple[int, int, int, int] | None = None) -> str:
+                      content_crop: tuple[int, int, int, int] | None = None,
+                      focus_slices: list[speaker_focus.FocusSlice] | None = None) -> str:
     """트림+배속+concat → (콘텐츠 크롭) → 영상영역 크롭·스케일 → 캔버스 pad."""
     vw, vh = style.video_area()
     cw, ch = style.canvas
@@ -253,15 +258,44 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
         c_w, c_h, c_x, c_y = content_crop
         pre = f"crop={c_w}:{c_h}:{c_x}:{c_y},"
         src_w, src_h = c_w, c_h
-    for i, s in enumerate(ordered):
-        a = s["source_start_us"] / US
-        b = s["source_end_us"] / US
+    dynamic_focus = focus_slices if focus_slices else None
+    source_windows: list[tuple[float, float, float | None]]
+    if dynamic_focus is not None:
+        source_windows = [
+            (item.start_s, item.end_s, item.point.x)
+            for item in dynamic_focus
+        ]
+    else:
+        source_windows = [
+            (s["source_start_us"] / US, s["source_end_us"] / US, None)
+            for s in ordered
+        ]
+    n = len(source_windows)
+    for i, (a, b, focus_x) in enumerate(source_windows):
         # YouTube sources can carry different sample/pixel aspect ratios per
         # segment. Normalize before concat; equal width/height alone is not
         # enough for FFmpeg's concat filter.
-        parts.append(f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},setsar=1[v{i}];")
+        if focus_x is None:
+            parts.append(
+                f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},setsar=1[v{i}];"
+            )
+        else:
+            crop_w, crop_h, crop_x, crop_y = video_crop_box(
+                (src_w, src_h), style, focus_x=focus_x,
+            )
+            parts.append(
+                f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},"
+                f"{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
+                f"pad={cw}:{ch}:0:{style.top_bar}:black,setsar=1[v{i}];"
+            )
         parts.append(f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={speed}[a{i}];")
-    concat = "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][a];"
+    concat_video_label = "[v]" if dynamic_focus is not None else "[vc]"
+    concat = (
+        "".join(f"[v{i}][a{i}]" for i in range(n))
+        + f"concat=n={n}:v=1:a=1{concat_video_label}[a];"
+    )
+    if dynamic_focus is not None:
+        return "".join(parts) + concat
     crop_w, crop_h, crop_x, crop_y = video_crop_box((src_w, src_h), style)
     vid = (f"[vc]{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
            f"pad={cw}:{ch}:0:{style.top_bar}:black[v]")
@@ -827,15 +861,24 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
     from reels_editor import edl as edl_mod
     ordered = edl_mod.ordered_segments(edl_doc, segments)
     work_dir.mkdir(parents=True, exist_ok=True)
-    # 레터박스를 제거한 후 전체 컷에 같은 중앙 130% 확대를 적용한다.
+    # 단독 샷은 중앙 고정, 투샷은 2초마다 실제 발화 인물 쪽으로 수평 이동한다.
     source_size = _probe_size(video_path)
     content = detect_content_crop(video_path, ordered[0]["source_start_us"] / US)
+    focus_slices = speaker_focus.analyze_speaker_focus(
+        video_path,
+        ordered,
+        [len(cut.get("seg_ids", [])) for cut in edl_doc.get("cuts", [])],
+        source_size,
+        content,
+        work_dir,
+    )
     filt = build_base_filter(
         ordered,
         speed,
         style,
         source_size,
         content_crop=content,
+        focus_slices=focus_slices,
     )
     fpath = work_dir / "base_filter.txt"
     fpath.write_text(filt)

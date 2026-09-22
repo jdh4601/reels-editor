@@ -23,10 +23,11 @@ MIN_SAMPLES = 6
 MAX_SAMPLES = 48
 TRACKING_WINDOW_SECONDS = 2.0
 TRACK_DISTANCE = 0.22
-MIN_TWO_PERSON_FRAME_RATIO = 0.35
+MIN_TWO_PERSON_FRAME_RATIO = 0.80
 LEFT_ANCHOR_MAX_X = 1 / 3
 RIGHT_ANCHOR_MIN_X = 2 / 3
-ANALYSIS_CACHE_VERSION = 5
+TWO_PERSON_ZOOM = 1.3
+ANALYSIS_CACHE_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,17 @@ def horizontal_anchor(x: float) -> float:
     return 0.5
 
 
+def content_relative_focus_x(
+    point: FocusPoint,
+    source_size: tuple[int, int],
+    content_crop: tuple[int, int, int, int] | None,
+) -> float:
+    """중앙 고정은 보존하고, 투샷의 좌우 초점만 콘텐츠 좌표로 옮긴다."""
+    if point.x == 0.5:
+        return 0.5
+    return horizontal_anchor(_content_relative_x(point.x, source_size, content_crop))
+
+
 def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
     """투샷일 때만 입술 움직임이 큰 인물 쪽으로 수평 초점을 옮긴다."""
     two_person_frames = sum(len(frame) >= 2 for frame in frames)
@@ -169,10 +181,9 @@ def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
         return FocusPoint()
     return FocusPoint(
         x=horizontal_anchor(x),
-        # 요청한 규칙은 좌우 이동만 적용한다. 단독 샷과 같은 세로 구도와
-        # 확대율을 유지해 화면 전환 때 머리 위치나 크기가 튀지 않게 한다.
+        # 2인 풀샷은 좌우 끝 중 하나로 고정하고 30% 확대한다.
         y=0.5,
-        zoom=1.0,
+        zoom=TWO_PERSON_ZOOM,
     )
 
 
@@ -214,8 +225,8 @@ def analyze_speaker_focus(
                 window_faces = sum(face_counts)
                 point = choose_active_face(observations) or FocusPoint()
                 point = FocusPoint(
-                    x=_content_relative_x(point.x, source_size, content_crop),
-                    y=_content_relative_y(point.y, source_size, content_crop),
+                    x=content_relative_focus_x(point, source_size, content_crop),
+                    y=0.5,
                     zoom=point.zoom,
                 )
                 cached = {
@@ -404,20 +415,6 @@ def _content_relative_x(
     if crop_w <= 0:
         return x
     return max(0.0, min(1.0, (x * source_w - crop_x) / crop_w))
-
-
-def _content_relative_y(
-    y: float,
-    source_size: tuple[int, int],
-    content_crop: tuple[int, int, int, int] | None,
-) -> float:
-    if content_crop is None:
-        return y
-    _source_w, source_h = source_size
-    _crop_w, crop_h, _crop_x, crop_y = content_crop
-    if crop_h <= 0:
-        return y
-    return max(0.0, min(1.0, (y * source_h - crop_y) / crop_h))
 
 
 def _write_report(path: Path, report: dict[str, Any]) -> None:

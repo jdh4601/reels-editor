@@ -1619,8 +1619,8 @@ class JobService:
             job.message = "분석이 끝났습니다. 만들 후보를 선택하세요."
             self._save(job)
         self._notify(
-            "콘텐츠 후보가 준비되었습니다",
-            f"{project_name} 다운로드와 분석이 끝났습니다. 만들 릴스를 선택하세요.",
+            "후보 분석 완료",
+            "만들 릴스를 선택하세요.",
         )
 
     def _prepare_selected_generation(self, job_id: str, candidate_ids: list[str]) -> Job:
@@ -1754,16 +1754,15 @@ class JobService:
                     job.error = f"선택한 릴스 {len(ready)}/{job.n_storylines}개만 준비되었습니다."
                     job.message = job.error
             self._save(job)
-            completed_title = job.project_name or "릴스"
             completed_count = len(ready)
             expected_count = job.n_storylines
             completed_cleanly = job.status is Status.READY
         self._notify(
-            "릴스 생성이 완료되었습니다" if completed_cleanly else "릴스 생성이 끝났습니다",
+            "릴스 생성 완료" if completed_cleanly else "릴스 생성 결과",
             (
-                f"{completed_title} 릴스 {completed_count}개가 모두 준비되었습니다."
+                f"{completed_count}개가 준비됐습니다."
                 if completed_cleanly
-                else f"{completed_title} 릴스 {completed_count}/{expected_count}개가 준비되었습니다. 앱에서 결과를 확인하세요."
+                else f"{completed_count}/{expected_count}개 준비됨. 결과를 확인하세요."
             ),
         )
 

@@ -2,6 +2,7 @@ import subprocess
 import sys
 import threading
 import unicodedata
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -370,6 +371,24 @@ def test_video_crop_box_snaps_horizontal_focus_to_three_anchors() -> None:
     )
     assert render.video_crop_box((1920, 1080), style, focus_x=0.82) == (
         render.video_crop_box((1920, 1080), style, focus_x=1.0)
+    )
+
+
+def test_two_person_focus_forces_thirty_percent_zoom() -> None:
+    style = replace(load_style(STYLE), video_zoom=1.0)
+    crop = render.video_crop_box(
+        (1920, 1080),
+        style,
+        focus_x=0.0,
+        focus_zoom=1.3,
+    )
+    frame_w, frame_h, *_ = render._center_crop_box(
+        1920, 1080, *style.video_area()
+    )
+
+    assert crop[:2] == (
+        render._even_crop_size(frame_w / 1.3, frame_w),
+        render._even_crop_size(frame_h / 1.3, frame_h),
     )
 
 

@@ -25,7 +25,7 @@ def test_build_focus_windows_follows_edl_cut_sizes(segments: dict) -> None:
     assert windows[0].end_s == 23.0
 
 
-def test_choose_active_face_prefers_speaking_face_and_zooms_wide_shot() -> None:
+def test_choose_active_face_prefers_speaker_and_zooms_two_person_shot() -> None:
     frames = [
         [
             FaceSignal(0.14, 0.07, left, y=0.31),
@@ -45,7 +45,7 @@ def test_choose_active_face_prefers_speaking_face_and_zooms_wide_shot() -> None:
     assert point is not None
     assert point.x == 0.0
     assert point.y == 0.5
-    assert point.zoom == 1.0
+    assert point.zoom == 1.3
 
 
 def test_choose_active_face_keeps_close_single_speaker_at_normal_zoom() -> None:
@@ -91,6 +91,26 @@ def test_choose_active_face_centers_single_distant_person() -> None:
     point = choose_active_face(frames)
 
     assert point == speaker_focus.FocusPoint()
+
+
+def test_single_person_center_survives_asymmetric_content_crop() -> None:
+    point = speaker_focus.FocusPoint()
+
+    assert speaker_focus.content_relative_focus_x(
+        point,
+        (1920, 1080),
+        (1080, 1080, 0, 0),
+    ) == 0.5
+
+
+def test_two_person_layout_must_persist_across_most_frames() -> None:
+    frames = [
+        [FaceSignal(0.18, 0.08, 0.8), FaceSignal(0.82, 0.08, 0.3)]
+        if index < 7 else [FaceSignal(0.82, 0.20, 0.7)]
+        for index in range(10)
+    ]
+
+    assert choose_active_face(frames) == speaker_focus.FocusPoint()
 
 
 def test_analysis_cache_skips_reextracting_the_same_source_window(
@@ -153,6 +173,7 @@ def test_choose_active_face_ignores_single_noisy_outlier_from_listener() -> None
 
     assert point is not None
     assert point.x == 0.0
+    assert point.zoom == 1.3
 
 
 def test_horizontal_anchor_allows_only_left_center_or_right() -> None:

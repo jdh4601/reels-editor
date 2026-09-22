@@ -209,14 +209,15 @@ def video_crop_box(
     style: StylePreset,
     *,
     focus_x: float = 0.5,
+    focus_zoom: float = 1.0,
 ) -> tuple[int, int, int, int]:
-    """현재 확대율을 유지하며 좌측 끝·중앙·우측 끝 중 하나로 크롭한다."""
+    """요청 확대율을 지키며 좌측 끝·중앙·우측 끝 중 하나로 크롭한다."""
     in_w, in_h = in_size
     video_w, video_h = style.video_area()
     frame_w, frame_h, _frame_x, _frame_y = _center_crop_box(
         in_w, in_h, video_w, video_h)
 
-    zoom = max(style.video_zoom, 1.0)
+    zoom = max(style.video_zoom, focus_zoom, 1.0)
     crop_w = _even_crop_size(frame_w / zoom, frame_w)
     crop_h = _even_crop_size(frame_h / zoom, frame_h)
     anchor_x = speaker_focus.horizontal_anchor(focus_x)
@@ -260,19 +261,19 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
         pre = f"crop={c_w}:{c_h}:{c_x}:{c_y},"
         src_w, src_h = c_w, c_h
     dynamic_focus = focus_slices if focus_slices else None
-    source_windows: list[tuple[float, float, float | None]]
+    source_windows: list[tuple[float, float, float | None, float]]
     if dynamic_focus is not None:
         source_windows = [
-            (item.start_s, item.end_s, item.point.x)
+            (item.start_s, item.end_s, item.point.x, item.point.zoom)
             for item in dynamic_focus
         ]
     else:
         source_windows = [
-            (s["source_start_us"] / US, s["source_end_us"] / US, None)
+            (s["source_start_us"] / US, s["source_end_us"] / US, None, 1.0)
             for s in ordered
         ]
     n = len(source_windows)
-    for i, (a, b, focus_x) in enumerate(source_windows):
+    for i, (a, b, focus_x, focus_zoom) in enumerate(source_windows):
         # YouTube sources can carry different sample/pixel aspect ratios per
         # segment. Normalize before concat; equal width/height alone is not
         # enough for FFmpeg's concat filter.
@@ -282,7 +283,7 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
             )
         else:
             crop_w, crop_h, crop_x, crop_y = video_crop_box(
-                (src_w, src_h), style, focus_x=focus_x,
+                (src_w, src_h), style, focus_x=focus_x, focus_zoom=focus_zoom,
             )
             parts.append(
                 f"[0:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{speed},"

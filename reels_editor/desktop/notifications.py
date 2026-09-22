@@ -1,27 +1,27 @@
 from __future__ import annotations
 
 import platform
-import subprocess
 
 
 def show_macos_notification(title: str, message: str) -> None:
-    """Show a best-effort native macOS notification without blocking the job."""
+    """Show a best-effort notification attributed to the Reels Editor app."""
     if platform.system() != "Darwin":
         return
 
-    script = "display notification " + _apple_script_string(message)
-    script += " with title " + _apple_script_string(title)
     try:
-        subprocess.Popen(  # noqa: S603 - arguments are passed without a shell
-            ["/usr/bin/osascript", "-e", script],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError:
+        notification_class, center_class = _notification_classes()
+        notification = notification_class.alloc().init()
+        notification.setTitle_(title)
+        notification.setInformativeText_(message)
+        center_class.defaultUserNotificationCenter().deliverNotification_(notification)
+    except (ImportError, OSError, RuntimeError):
         # Notifications are a convenience and must never fail a render job.
         return
 
 
-def _apple_script_string(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+def _notification_classes():
+    # Sending from the app process makes Notification Center use the bundle's
+    # ReelsEditor.icns instead of osascript's generic crossed-tools icon.
+    from Foundation import NSUserNotification, NSUserNotificationCenter
+
+    return NSUserNotification, NSUserNotificationCenter

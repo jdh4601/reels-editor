@@ -628,9 +628,27 @@ h2 {
   border-color: #2f6a4f;
   outline: 2px solid rgba(47, 106, 79, 0.14);
 }
-.buffer-settings-field {
+.buffer-settings-field,
+.integration-settings-field {
   border-top: 1px solid #d5d0c7;
   padding-top: 14px;
+}
+.drive-path {
+  background: #f1efe9;
+  border-radius: 7px;
+  color: #59635e;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow: hidden;
+  padding: 8px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.integration-settings-field button {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+  justify-content: center;
 }
 .settings-field select:focus { border-color: #2f6a4f; outline: 2px solid rgba(47, 106, 79, 0.14); }
 .settings-field select:disabled { cursor: not-allowed; opacity: 0.55; }

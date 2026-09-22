@@ -561,7 +561,7 @@ def test_delete_all_archive_removes_every_completed_reel(tmp_path: Path) -> None
     assert service.archive_jobs() == []
 
 
-def test_purge_expired_archive_keeps_reels_newer_than_three_days(tmp_path: Path) -> None:
+def test_purge_expired_archive_keeps_reels_newer_than_seven_days(tmp_path: Path) -> None:
     service = JobService(
         store=JobStore(tmp_path / "jobs"),
         deps=_deps(tmp_path, Calls()),
@@ -570,8 +570,8 @@ def test_purge_expired_archive_keeps_reels_newer_than_three_days(tmp_path: Path)
     ready = _run_ready(service, candidate_count=2)
     now = datetime(2026, 8, 27, 10, tzinfo=UTC)
     stored = service.store.load(ready.id)
-    stored.storylines[0].completed_at = (now - timedelta(days=3, seconds=1)).isoformat()
-    stored.storylines[1].completed_at = (now - timedelta(days=2, hours=23)).isoformat()
+    stored.storylines[0].completed_at = (now - timedelta(days=7, seconds=1)).isoformat()
+    stored.storylines[1].completed_at = (now - timedelta(days=6, hours=23)).isoformat()
     service.store.save(stored)
 
     deleted = service.purge_expired_archive(now=now)
@@ -1160,6 +1160,23 @@ def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Pat
     ]
     assert list(destination.glob("*.json")) == []
     assert all(b":False" in path.read_bytes() for path in destination.glob("*.mp4"))
+    assert exported.export.output_path == str(destination)
+
+
+def test_google_drive_export_directory_uses_episode_and_founder_name(tmp_path: Path) -> None:
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, Calls()))
+    job = _run_ready(service, candidate_count=1, episode_number=11)
+    my_drive = tmp_path / "My Drive"
+    my_drive.mkdir()
+
+    destination = service.google_drive_export_directory(job.id, my_drive)
+    exported = service.export_many(job.id, destination, storyline_ids=["s1"])
+
+    assert destination == my_drive / "릴스(에피소드)" / "에피소드11_김현지"
+    assert destination.is_dir()
+    assert [path.name for path in destination.glob("*.mp4")] == [
+        "에피소드 11 - https youtu.be A 제목 1.mp4"
+    ]
     assert exported.export.output_path == str(destination)
 
 

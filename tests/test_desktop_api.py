@@ -10,7 +10,7 @@ from reels_editor.desktop.dialogs import FakeDialogProvider
 from reels_editor.desktop.server import create_app
 from reels_editor.buffer_api import BufferPost
 from reels_editor.jobs import Job, JobStore, Status, Storyline, Variant
-from reels_editor.config import AppConfig, load_config
+from reels_editor.config import AppConfig, load_config, save_config
 
 
 class FakeService:
@@ -184,6 +184,10 @@ class FakeService:
         self.job.export.output_path = str(destination_dir)
         self.job.export.status = Status.READY
         return self.job
+
+    def google_drive_export_directory(self, job_id: str, my_drive_root: Path) -> Path:
+        assert self.job is not None and self.job.id == job_id
+        return my_drive_root / "릴스(에피소드)" / f"에피소드{self.job.episode_number}_창업자"
 
     def publish_many_to_buffer(self, job_id: str, **kwargs) -> list[BufferPost]:
         self.buffer_publish_args = {"job_id": job_id, **kwargs}
@@ -759,12 +763,17 @@ def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Pa
     job = store.create_job()
     service = FakeService(store, job)
     dialogs = FakeDialogProvider(folder=str(tmp_path / "ignored-destination"))
+    my_drive = tmp_path / "My Drive"
+    my_drive.mkdir()
+    config_path = tmp_path / "config.yaml"
+    save_config(AppConfig(google_drive_root=str(my_drive)), config_path)
     app = create_app(
         static_dir=_static(tmp_path),
         media_dir=tmp_path,
         dialog_provider=dialogs,
         job_service=service,
         session_token="secret",
+        config_path=config_path,
     )
 
     storyline_ids = [f"s{index}" for index in range(1, 11)]
@@ -776,11 +785,61 @@ def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Pa
     assert response.status_code == 200
     assert service.batch_export_args == {
         "job_id": job.id,
-        "destination_dir": tmp_path / "archive",
+        "destination_dir": my_drive / "릴스(에피소드)" / "에피소드1_창업자",
         "storyline_ids": storyline_ids,
         "subtitles_on": False,
     }
-    assert dialogs.opened_directories == [tmp_path / "archive"]
+    assert dialogs.opened_directories == [my_drive / "릴스(에피소드)" / "에피소드1_창업자"]
+
+
+def test_batch_export_requires_connected_google_drive(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+        config_path=tmp_path / "config.yaml",
+    )
+
+    response = TestClient(app).post(
+        f"/api/jobs/{job.id}/export-batch?token=secret",
+        json={"storyline_ids": ["s1"]},
+    )
+
+    assert response.status_code == 400
+    assert "Google Drive" in response.json()["detail"]
+    assert service.batch_export_args is None
+
+
+def test_google_drive_settings_choose_and_persist_my_drive(tmp_path: Path) -> None:
+    google_drive = tmp_path / "GoogleDrive-account"
+    my_drive = google_drive / "My Drive"
+    my_drive.mkdir(parents=True)
+    service = FakeService(JobStore(tmp_path / "jobs"))
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        dialog_provider=FakeDialogProvider(folder=str(google_drive)),
+        job_service=service,
+        session_token="secret",
+        config_path=tmp_path / "config.yaml",
+    )
+    client = TestClient(app)
+
+    saved = client.post("/api/settings/google-drive/choose?token=secret")
+    loaded = client.get("/api/settings/google-drive?token=secret")
+
+    assert saved.status_code == 200
+    assert saved.json() == {
+        "configured": True,
+        "my_drive_path": str(my_drive),
+        "cancelled": False,
+    }
+    assert loaded.json() == {"configured": True, "my_drive_path": str(my_drive)}
+    assert load_config(tmp_path / "config.yaml").google_drive_root == str(my_drive)
 
 
 def test_buffer_settings_and_publish_keep_api_key_server_side(tmp_path: Path, monkeypatch) -> None:

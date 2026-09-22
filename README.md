@@ -129,14 +129,16 @@ Then start the app:
    **제목·캡션·시나리오 수정하기** to edit the two-line on-screen title, request
    a new AI title, inspect the story beats, or generate an Instagram caption
    grounded in that reel's actual script.
-6. Press **Space** or use the selection control to mark approved reels, then click
-   **선택 영상 내보내기** (Export selected).
+6. In settings, connect the local `My Drive` folder mounted by Google Drive for
+   desktop. Press **Space** or use the selection control to mark approved reels,
+   then click **선택 영상 내보내기** (Export selected).
 7. With Buffer configured, click **Buffer 큐에 업로드** to add only the selected
    videos as Instagram Reels in the next available Buffer slots.
 
-Each export gets its own directory containing only the videos selected for that
-run. App-managed render archives and user-requested export directories are kept
-separate. Completed reels remain available from the archive for three days, so
+Exports are saved below `My Drive/릴스(에피소드)/에피소드N_창업자이름/`.
+The founder name comes from the verified speaker metadata for the generated reel.
+App-managed render archives and Google Drive export directories are kept
+separate. Completed reels remain available from the archive for seven days, so
 they can be reopened, revised, and exported again without starting over.
 
 ### Buffer upload setup

@@ -183,6 +183,15 @@ def create_app(
             "cloudinary_upload_preset": values.get("cloudinary_upload_preset", ""),
         }
 
+    def google_drive_settings() -> dict[str, Any]:
+        persisted = load_config(effective_config_path)
+        raw_path = persisted.google_drive_root.strip()
+        root = Path(raw_path).expanduser() if raw_path else None
+        return {
+            "configured": bool(root and root.is_dir()),
+            "my_drive_path": str(root) if root else "",
+        }
+
     @app.get("/api/settings/playback-speed")
     def get_playback_speed_settings(_auth: None = Depends(require_token)) -> dict[str, float]:
         return playback_speed_settings()
@@ -221,6 +230,33 @@ def create_app(
         if request.api_key.strip():
             save_credential("buffer", request.api_key.strip(), credential_file)
         return buffer_settings()
+
+    @app.get("/api/settings/google-drive")
+    def get_google_drive_settings(_auth: None = Depends(require_token)) -> dict[str, Any]:
+        return google_drive_settings()
+
+    @app.post("/api/settings/google-drive/choose")
+    def choose_google_drive_folder(_auth: None = Depends(require_token)) -> dict[str, Any]:
+        chosen = dialogs.choose_folder()
+        if not chosen:
+            return {**google_drive_settings(), "cancelled": True}
+        try:
+            root = Path(chosen).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail="선택한 Google Drive 폴더를 찾을 수 없습니다.") from exc
+        if not root.is_dir():
+            raise HTTPException(status_code=400, detail="Google Drive의 My Drive 폴더를 선택하세요.")
+        for child_name in ("My Drive", "내 드라이브"):
+            child = root / child_name
+            if child.is_dir():
+                root = child.resolve()
+                break
+
+        persisted = load_config(effective_config_path)
+        save_config(replace(persisted, google_drive_root=str(root)), effective_config_path)
+        current = getattr(service, "config", AppConfig(provider="codex-cli"))
+        service.config = replace(current, google_drive_root=str(root))
+        return {**google_drive_settings(), "cancelled": False}
 
     @app.post("/api/dialogs/save-file")
     def save_file(request: SaveDialogRequest, _auth: None = Depends(require_token)) -> dict[str, str | None]:
@@ -403,13 +439,24 @@ def create_app(
 
     @app.post("/api/jobs/{job_id}/export-batch")
     def export_batch(job_id: str, request: BatchExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:
+        drive = google_drive_settings()
+        if not drive["configured"]:
+            raise HTTPException(
+                status_code=400,
+                detail="설정에서 Google Drive의 My Drive 폴더를 먼저 연결하세요.",
+            )
         try:
+            destination_dir = service.google_drive_export_directory(
+                job_id,
+                Path(drive["my_drive_path"]),
+            )
             job = service.export_many(
                 job_id,
+                destination_dir,
                 storyline_ids=request.storyline_ids,
                 subtitles_on=request.subtitles_on,
             )
-        except JobServiceError as exc:
+        except (OSError, JobServiceError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if job.export.output_path:
             dialogs.show_in_file_manager(Path(job.export.output_path).expanduser())

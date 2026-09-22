@@ -12,6 +12,7 @@ import {
   Clock3,
   Copy,
   Download,
+  FolderOpen,
   FolderX,
   History,
   ImageOff,
@@ -49,6 +50,11 @@ type BufferSettings = {
   channel_id: string;
   cloudinary_cloud_name: string;
   cloudinary_upload_preset: string;
+};
+type GoogleDriveSettings = {
+  configured: boolean;
+  my_drive_path: string;
+  cancelled?: boolean;
 };
 type BufferSettingsDraft = {
   apiKey: string;
@@ -857,6 +863,8 @@ function App() {
   });
   const [bufferSettingsSaveState, setBufferSettingsSaveState] = useState<SettingsSaveState>("idle");
   const [bufferUploadState, setBufferUploadState] = useState<"idle" | "uploading" | "done" | "failed">("idle");
+  const [googleDriveSettings, setGoogleDriveSettings] = useState<GoogleDriveSettings | null>(null);
+  const [googleDriveConnecting, setGoogleDriveConnecting] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
   const [episodeInput, setEpisodeInput] = useState(String(DEFAULT_EPISODE_NUMBER));
@@ -961,6 +969,24 @@ function App() {
       })
       .catch(() => {
         if (!cancelled) setSpeedSettingsSaveState("error");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (isDemoMode()) {
+      setGoogleDriveSettings({ configured: true, my_drive_path: "~/Google Drive/My Drive" });
+      return;
+    }
+    let cancelled = false;
+    void apiFetch("/api/settings/google-drive")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Google Drive 설정을 불러오지 못했습니다.");
+        const settings = (await response.json()) as GoogleDriveSettings;
+        if (!cancelled) setGoogleDriveSettings(settings);
+      })
+      .catch(() => {
+        if (!cancelled) setGoogleDriveSettings({ configured: false, my_drive_path: "" });
       });
     return () => { cancelled = true; };
   }, []);
@@ -1470,10 +1496,14 @@ function App() {
 
   async function exportSelected() {
     if (!readySelected || !snapshot) return;
+    if (!googleDriveSettings?.configured) {
+      setLiveMessage("설정에서 Google Drive의 My Drive 폴더를 먼저 연결하세요.");
+      return;
+    }
     setExportState("exporting");
     setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개 내보내기를 준비합니다.`);
     try {
-      let completedPath = "~/Movies/Reels Editor Exports/";
+      let completedPath = `${googleDriveSettings.my_drive_path}/릴스(에피소드)/`;
       if (!isDemoMode()) {
         const response = await apiMutation(`/api/jobs/${snapshot.jobId}/export-batch`, {
           method: "POST",
@@ -1487,7 +1517,7 @@ function App() {
         completedPath = exportedPathFromPayload(payload) ?? completedPath;
       } else {
         await new Promise((resolve) => window.setTimeout(resolve, 450));
-        completedPath = `~/Movies/Reels Editor Exports/Ep-${snapshot.episodeNumber}_${snapshot.projectName}/`;
+        completedPath = `${googleDriveSettings.my_drive_path}/릴스(에피소드)/에피소드${snapshot.episodeNumber}_${snapshot.projectName}/`;
       }
       setExportState("done");
       setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개를 ${completedPath}에 저장했습니다.`);
@@ -1495,6 +1525,26 @@ function App() {
       setExportState("failed");
       const detail = error instanceof Error ? `: ${error.message}` : "";
       setLiveMessage(`내보내기에 실패했습니다${detail}`);
+    }
+  }
+
+  async function connectGoogleDrive() {
+    if (isDemoMode()) {
+      setLiveMessage("Google Drive의 My Drive 폴더가 연결되었습니다.");
+      return;
+    }
+    setGoogleDriveConnecting(true);
+    try {
+      const response = await apiMutation("/api/settings/google-drive/choose", { method: "POST" });
+      const settings = (await response.json()) as GoogleDriveSettings;
+      setGoogleDriveSettings(settings);
+      setLiveMessage(settings.cancelled
+        ? "Google Drive 폴더 선택을 취소했습니다."
+        : "Google Drive의 My Drive 폴더를 연결했습니다.");
+    } catch (error) {
+      setLiveMessage(error instanceof Error ? error.message : "Google Drive 연결에 실패했습니다.");
+    } finally {
+      setGoogleDriveConnecting(false);
     }
   }
 
@@ -1798,6 +1848,25 @@ function App() {
           </select>
         </div>
 
+        <div className="settings-field integration-settings-field">
+          <div className="settings-field-heading">
+            <h3>Google Drive 내보내기</h3>
+            <strong>{googleDriveSettings?.configured ? "연결됨" : "미설정"}</strong>
+          </div>
+          <p className="drive-path" title={googleDriveSettings?.my_drive_path || undefined}>
+            {googleDriveSettings?.my_drive_path || "My Drive 폴더를 선택하세요."}
+          </p>
+          <button
+            type="button"
+            onClick={() => { void connectGoogleDrive(); }}
+            disabled={googleDriveConnecting}
+          >
+            <FolderOpen size={15} aria-hidden="true" />
+            {googleDriveConnecting ? "선택 중" : googleDriveSettings?.configured ? "폴더 다시 선택" : "My Drive 폴더 선택"}
+          </button>
+          <p className="settings-note">릴스(에피소드)/에피소드N_창업자이름 폴더에 MP4를 저장합니다.</p>
+        </div>
+
         <div className="settings-field buffer-settings-field">
           <div className="settings-field-heading">
             <h3>Buffer 업로드</h3>
@@ -1886,7 +1955,7 @@ function App() {
             <div>
               <p className="eyebrow">완료된 영상만 표시</p>
               <h2 id="archive-title">다시 꺼내 쓸 릴스</h2>
-              <p>영상을 열어 다시 활용할 수 있습니다. 완료 후 3일이 지난 릴스는 자동 삭제됩니다.</p>
+              <p>영상을 열어 다시 활용할 수 있습니다. 완료 후 7일이 지난 릴스는 자동 삭제됩니다.</p>
             </div>
             <div className="archive-summary">
               <strong>{archiveItems.length}<span>개</span></strong>
@@ -2051,10 +2120,12 @@ function App() {
           <button
             type="button"
             className="topbar-icon-button export-button"
-            disabled={!readySelected || exportState === "exporting"}
+            disabled={!readySelected || exportState === "exporting" || !googleDriveSettings?.configured}
             onClick={exportSelected}
             aria-label={exportState === "done" ? "저장 완료" : archiveMode ? "보관 영상 다시 내보내기" : `선택 영상 ${selectedExportStorylines.length}개 내보내기`}
-            title={archiveMode ? "보관 영상 다시 내보내기" : `선택 영상 ${selectedExportStorylines.length}개 내보내기`}
+            title={!googleDriveSettings?.configured
+              ? "설정에서 Google Drive 연결을 완료하세요"
+              : archiveMode ? "보관 영상 다시 내보내기" : `선택 영상 ${selectedExportStorylines.length}개 내보내기`}
           >
             {exportState === "exporting" ? <Loader2 size={19} className="spin" /> : <Download size={19} />}
           </button>

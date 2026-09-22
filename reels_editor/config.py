@@ -33,6 +33,7 @@ class AppConfig:
     n_storylines: int = 3
     style: dict[str, Any] = field(default_factory=dict)
     buffer: dict[str, str] = field(default_factory=dict)
+    google_drive_root: str = ""
 
 
 def user_config_path() -> Path:
@@ -87,6 +88,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         n_storylines=n_storylines,
         style={k: v for k, v in (raw.get("style") or {}).items()},
         buffer={k: str(v) for k, v in (raw.get("buffer") or {}).items() if v is not None},
+        google_drive_root=str(raw.get("google_drive_root") or ""),
     ))
 
 

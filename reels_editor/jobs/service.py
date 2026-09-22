@@ -51,7 +51,8 @@ CODEX_CLI_MODELS = frozenset({
 })
 EXPORT_TITLE_MAX_BYTES = 220
 DEFAULT_EPISODE_NUMBER = 1
-ARCHIVE_RETENTION_DAYS = 3
+ARCHIVE_RETENTION_DAYS = 7
+GOOGLE_DRIVE_REELS_DIRECTORY = "릴스(에피소드)"
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _FILENAME_WHITESPACE = re.compile(r"\s+")
 
@@ -1105,6 +1106,50 @@ class JobService:
         destination = self.export_root / f"Ep-{job.episode_number}_{safe_title}" / f"{stamp}-{uuid.uuid4().hex[:6]}"
         destination.mkdir(parents=True, exist_ok=False)
         return destination
+
+    def google_drive_export_directory(self, job_id: str, my_drive_root: Path) -> Path:
+        """Return the episode folder below a locally mounted Google Drive root."""
+        try:
+            root = my_drive_root.expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise JobServiceError("연결된 Google Drive 폴더를 찾을 수 없습니다.") from exc
+        if not root.is_dir():
+            raise JobServiceError("연결된 Google Drive 경로가 폴더가 아닙니다.")
+
+        job = self.store.load(job_id)
+        founder_name = self._founder_name(job)
+        prefix = f"에피소드{job.episode_number}_"
+        safe_founder = _safe_filename_component(
+            founder_name,
+            max_bytes=max(1, 255 - len(prefix.encode("utf-8"))),
+        )
+        reels_root = root / GOOGLE_DRIVE_REELS_DIRECTORY
+        if reels_root.exists() and reels_root.is_symlink():
+            raise JobServiceError("Google Drive 릴스 폴더가 심볼릭 링크입니다.")
+        destination = reels_root / f"{prefix}{safe_founder}"
+        if destination.exists() and destination.is_symlink():
+            raise JobServiceError("Google Drive 내보내기 폴더가 심볼릭 링크입니다.")
+        destination.mkdir(parents=True, exist_ok=True)
+        resolved = destination.resolve()
+        if not self._is_relative_to(resolved, root):
+            raise JobServiceError("Google Drive 내보내기 폴더가 연결 경로 밖에 있습니다.")
+        return resolved
+
+    @staticmethod
+    def _founder_name(job: Job) -> str:
+        for story in job.storylines:
+            for raw_path in (story.doc_path, story.edl_path):
+                if not raw_path:
+                    continue
+                try:
+                    payload = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                speaker = payload.get("speaker") if isinstance(payload, dict) else None
+                name = speaker.get("name") if isinstance(speaker, dict) else None
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+        return job.project_name.strip() or "창업자"
 
     def _copy_export_variant(
         self,

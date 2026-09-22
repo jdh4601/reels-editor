@@ -116,6 +116,15 @@ def test_buffer_settings_roundtrip(tmp_path: Path) -> None:
     assert load_config(p).buffer == cfg.buffer
 
 
+def test_google_drive_root_roundtrip(tmp_path: Path) -> None:
+    p = tmp_path / "config.yaml"
+    cfg = AppConfig(google_drive_root="/Volumes/GoogleDrive/My Drive")
+
+    save_config(cfg, p)
+
+    assert load_config(p).google_drive_root == cfg.google_drive_root
+
+
 def test_merged_style_applies_known_keys(style_preset) -> None:
     merged = merged_style(style_preset, {"sub_size": 60, "title_highlight": "#123456"})
     assert merged.sub_size == 60

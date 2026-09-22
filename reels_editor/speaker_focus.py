@@ -23,9 +23,10 @@ MIN_SAMPLES = 6
 MAX_SAMPLES = 48
 TRACKING_WINDOW_SECONDS = 2.0
 TRACK_DISTANCE = 0.22
-WIDE_SHOT_FACE_WIDTH = 0.14
 MIN_TWO_PERSON_FRAME_RATIO = 0.35
-ANALYSIS_CACHE_VERSION = 4
+LEFT_ANCHOR_MAX_X = 1 / 3
+RIGHT_ANCHOR_MIN_X = 2 / 3
+ANALYSIS_CACHE_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,15 @@ def sample_count_for(duration_s: float) -> int:
     return min(MAX_SAMPLES, max(MIN_SAMPLES, target))
 
 
+def horizontal_anchor(x: float) -> float:
+    """연속 좌표를 좌측 끝·중앙·우측 끝 중 하나로 고정한다."""
+    if x <= LEFT_ANCHOR_MAX_X:
+        return 0.0
+    if x >= RIGHT_ANCHOR_MIN_X:
+        return 1.0
+    return 0.5
+
+
 def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
     """투샷일 때만 입술 움직임이 큰 인물 쪽으로 수평 초점을 옮긴다."""
     two_person_frames = sum(len(frame) >= 2 for frame in frames)
@@ -155,15 +165,10 @@ def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
     chosen = max(viable, key=score)
     chosen_signals = [signal for _index, signal in chosen]
     x = statistics.median(signal.x for signal in chosen_signals)
-    mean_width = statistics.fmean(signal.width for signal in chosen_signals)
-    is_wide_layout = (
-        two_person_frames >= required_two_person_frames
-        or mean_width < WIDE_SHOT_FACE_WIDTH
-    )
-    if not is_wide_layout:
+    if two_person_frames < required_two_person_frames:
         return FocusPoint()
     return FocusPoint(
-        x=max(0.0, min(1.0, x)),
+        x=horizontal_anchor(x),
         # 요청한 규칙은 좌우 이동만 적용한다. 단독 샷과 같은 세로 구도와
         # 확대율을 유지해 화면 전환 때 머리 위치나 크기가 튀지 않게 한다.
         y=0.5,

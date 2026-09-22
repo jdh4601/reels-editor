@@ -19,7 +19,9 @@
 
 Paste a YouTube interview. The app reads the transcript, proposes ten reel ideas
 that do not overlap, and renders only the ones you pick as 9:16 videos with
-Korean subtitles and a hook title across the top.
+Korean subtitles and a hook title across the top. A focused review workspace
+then lets you preview each reel, revise or regenerate its title, create its
+Instagram caption, and choose exactly which finished videos to export.
 
 Everything runs locally. The video, the transcript, and the render all stay on
 your machine; the only thing that leaves is the transcript text you send to
@@ -57,9 +59,16 @@ enforced in validation — a title that misses the contract is sent back for a r
 **Two-line titles have a clear hierarchy.** The first line is a smaller white
 setup; the second line stays large and orange as the actual hook.
 
-**Wide shots follow the speaker.** On macOS, Apple Vision detects faces and
-mouth movement locally. The crop moves toward the active speaker and adds a
-restrained zoom when a two-person shot would otherwise cut that person off.
+**Framing stays deliberate.** On macOS, Apple Vision detects faces and mouth
+movement locally. A one-person shot always keeps the crop centered. A
+two-person shot may move toward the active speaker, but horizontal framing is
+limited to three stable anchors: left edge, center, or right edge. This avoids
+the distracting side-to-side drift of continuous face tracking.
+
+**Review is part of the workflow.** Finished reels open one at a time in a
+portrait player with keyboard navigation. You can inspect the story structure,
+edit both title lines, ask the configured model for a fresh title, regenerate
+the Instagram caption, and select only approved reels for export or Buffer.
 
 **Your model, your choice.** Codex CLI, Claude Code CLI, the OpenAI API, Kimi,
 or any OpenAI-compatible server.
@@ -72,8 +81,10 @@ macOS, plus:
 | --- | --- | --- |
 | Python 3.11+ | Runs the app | [python.org](https://www.python.org/downloads/) |
 | ffmpeg, ffprobe | Cuts and renders the video | `brew install ffmpeg` |
-| Pretendard | The font used in titles and subtitles | `brew install --cask font-pretendard` |
 | A model provider | Reads the transcript, writes the plan | see [Model providers](#model-providers) |
+
+The D.one title, subtitle, and logo assets used by the default style are bundled
+with the repository; no separate font installation is required.
 
 Verify before continuing:
 
@@ -114,15 +125,19 @@ Then start the app:
    and transcript, then proposes ten non-overlapping ideas.
 4. Select the ones worth making and click **선택한 후보로 릴스 생성**
    (Generate selected reels). Only your picks get rendered, at 20–40 seconds each.
-5. Optionally click **캡션 생성하기** (Generate caption) for an Instagram caption
-   written from that reel's actual script.
-6. Select what you want and click **선택 영상 내보내기** (Export selected).
+5. Review the finished reels with the arrow buttons or keyboard. Expand
+   **제목·캡션·시나리오 수정하기** to edit the two-line on-screen title, request
+   a new AI title, inspect the story beats, or generate an Instagram caption
+   grounded in that reel's actual script.
+6. Press **Space** or use the selection control to mark approved reels, then click
+   **선택 영상 내보내기** (Export selected).
 7. With Buffer configured, click **Buffer 큐에 업로드** to add only the selected
    videos as Instagram Reels in the next available Buffer slots.
 
 Each export gets its own directory containing only the videos selected for that
 run. App-managed render archives and user-requested export directories are kept
-separate.
+separate. Completed reels remain available from the archive for three days, so
+they can be reopened, revised, and exported again without starting over.
 
 ### Buffer upload setup
 

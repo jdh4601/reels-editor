@@ -210,7 +210,7 @@ def video_crop_box(
     *,
     focus_x: float = 0.5,
 ) -> tuple[int, int, int, int]:
-    """현재 확대율을 유지하면서 필요한 경우에만 수평 초점을 옮긴다."""
+    """현재 확대율을 유지하며 좌측 끝·중앙·우측 끝 중 하나로 크롭한다."""
     in_w, in_h = in_size
     video_w, video_h = style.video_area()
     frame_w, frame_h, _frame_x, _frame_y = _center_crop_box(
@@ -219,7 +219,8 @@ def video_crop_box(
     zoom = max(style.video_zoom, 1.0)
     crop_w = _even_crop_size(frame_w / zoom, frame_w)
     crop_h = _even_crop_size(frame_h / zoom, frame_h)
-    desired_x = round(max(0.0, min(1.0, focus_x)) * in_w - crop_w / 2)
+    anchor_x = speaker_focus.horizontal_anchor(focus_x)
+    desired_x = round(anchor_x * in_w - crop_w / 2)
     crop_x = min(in_w - crop_w, max(0, desired_x))
     return crop_w, crop_h, crop_x, (in_h - crop_h) // 2
 
@@ -861,7 +862,7 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
     from reels_editor import edl as edl_mod
     ordered = edl_mod.ordered_segments(edl_doc, segments)
     work_dir.mkdir(parents=True, exist_ok=True)
-    # 단독 샷은 중앙 고정, 투샷은 2초마다 실제 발화 인물 쪽으로 수평 이동한다.
+    # 단독 샷은 중앙 고정, 투샷만 실제 발화 인물 쪽 끝으로 수평 이동한다.
     source_size = _probe_size(video_path)
     content = detect_content_crop(video_path, ordered[0]["source_start_us"] / US)
     focus_slices = speaker_focus.analyze_speaker_focus(

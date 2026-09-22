@@ -43,7 +43,7 @@ def test_choose_active_face_prefers_speaking_face_and_zooms_wide_shot() -> None:
     point = choose_active_face(frames)
 
     assert point is not None
-    assert point.x == 0.14
+    assert point.x == 0.0
     assert point.y == 0.5
     assert point.zoom == 1.0
 
@@ -81,8 +81,8 @@ def test_choose_active_face_does_not_move_single_person_frame_even_off_center() 
     assert choose_active_face(frames) == speaker_focus.FocusPoint()
 
 
-def test_choose_active_face_reframes_distant_person_when_other_face_is_missed() -> None:
-    """와이드 투샷에서 한 얼굴만 잡혀도 얼굴이 작으면 그 인물 쪽으로 이동한다."""
+def test_choose_active_face_centers_single_distant_person() -> None:
+    """얼굴이 작거나 치우쳐 있어도 한 명뿐인 화면은 중앙에 고정한다."""
     frames = [
         [FaceSignal(0.84, 0.055, openness, y=0.38)]
         for openness in (0.2, 0.4, 0.3, 0.5, 0.2)
@@ -90,10 +90,7 @@ def test_choose_active_face_reframes_distant_person_when_other_face_is_missed() 
 
     point = choose_active_face(frames)
 
-    assert point is not None
-    assert point.x == 0.84
-    assert point.y == 0.5
-    assert point.zoom == 1.0
+    assert point == speaker_focus.FocusPoint()
 
 
 def test_analysis_cache_skips_reextracting_the_same_source_window(
@@ -155,7 +152,13 @@ def test_choose_active_face_ignores_single_noisy_outlier_from_listener() -> None
     point = choose_active_face(frames)
 
     assert point is not None
-    assert point.x == case["speaker_x"]
+    assert point.x == 0.0
+
+
+def test_horizontal_anchor_allows_only_left_center_or_right() -> None:
+    assert speaker_focus.horizontal_anchor(0.18) == 0.0
+    assert speaker_focus.horizontal_anchor(0.49) == 0.5
+    assert speaker_focus.horizontal_anchor(0.82) == 1.0
 
 
 def test_sample_width_resolves_mouth_landmarks_on_wide_two_shot() -> None:

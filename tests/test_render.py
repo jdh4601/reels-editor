@@ -337,8 +337,8 @@ def test_build_base_filter_moves_crop_only_for_detected_two_person_windows(
     ordered = edl.ordered_segments(edl_doc, segments)
     slices = [
         FocusSlice(0, 5.0, 7.0, FocusPoint()),
-        FocusSlice(0, 7.0, 9.0, FocusPoint(x=0.14)),
-        FocusSlice(0, 9.0, 15.0, FocusPoint(x=0.86)),
+        FocusSlice(0, 7.0, 9.0, FocusPoint(x=0.0)),
+        FocusSlice(0, 9.0, 15.0, FocusPoint(x=1.0)),
         FocusSlice(1, 15.0, 23.0, FocusPoint()),
     ]
 
@@ -351,12 +351,26 @@ def test_build_base_filter_moves_crop_only_for_detected_two_person_windows(
     )
 
     centered = render.video_crop_box((1920, 1080), style)
-    left = render.video_crop_box((1920, 1080), style, focus_x=0.14)
-    right = render.video_crop_box((1920, 1080), style, focus_x=0.86)
+    left = render.video_crop_box((1920, 1080), style, focus_x=0.0)
+    right = render.video_crop_box((1920, 1080), style, focus_x=1.0)
     assert f"crop={centered[0]}:{centered[1]}:{centered[2]}:{centered[3]}" in filt
     assert f"crop={left[0]}:{left[1]}:{left[2]}:{left[3]}" in filt
     assert f"crop={right[0]}:{right[1]}:{right[2]}:{right[3]}" in filt
     assert "concat=n=4:v=1:a=1[v][a]" in filt
+
+
+def test_video_crop_box_snaps_horizontal_focus_to_three_anchors() -> None:
+    style = load_style(STYLE)
+
+    assert render.video_crop_box((1920, 1080), style, focus_x=0.18) == (
+        render.video_crop_box((1920, 1080), style, focus_x=0.0)
+    )
+    assert render.video_crop_box((1920, 1080), style, focus_x=0.49) == (
+        render.video_crop_box((1920, 1080), style, focus_x=0.5)
+    )
+    assert render.video_crop_box((1920, 1080), style, focus_x=0.82) == (
+        render.video_crop_box((1920, 1080), style, focus_x=1.0)
+    )
 
 
 def test_parse_cropdetect_picks_most_common() -> None:

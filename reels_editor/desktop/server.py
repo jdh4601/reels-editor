@@ -23,10 +23,7 @@ from reels_editor.config import (
     AppConfig,
     DEFAULT_PLAYBACK_SPEED,
     load_config,
-    mask_key,
-    resolve_api_key,
     save_config,
-    save_credential,
     user_config_path,
 )
 from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
@@ -34,6 +31,7 @@ from reels_editor.title_rules import editor_title_lines
 from reels_editor.youtube import YouTubeSourceError, thumbnail_url_for_video, video_id_from_url
 
 from .dialogs import DialogProvider, FakeDialogProvider
+from .notes import FakeNotesProvider, NotesError, NotesProvider, caption_body_for_notes
 from .tools import probe_required_tools
 
 
@@ -69,17 +67,6 @@ class BatchExportRequest(BaseModel):
     subtitles_on: bool | None = None
 
 
-class BufferPublishRequest(BaseModel):
-    storyline_ids: list[str] = Field(min_length=1, max_length=10)
-
-
-class BufferSettingsRequest(BaseModel):
-    api_key: str = Field(default="", max_length=1000)
-    channel_id: str = Field(default="", max_length=200)
-    cloudinary_cloud_name: str = Field(default="", max_length=200)
-    cloudinary_upload_preset: str = Field(default="", max_length=200)
-
-
 class GenerateCandidatesRequest(BaseModel):
     candidate_ids: list[str] = Field(min_length=1, max_length=10)
 
@@ -107,8 +94,10 @@ def create_app(
     job_service: JobService | None = None,
     session_token: str | None = None,
     config_path: Path | None = None,
+    notes_provider: NotesProvider | None = None,
 ) -> FastAPI:
     dialogs = dialog_provider or FakeDialogProvider()
+    notes = notes_provider or FakeNotesProvider()
     service = job_service or JobService(store=JobStore())
 
     async def purge_expired_archive() -> None:
@@ -167,22 +156,6 @@ def create_app(
         speed = float(config.style.get("speed", DEFAULT_PLAYBACK_SPEED))
         return {"speed": round(speed, 2)}
 
-    credential_file = effective_config_path.parent / "credentials.yaml"
-
-    def buffer_settings() -> dict[str, Any]:
-        current = getattr(service, "config", AppConfig(provider="codex-cli"))
-        values = current.buffer
-        api_key = resolve_api_key("buffer", credential_file)
-        return {
-            "configured": bool(api_key and all(values.get(key) for key in (
-                "channel_id", "cloudinary_cloud_name", "cloudinary_upload_preset"
-            ))),
-            "api_key_masked": mask_key(api_key) if api_key else "",
-            "channel_id": values.get("channel_id", ""),
-            "cloudinary_cloud_name": values.get("cloudinary_cloud_name", ""),
-            "cloudinary_upload_preset": values.get("cloudinary_upload_preset", ""),
-        }
-
     def google_drive_settings() -> dict[str, Any]:
         persisted = load_config(effective_config_path)
         raw_path = persisted.google_drive_root.strip()
@@ -209,28 +182,6 @@ def create_app(
         service.config = replace(current, style={**current.style, "speed": speed})
         return playback_speed_settings()
 
-    @app.get("/api/settings/buffer")
-    def get_buffer_settings(_auth: None = Depends(require_token)) -> dict[str, Any]:
-        return buffer_settings()
-
-    @app.put("/api/settings/buffer")
-    def put_buffer_settings(
-        request: BufferSettingsRequest,
-        _auth: None = Depends(require_token),
-    ) -> dict[str, Any]:
-        persisted = load_config(effective_config_path)
-        values = {
-            "channel_id": request.channel_id.strip(),
-            "cloudinary_cloud_name": request.cloudinary_cloud_name.strip(),
-            "cloudinary_upload_preset": request.cloudinary_upload_preset.strip(),
-        }
-        save_config(replace(persisted, buffer=values), effective_config_path)
-        current = getattr(service, "config", AppConfig(provider="codex-cli"))
-        service.config = replace(current, buffer=values)
-        if request.api_key.strip():
-            save_credential("buffer", request.api_key.strip(), credential_file)
-        return buffer_settings()
-
     @app.get("/api/settings/google-drive")
     def get_google_drive_settings(_auth: None = Depends(require_token)) -> dict[str, Any]:
         return google_drive_settings()
@@ -245,12 +196,7 @@ def create_app(
         except OSError as exc:
             raise HTTPException(status_code=400, detail="선택한 Google Drive 폴더를 찾을 수 없습니다.") from exc
         if not root.is_dir():
-            raise HTTPException(status_code=400, detail="Google Drive의 My Drive 폴더를 선택하세요.")
-        for child_name in ("My Drive", "내 드라이브"):
-            child = root / child_name
-            if child.is_dir():
-                root = child.resolve()
-                break
+            raise HTTPException(status_code=400, detail="Google Drive에서 사용할 저장 폴더를 선택하세요.")
 
         persisted = load_config(effective_config_path)
         save_config(replace(persisted, google_drive_root=str(root)), effective_config_path)
@@ -384,6 +330,31 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _snapshot_from_job(job)
 
+    @app.post("/api/jobs/{job_id}/storylines/{storyline_id}/caption/note")
+    def save_instagram_caption_to_notes(
+        job_id: str,
+        storyline_id: str,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        try:
+            job = service.snapshot(job_id)
+        except (JobServiceError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if job is None:
+            raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+        story = next((item for item in job.storylines if item.id == storyline_id), None)
+        if story is None:
+            raise HTTPException(status_code=404, detail="릴스를 찾을 수 없습니다.")
+        note_body = caption_body_for_notes(story.instagram_caption)
+        if not note_body.strip():
+            raise HTTPException(status_code=400, detail="메모에 저장할 캡션 본문이 없습니다.")
+        note_title = f"에피소드{job.episode_number}_{story.title or '릴스 캡션'}"
+        try:
+            notes.save_caption(note_title, note_body)
+        except NotesError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"saved": True, "folder": "릴스 캡션"}
+
     @app.patch("/api/jobs/{job_id}/storylines/{storyline_id}/title")
     def update_storyline_title(
         job_id: str,
@@ -443,7 +414,7 @@ def create_app(
         if not drive["configured"]:
             raise HTTPException(
                 status_code=400,
-                detail="설정에서 Google Drive의 My Drive 폴더를 먼저 연결하세요.",
+                detail="설정에서 Google Drive 저장 폴더를 먼저 선택하세요.",
             )
         try:
             destination_dir = service.google_drive_export_directory(
@@ -461,29 +432,6 @@ def create_app(
         if job.export.output_path:
             dialogs.show_in_file_manager(Path(job.export.output_path).expanduser())
         return _snapshot_from_job(job)
-
-    @app.post("/api/jobs/{job_id}/buffer")
-    def publish_to_buffer(
-        job_id: str,
-        request: BufferPublishRequest,
-        _auth: None = Depends(require_token),
-    ) -> dict[str, Any]:
-        settings = buffer_settings()
-        api_key = resolve_api_key("buffer", credential_file)
-        if not settings["configured"] or not api_key:
-            raise HTTPException(status_code=400, detail="Buffer와 Cloudinary 설정을 먼저 완료하세요.")
-        try:
-            posts = service.publish_many_to_buffer(
-                job_id,
-                storyline_ids=request.storyline_ids,
-                api_key=api_key,
-                channel_id=settings["channel_id"],
-                cloud_name=settings["cloudinary_cloud_name"],
-                upload_preset=settings["cloudinary_upload_preset"],
-            )
-        except JobServiceError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"posts": [post.to_dict() for post in posts]}
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: str, _auth: None = Depends(require_token)) -> dict[str, Any]:

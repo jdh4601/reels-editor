@@ -17,6 +17,7 @@ from reels_editor.storyteller import build_prompt
 
 from .dialogs import FakeDialogProvider, MutableDialogProvider, WebviewDialogProvider
 from .notifications import show_macos_notification
+from .notes import MacNotesProvider
 from .server import UvicornThread, create_app
 from .tools import inject_tool_paths
 
@@ -127,6 +128,7 @@ def build_desktop_app(
         dialog_provider=dialog_provider,
         job_service=service,
         session_token=session_token,
+        notes_provider=MacNotesProvider(),
     )
     return app, service
 

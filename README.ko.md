@@ -111,37 +111,20 @@ codex login
 4. 만들고 싶은 후보를 골라 `선택한 후보로 릴스 생성`을 누릅니다. 고른 후보만
    20~40초 영상으로 렌더링됩니다.
 5. `캡션 생성하기`를 누르면 그 릴스의 실제 대본을 근거로 Instagram 캡션을
-   작성합니다.
-6. 설정에서 Google Drive Desktop이 로컬에 마운트한 `My Drive` 폴더를 연결합니다.
+   작성합니다. `아이폰 메모장에 복사`를 누르면 첫 제목 줄을 제외한 캡션 본문을
+   Mac 메모의 iCloud 계정에 있는 `릴스 캡션` 폴더에 저장합니다.
+6. 설정에서 Google Drive 안의 MP4 저장 폴더를 선택합니다.
    내보낼 영상을 고르고 `선택 영상 내보내기`를 누릅니다.
-7. Buffer 연결을 설정한 경우 `Buffer 큐에 업로드`를 누르면 선택한 영상만 Instagram
-   Reel로 Buffer의 다음 예약 슬롯에 추가됩니다.
 
-내보낸 MP4는 `My Drive/릴스(에피소드)/에피소드N_창업자이름/`에 저장됩니다.
+내보낸 MP4는 선택한 폴더의 `에피소드N_창업자이름/`에 저장됩니다. 같은 이름의
+폴더가 있으면 `-1차`, `-2차`를 차례로 붙여 새 폴더를 만듭니다.
 창업자 이름은 생성된 릴스의 검증된 화자 정보에서 가져옵니다. 렌더 완료본을 유지하는
 앱 내부 보관 폴더와 Google Drive 내보내기 폴더는 서로 분리되며, 앱의 과거 릴스는
 완료 후 7일 동안 다시 열고 수정할 수 있습니다.
 
-### Buffer 업로드 설정
-
-Buffer API는 로컬 영상 파일을 직접 받지 않고 공개된 영상 URL을 요구합니다. 이 앱은
-Cloudinary의 unsigned upload preset으로 영상을 공개 호스팅한 다음 Buffer GraphQL
-API에 Instagram Reel 게시물을 생성합니다.
-
-1. Buffer의 `Settings → API`에서 API 키를 만들고 Instagram 채널 ID를 확인합니다.
-2. Cloudinary에서 unsigned upload preset을 하나 만듭니다.
-3. 앱의 생성 설정에서 Buffer API 키, Instagram 채널 ID, Cloudinary cloud name,
-   upload preset을 저장합니다.
-4. 준비된 릴스를 선택하고 `Buffer 큐에 업로드`를 누릅니다.
-
-API 키는 UI 번들에 포함되지 않으며 `~/.config/reels-editor/credentials.yaml`에
-권한 `0600`으로 저장됩니다. 환경 변수 `BUFFER_API_KEY`가 있으면 저장된 키보다 먼저
-사용합니다. Cloudinary에 올라간 공개 영상은 Buffer가 예약 발행 시점에도 읽을 수
-있도록 삭제하거나 비공개로 전환하지 않아야 합니다.
-
-Buffer 채널 ID와 Cloudinary 설정은 `~/.config/reels-editor/config.yaml`에 영구
-저장됩니다. 두 설정 파일 모두 `.app` 번들 밖에 있으므로 앱을 다시 빌드하거나
-교체 설치해도 유지됩니다. API 키는 유출 방지를 위해 Git 저장소에는 저장하지 않습니다.
+최초 저장 때 Reels Editor가 메모 앱을 제어하도록 자동화 권한을 허용해야 합니다.
+Mac과 iPhone에서 같은 Apple 계정을 사용하고 iCloud 메모 동기화를 켜면 생성된
+캡션이 iPhone 메모 앱에 자동으로 나타납니다.
 
 첫 렌더는 크롭·제목·자막·로고 합성과 최종 MP4 인코딩을 하나의 FFmpeg 패스로
 처리합니다. 제목이나 자막을 수정하면 내려받은 원본, 크롭 계획, 얼굴 분석 결과,

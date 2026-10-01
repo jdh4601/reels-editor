@@ -8,7 +8,6 @@ import {
   ChevronRight,
   ChevronUp,
   CircleAlert,
-  CloudUpload,
   Clock3,
   Copy,
   Download,
@@ -19,6 +18,7 @@ import {
   Link,
   Loader2,
   MessageSquareText,
+  NotebookPen,
   Pencil,
   RefreshCcw,
   Scissors,
@@ -38,29 +38,17 @@ type ContentType = "story" | "strategy" | "failure" | "principle";
 type ModelProvider = "codex-cli" | "claude-cli" | "gemini-cli" | "openai" | "kimi";
 type SettingsSaveState = "idle" | "saving" | "saved" | "error";
 type CaptionActionState = "idle" | "generating" | "error" | "copied";
+type NoteActionState = "idle" | "saving" | "saved" | "error";
 type TitleActionState = "idle" | "generating" | "saving" | "error" | "suggested" | "saved";
 type TitleDraft = { upper: string; lower: string };
 type AppView = "workspace" | "archive";
 type PlaybackSpeedSettings = {
   speed: number;
 };
-type BufferSettings = {
-  configured: boolean;
-  api_key_masked: string;
-  channel_id: string;
-  cloudinary_cloud_name: string;
-  cloudinary_upload_preset: string;
-};
 type GoogleDriveSettings = {
   configured: boolean;
   my_drive_path: string;
   cancelled?: boolean;
-};
-type BufferSettingsDraft = {
-  apiKey: string;
-  channelId: string;
-  cloudName: string;
-  uploadPreset: string;
 };
 
 type MediaItem = {
@@ -857,12 +845,6 @@ function App() {
   const [selectedModel, setSelectedModel] = useState(defaultModel("codex-cli"));
   const [playbackSpeed, setPlaybackSpeed] = useState(DEFAULT_PLAYBACK_SPEED);
   const [speedSettingsSaveState, setSpeedSettingsSaveState] = useState<SettingsSaveState>("idle");
-  const [bufferSettings, setBufferSettings] = useState<BufferSettings | null>(null);
-  const [bufferSettingsDraft, setBufferSettingsDraft] = useState<BufferSettingsDraft>({
-    apiKey: "", channelId: "", cloudName: "", uploadPreset: "",
-  });
-  const [bufferSettingsSaveState, setBufferSettingsSaveState] = useState<SettingsSaveState>("idle");
-  const [bufferUploadState, setBufferUploadState] = useState<"idle" | "uploading" | "done" | "failed">("idle");
   const [googleDriveSettings, setGoogleDriveSettings] = useState<GoogleDriveSettings | null>(null);
   const [googleDriveConnecting, setGoogleDriveConnecting] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -889,6 +871,8 @@ function App() {
   const [liveMessage, setLiveMessage] = useState("대시보드 연결 중");
   const [captionStates, setCaptionStates] = useState<Record<string, CaptionActionState>>({});
   const [captionErrors, setCaptionErrors] = useState<Record<string, string | null>>({});
+  const [noteStates, setNoteStates] = useState<Record<string, NoteActionState>>({});
+  const [noteErrors, setNoteErrors] = useState<Record<string, string | null>>({});
   const [titleDrafts, setTitleDrafts] = useState<Record<string, TitleDraft>>({});
   const [titleStates, setTitleStates] = useState<Record<string, TitleActionState>>({});
   const [titleErrors, setTitleErrors] = useState<Record<string, string | null>>({});
@@ -930,6 +914,8 @@ function App() {
       setYoutubeError(null);
       setCaptionStates({});
       setCaptionErrors({});
+      setNoteStates({});
+      setNoteErrors({});
       setTitleStates({});
       setTitleErrors({});
       setExportState("idle");
@@ -987,28 +973,6 @@ function App() {
       })
       .catch(() => {
         if (!cancelled) setGoogleDriveSettings({ configured: false, my_drive_path: "" });
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    if (isDemoMode()) return;
-    let cancelled = false;
-    void apiFetch("/api/settings/buffer")
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Buffer 설정을 불러오지 못했습니다.");
-        const settings = (await response.json()) as BufferSettings;
-        if (cancelled) return;
-        setBufferSettings(settings);
-        setBufferSettingsDraft({
-          apiKey: "",
-          channelId: settings.channel_id,
-          cloudName: settings.cloudinary_cloud_name,
-          uploadPreset: settings.cloudinary_upload_preset,
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setBufferSettingsSaveState("error");
       });
     return () => { cancelled = true; };
   }, []);
@@ -1175,10 +1139,13 @@ function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ provider: selectedProvider, model: selectedModel }),
         });
-        const normalized = normalizeSnapshot((await response.json()) as ApiSnapshot);
+        const payload = (await response.json()) as ApiSnapshot;
+        const normalized = normalizeSnapshot(payload);
         applySnapshot(archiveModeRef.current ? completedOnlySnapshot(normalized) : normalized);
       }
       setCaptionStates((current) => ({ ...current, [storyline.id]: "idle" }));
+      setNoteStates((current) => ({ ...current, [storyline.id]: "idle" }));
+      setNoteErrors((current) => ({ ...current, [storyline.id]: null }));
       setLiveMessage(`${storyline.label} Instagram 캡션이 준비되었습니다.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Instagram 캡션 생성에 실패했습니다.";
@@ -1200,6 +1167,33 @@ function App() {
     } catch {
       setCaptionStates((current) => ({ ...current, [storyline.id]: "error" }));
       setLiveMessage("캡션을 복사하지 못했습니다. 텍스트를 직접 선택해 복사하세요.");
+    }
+  }
+
+  async function saveInstagramCaptionToNotes(storyline: Storyline) {
+    if (!storyline.instagramCaption || noteStates[storyline.id] === "saving") return;
+    setNoteStates((current) => ({ ...current, [storyline.id]: "saving" }));
+    setNoteErrors((current) => ({ ...current, [storyline.id]: null }));
+    setLiveMessage(`${storyline.label} 캡션을 iPhone 메모와 동기화되는 Mac 메모에 저장합니다.`);
+    try {
+      if (isDemoMode()) {
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
+      } else {
+        if (!snapshot) throw new Error("현재 작업을 찾을 수 없습니다.");
+        await apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/caption/note`, {
+          method: "POST",
+        });
+      }
+      setNoteStates((current) => ({ ...current, [storyline.id]: "saved" }));
+      setLiveMessage(`${storyline.label} 캡션 본문을 iCloud 메모에 저장했습니다.`);
+      window.setTimeout(() => {
+        setNoteStates((current) => ({ ...current, [storyline.id]: "idle" }));
+      }, 1800);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "iCloud 메모에 저장하지 못했습니다.";
+      setNoteStates((current) => ({ ...current, [storyline.id]: "error" }));
+      setNoteErrors((current) => ({ ...current, [storyline.id]: detail }));
+      setLiveMessage(detail);
     }
   }
 
@@ -1497,13 +1491,13 @@ function App() {
   async function exportSelected() {
     if (!readySelected || !snapshot) return;
     if (!googleDriveSettings?.configured) {
-      setLiveMessage("설정에서 Google Drive의 My Drive 폴더를 먼저 연결하세요.");
+      setLiveMessage("설정에서 Google Drive 저장 폴더를 먼저 선택하세요.");
       return;
     }
     setExportState("exporting");
     setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개 내보내기를 준비합니다.`);
     try {
-      let completedPath = `${googleDriveSettings.my_drive_path}/릴스(에피소드)/`;
+      let completedPath = googleDriveSettings.my_drive_path;
       if (!isDemoMode()) {
         const response = await apiMutation(`/api/jobs/${snapshot.jobId}/export-batch`, {
           method: "POST",
@@ -1517,7 +1511,7 @@ function App() {
         completedPath = exportedPathFromPayload(payload) ?? completedPath;
       } else {
         await new Promise((resolve) => window.setTimeout(resolve, 450));
-        completedPath = `${googleDriveSettings.my_drive_path}/릴스(에피소드)/에피소드${snapshot.episodeNumber}_${snapshot.projectName}/`;
+        completedPath = `${googleDriveSettings.my_drive_path}/에피소드${snapshot.episodeNumber}_${snapshot.projectName}/`;
       }
       setExportState("done");
       setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개를 ${completedPath}에 저장했습니다.`);
@@ -1530,7 +1524,7 @@ function App() {
 
   async function connectGoogleDrive() {
     if (isDemoMode()) {
-      setLiveMessage("Google Drive의 My Drive 폴더가 연결되었습니다.");
+      setLiveMessage("Google Drive 저장 폴더를 선택했습니다.");
       return;
     }
     setGoogleDriveConnecting(true);
@@ -1540,58 +1534,11 @@ function App() {
       setGoogleDriveSettings(settings);
       setLiveMessage(settings.cancelled
         ? "Google Drive 폴더 선택을 취소했습니다."
-        : "Google Drive의 My Drive 폴더를 연결했습니다.");
+        : "Google Drive 저장 폴더를 선택했습니다.");
     } catch (error) {
       setLiveMessage(error instanceof Error ? error.message : "Google Drive 연결에 실패했습니다.");
     } finally {
       setGoogleDriveConnecting(false);
-    }
-  }
-
-  async function publishSelectedToBuffer() {
-    if (!readySelected || !snapshot || !bufferSettings?.configured) {
-      setLiveMessage("생성 설정에서 Buffer와 Cloudinary 연결 정보를 먼저 저장하세요.");
-      return;
-    }
-    setBufferUploadState("uploading");
-    setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개를 Buffer 큐에 업로드합니다.`);
-    try {
-      const response = await apiMutation(`/api/jobs/${snapshot.jobId}/buffer`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storyline_ids: selectedExportStorylines.map((storyline) => storyline.serverId) }),
-      });
-      const payload = (await response.json()) as { posts?: Array<{ id: string }> };
-      const count = payload.posts?.length ?? 0;
-      setBufferUploadState("done");
-      setLiveMessage(`선택한 영상 ${count}개를 Buffer 큐에 추가했습니다.`);
-    } catch (error) {
-      setBufferUploadState("failed");
-      setLiveMessage(error instanceof Error ? error.message : "Buffer 업로드에 실패했습니다.");
-    }
-  }
-
-  async function saveBufferSettings() {
-    setBufferSettingsSaveState("saving");
-    try {
-      const response = await apiMutation("/api/settings/buffer", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          api_key: bufferSettingsDraft.apiKey,
-          channel_id: bufferSettingsDraft.channelId,
-          cloudinary_cloud_name: bufferSettingsDraft.cloudName,
-          cloudinary_upload_preset: bufferSettingsDraft.uploadPreset,
-        }),
-      });
-      const settings = (await response.json()) as BufferSettings;
-      setBufferSettings(settings);
-      setBufferSettingsDraft((current) => ({ ...current, apiKey: "" }));
-      setBufferSettingsSaveState("saved");
-      setLiveMessage(settings.configured ? "Buffer 업로드 설정을 저장했습니다." : "Buffer 업로드 설정에 빈 항목이 있습니다.");
-    } catch (error) {
-      setBufferSettingsSaveState("error");
-      setLiveMessage(error instanceof Error ? error.message : "Buffer 설정 저장에 실패했습니다.");
     }
   }
 
@@ -1854,7 +1801,7 @@ function App() {
             <strong>{googleDriveSettings?.configured ? "연결됨" : "미설정"}</strong>
           </div>
           <p className="drive-path" title={googleDriveSettings?.my_drive_path || undefined}>
-            {googleDriveSettings?.my_drive_path || "My Drive 폴더를 선택하세요."}
+            {googleDriveSettings?.my_drive_path || "MP4를 저장할 폴더를 선택하세요."}
           </p>
           <button
             type="button"
@@ -1862,52 +1809,11 @@ function App() {
             disabled={googleDriveConnecting}
           >
             <FolderOpen size={15} aria-hidden="true" />
-            {googleDriveConnecting ? "선택 중" : googleDriveSettings?.configured ? "폴더 다시 선택" : "My Drive 폴더 선택"}
+            {googleDriveConnecting ? "선택 중" : googleDriveSettings?.configured ? "폴더 다시 선택" : "저장 폴더 선택"}
           </button>
-          <p className="settings-note">릴스(에피소드)/에피소드N_창업자이름 폴더에 MP4를 저장합니다.</p>
+          <p className="settings-note">선택 폴더에 에피소드N_창업자이름 폴더를 만들고 MP4를 저장합니다.</p>
         </div>
 
-        <div className="settings-field buffer-settings-field">
-          <div className="settings-field-heading">
-            <h3>Buffer 업로드</h3>
-            <strong>{bufferSettings?.configured ? "연결됨" : "미설정"}</strong>
-          </div>
-          <label className="settings-select-label" htmlFor="buffer-api-key">
-            API 키 {bufferSettings?.api_key_masked ? `(${bufferSettings.api_key_masked})` : ""}
-          </label>
-          <input
-            id="buffer-api-key"
-            type="password"
-            autoComplete="off"
-            placeholder={bufferSettings?.api_key_masked ? "변경할 때만 입력" : "Buffer API 키"}
-            value={bufferSettingsDraft.apiKey}
-            onChange={(event) => setBufferSettingsDraft((current) => ({ ...current, apiKey: event.target.value }))}
-          />
-          <label className="settings-select-label" htmlFor="buffer-channel-id">Instagram 채널 ID</label>
-          <input
-            id="buffer-channel-id"
-            value={bufferSettingsDraft.channelId}
-            onChange={(event) => setBufferSettingsDraft((current) => ({ ...current, channelId: event.target.value }))}
-          />
-          <label className="settings-select-label" htmlFor="cloudinary-cloud-name">Cloudinary cloud name</label>
-          <input
-            id="cloudinary-cloud-name"
-            value={bufferSettingsDraft.cloudName}
-            onChange={(event) => setBufferSettingsDraft((current) => ({ ...current, cloudName: event.target.value }))}
-          />
-          <label className="settings-select-label" htmlFor="cloudinary-upload-preset">Unsigned upload preset</label>
-          <input
-            id="cloudinary-upload-preset"
-            value={bufferSettingsDraft.uploadPreset}
-            onChange={(event) => setBufferSettingsDraft((current) => ({ ...current, uploadPreset: event.target.value }))}
-          />
-          <button type="button" onClick={() => { void saveBufferSettings(); }} disabled={bufferSettingsSaveState === "saving"}>
-            {bufferSettingsSaveState === "saving" ? "저장 중" : "Buffer 설정 저장"}
-          </button>
-          <p className={bufferSettingsSaveState === "error" ? "settings-note error" : "settings-note"}>
-            Buffer는 로컬 파일을 직접 받지 않아 Cloudinary의 공개 URL을 거쳐 큐에 추가합니다.
-          </p>
-        </div>
       </div>
     );
   }
@@ -2105,18 +2011,6 @@ function App() {
           >
             <RefreshCcw size={17} /> {generateLabel}
           </button>
-          {!archiveMode ? (
-            <button
-              type="button"
-              className="topbar-icon-button buffer-upload-button"
-              disabled={!readySelected || bufferUploadState === "uploading" || !bufferSettings?.configured}
-              onClick={() => { void publishSelectedToBuffer(); }}
-              aria-label={bufferUploadState === "done" ? "Buffer 추가 완료" : "Buffer 큐에 업로드"}
-              title={bufferSettings?.configured ? "선택 영상을 Buffer의 다음 예약 슬롯에 추가" : "설정에서 Buffer 연결을 완료하세요"}
-            >
-              {bufferUploadState === "uploading" ? <Loader2 size={19} className="spin" /> : <CloudUpload size={19} />}
-            </button>
-          ) : null}
           <button
             type="button"
             className="topbar-icon-button export-button"
@@ -2124,7 +2018,7 @@ function App() {
             onClick={exportSelected}
             aria-label={exportState === "done" ? "저장 완료" : archiveMode ? "보관 영상 다시 내보내기" : `선택 영상 ${selectedExportStorylines.length}개 내보내기`}
             title={!googleDriveSettings?.configured
-              ? "설정에서 Google Drive 연결을 완료하세요"
+              ? "설정에서 Google Drive 저장 폴더를 선택하세요"
               : archiveMode ? "보관 영상 다시 내보내기" : `선택 영상 ${selectedExportStorylines.length}개 내보내기`}
           >
             {exportState === "exporting" ? <Loader2 size={19} className="spin" /> : <Download size={19} />}
@@ -2421,20 +2315,31 @@ function App() {
                   <section className={storyline.instagramCaption ? "caption-tool has-caption" : "caption-tool"} aria-label={`${storyline.label} Instagram 캡션`}>
                     <div className="caption-tool-heading">
                       <div><MessageSquareText size={16} aria-hidden="true" /><h3>Instagram 캡션</h3></div>
-                      <button type="button" disabled={storyline.status !== "ready" || captionStates[storyline.id] === "generating"} onClick={() => { void generateInstagramCaption(storyline); }}>
-                        {captionStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <MessageSquareText size={15} />}
-                        {captionStates[storyline.id] === "generating" ? "캡션 생성 중" : storyline.instagramCaption ? "다시 생성" : "캡션 생성하기"}
-                      </button>
                     </div>
                     {storyline.instagramCaption ? (
                       <div className="caption-result">
                         <div className="caption-text" tabIndex={0}>{storyline.instagramCaption}</div>
-                        <button type="button" className="caption-copy" onClick={() => { void copyInstagramCaption(storyline); }}>
-                          {captionStates[storyline.id] === "copied" ? <Check size={15} /> : <Copy size={15} />}{captionStates[storyline.id] === "copied" ? "복사됨" : "캡션 복사"}
-                        </button>
                       </div>
-                    ) : <p>이 릴스의 실제 내용에 맞춘 게시글 캡션을 만듭니다.</p>}
+                    ) : <p>이 릴스의 실제 내용에 맞춘 Instagram 캡션을 만듭니다.</p>}
+                    <div className="caption-actions">
+                      <button type="button" className="caption-regenerate" disabled={storyline.status !== "ready" || captionStates[storyline.id] === "generating"} onClick={() => { void generateInstagramCaption(storyline); }}>
+                        {captionStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
+                        {captionStates[storyline.id] === "generating" ? "캡션 생성 중" : storyline.instagramCaption ? "다시 생성" : "캡션 생성하기"}
+                      </button>
+                      {storyline.instagramCaption ? (
+                        <div className="caption-result-actions">
+                          <button type="button" className="caption-copy" onClick={() => { void copyInstagramCaption(storyline); }}>
+                            {captionStates[storyline.id] === "copied" ? <Check size={15} /> : <Copy size={15} />}{captionStates[storyline.id] === "copied" ? "복사됨" : "캡션 복사"}
+                          </button>
+                          <button type="button" className="caption-notes" disabled={noteStates[storyline.id] === "saving"} onClick={() => { void saveInstagramCaptionToNotes(storyline); }}>
+                            {noteStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : noteStates[storyline.id] === "saved" ? <Check size={15} /> : <NotebookPen size={15} />}
+                            {noteStates[storyline.id] === "saving" ? "저장 중" : noteStates[storyline.id] === "saved" ? "저장됨" : "아이폰 메모장에 복사"}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                     {captionStates[storyline.id] === "error" ? <p className="caption-error" role="alert">{captionErrors[storyline.id] ?? "캡션 작업에 실패했습니다. 다시 시도해주세요."}</p> : null}
+                    {noteStates[storyline.id] === "error" ? <p className="caption-error" role="alert">{noteErrors[storyline.id] ?? "iCloud 메모에 저장하지 못했습니다."}</p> : null}
                   </section>
 
                   {storyline.status === "failed" && !archiveMode ? <button type="button" disabled={jobBusy} onClick={() => rerenderStoryline(storyline)}><RefreshCcw size={15} /> 리렌더링</button> : null}

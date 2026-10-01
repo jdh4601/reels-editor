@@ -68,7 +68,7 @@ the distracting side-to-side drift of continuous face tracking.
 **Review is part of the workflow.** Finished reels open one at a time in a
 portrait player with keyboard navigation. You can inspect the story structure,
 edit both title lines, ask the configured model for a fresh title, regenerate
-the Instagram caption, and select only approved reels for export or Buffer.
+the Instagram caption, and select only approved reels for export.
 
 **Your model, your choice.** Codex CLI, Claude Code CLI, the OpenAI API, Kimi,
 or any OpenAI-compatible server.
@@ -128,35 +128,22 @@ Then start the app:
 5. Review the finished reels with the arrow buttons or keyboard. Expand
    **제목·캡션·시나리오 수정하기** to edit the two-line on-screen title, request
    a new AI title, inspect the story beats, or generate an Instagram caption
-   grounded in that reel's actual script.
-6. In settings, connect the local `My Drive` folder mounted by Google Drive for
-   desktop. Press **Space** or use the selection control to mark approved reels,
+   grounded in that reel's actual script. Click **아이폰 메모장에 복사** to save
+   the caption body, without its first heading line, to the `릴스 캡션` folder
+   in the Mac Notes iCloud account so it syncs to the iPhone.
+6. In settings, select the local Google Drive folder where exports should be
+   stored. Press **Space** or use the selection control to mark approved reels,
    then click **선택 영상 내보내기** (Export selected).
-7. With Buffer configured, click **Buffer 큐에 업로드** to add only the selected
-   videos as Instagram Reels in the next available Buffer slots.
 
-Exports are saved below `My Drive/릴스(에피소드)/에피소드N_창업자이름/`.
+Exports are saved below the selected folder as `에피소드N_창업자이름/`.
+If that folder already exists, the app creates `-1차`, `-2차`, and so on.
 The founder name comes from the verified speaker metadata for the generated reel.
 App-managed render archives and Google Drive export directories are kept
 separate. Completed reels remain available from the archive for seven days, so
 they can be reopened, revised, and exported again without starting over.
 
-### Buffer upload setup
-
-Buffer requires a stable public media URL rather than accepting local video
-files directly. Reels Editor uploads each selected MP4 through a Cloudinary
-unsigned upload preset, then creates an Instagram Reel with Buffer's GraphQL API.
-
-Open generation settings and save your Buffer API key, Instagram channel ID,
-Cloudinary cloud name, and unsigned upload preset. The Buffer key stays in
-`~/.config/reels-editor/credentials.yaml` with `0600` permissions; the
-`BUFFER_API_KEY` environment variable takes precedence when present. Keep the
-Cloudinary URL public until Buffer has published the queued post.
-
-The Buffer channel ID and Cloudinary values persist in
-`~/.config/reels-editor/config.yaml`. Both configuration files live outside the
-`.app` bundle, so rebuilding or replacing the application preserves them. API
-keys are intentionally never stored in the Git repository.
+On the first caption save, allow Reels Editor to automate Notes. Both the Mac
+and iPhone must use the same Apple Account with iCloud Notes sync enabled.
 
 The first render crops, composites the title, subtitles, and logo, and encodes
 the final MP4 in one FFmpeg pass. Title and subtitle edits reuse the downloaded

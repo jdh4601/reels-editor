@@ -628,7 +628,6 @@ h2 {
   border-color: #2f6a4f;
   outline: 2px solid rgba(47, 106, 79, 0.14);
 }
-.buffer-settings-field,
 .integration-settings-field {
   border-top: 1px solid #d5d0c7;
   padding-top: 14px;
@@ -1253,8 +1252,9 @@ h2 {
   font-weight: 780;
 }
 
-.caption-tool-heading button,
-.caption-copy {
+.caption-regenerate,
+.caption-copy,
+.caption-notes {
   background: transparent;
   border-color: #bdb7ad;
   color: #2e4f3f;
@@ -1274,6 +1274,20 @@ h2 {
   gap: 9px;
 }
 
+.caption-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.caption-result-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .caption-text {
   background: #f1f2ed;
   border-left: 3px solid #2f6a4f;
@@ -1291,7 +1305,12 @@ h2 {
   outline-offset: 2px;
 }
 
-.caption-copy { justify-self: end; }
+.caption-notes {
+  background: #21362f;
+  border-color: #21362f;
+  color: #fff;
+}
+
 .caption-error { color: #93382e !important; }
 
 .reel-deck {
@@ -1515,13 +1534,6 @@ kbd {
 
 .lane-footer .select-video { flex: 1; }
 .lane-error { color: #93382e; font-size: 13px; grid-area: error; }
-
-.buffer-upload-button {
-  background: #5b3f88;
-  border-color: #5b3f88;
-  color: #fff;
-  font-weight: 760;
-}
 
 .export-button {
   background: #21362f;

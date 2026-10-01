@@ -70,5 +70,6 @@ app = BUNDLE(
     info_plist={
         "NSHighResolutionCapable": "True",
         "NSHumanReadableCopyright": "Personal local app",
+        "NSAppleEventsUsageDescription": "생성한 Instagram 캡션을 메모 앱에 저장하기 위해 사용합니다.",
     },
 )

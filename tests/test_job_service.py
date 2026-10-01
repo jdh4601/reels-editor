@@ -1163,7 +1163,7 @@ def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Pat
     assert exported.export.output_path == str(destination)
 
 
-def test_google_drive_export_directory_uses_episode_and_founder_name(tmp_path: Path) -> None:
+def test_google_drive_export_directory_uses_episode_founder_and_collision_suffix(tmp_path: Path) -> None:
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, Calls()))
     job = _run_ready(service, candidate_count=1, episode_number=11)
     my_drive = tmp_path / "My Drive"
@@ -1171,13 +1171,19 @@ def test_google_drive_export_directory_uses_episode_and_founder_name(tmp_path: P
 
     destination = service.google_drive_export_directory(job.id, my_drive)
     exported = service.export_many(job.id, destination, storyline_ids=["s1"])
+    repeated_destination = service.google_drive_export_directory(job.id, my_drive)
 
-    assert destination == my_drive / "릴스(에피소드)" / "에피소드11_김현지"
+    assert destination == my_drive / "에피소드11_김현지"
     assert destination.is_dir()
     assert [path.name for path in destination.glob("*.mp4")] == [
         "에피소드 11 - https youtu.be A 제목 1.mp4"
     ]
     assert exported.export.output_path == str(destination)
+    assert repeated_destination == my_drive / "에피소드11_김현지-1차"
+    assert repeated_destination.is_dir()
+
+    third_destination = service.google_drive_export_directory(job.id, my_drive)
+    assert third_destination == my_drive / "에피소드11_김현지-2차"
 
 
 def test_default_batch_export_creates_isolated_selection_folder(tmp_path: Path) -> None:
@@ -1197,35 +1203,6 @@ def test_default_batch_export_creates_isolated_selection_folder(tmp_path: Path) 
     ]
     assert list(destination.glob("*.json")) == []
     assert destination.is_relative_to(tmp_path / "exports")
-
-
-def test_buffer_publish_uses_only_selected_storylines(tmp_path: Path) -> None:
-    published: list[tuple[str, str]] = []
-    deps = _deps(tmp_path, Calls())
-
-    def fake_publish(path: Path, **kwargs):
-        published.append((path.name, kwargs["text"]))
-        return job_service_module.buffer_api.BufferPost(
-            id=f"post-{len(published)}", media_url=f"https://cdn/{path.name}", text=kwargs["text"]
-        )
-
-    deps = JobServiceDeps(**{**deps.__dict__, "publish_to_buffer": fake_publish})
-    service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
-    job = _run_ready(service)
-    next(story for story in job.storylines if story.id == "s3").instagram_caption = "third caption"
-    service.store.save(job)
-
-    posts = service.publish_many_to_buffer(
-        job.id,
-        storyline_ids=["s3"],
-        api_key="key",
-        channel_id="channel",
-        cloud_name="cloud",
-        upload_preset="preset",
-    )
-
-    assert [post.id for post in posts] == ["post-1"]
-    assert published == [(Path(next(story for story in job.storylines if story.id == "s3").active_variant_path or "").name, "third caption")]
 
 
 def test_export_filename_uses_episode_number_and_sanitized_reel_title(tmp_path: Path) -> None:

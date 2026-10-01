@@ -7,8 +7,8 @@ from starlette.websockets import WebSocketDisconnect
 import pytest
 
 from reels_editor.desktop.dialogs import FakeDialogProvider
+from reels_editor.desktop.notes import FakeNotesProvider
 from reels_editor.desktop.server import create_app
-from reels_editor.buffer_api import BufferPost
 from reels_editor.jobs import Job, JobStore, Status, Storyline, Variant
 from reels_editor.config import AppConfig, load_config, save_config
 
@@ -23,7 +23,6 @@ class FakeService:
         self.selection_args: dict | None = None
         self.export_args: dict | None = None
         self.batch_export_args: dict | None = None
-        self.buffer_publish_args: dict | None = None
         self.clear_current_called = False
         self.title_args: dict | None = None
         self.title_suggestion_args: dict | None = None
@@ -187,11 +186,7 @@ class FakeService:
 
     def google_drive_export_directory(self, job_id: str, my_drive_root: Path) -> Path:
         assert self.job is not None and self.job.id == job_id
-        return my_drive_root / "릴스(에피소드)" / f"에피소드{self.job.episode_number}_창업자"
-
-    def publish_many_to_buffer(self, job_id: str, **kwargs) -> list[BufferPost]:
-        self.buffer_publish_args = {"job_id": job_id, **kwargs}
-        return [BufferPost(id="buffer-post-1", media_url="https://cdn.example/reel.mp4", text="caption")]
+        return my_drive_root / f"에피소드{self.job.episode_number}_창업자"
 
     def cancel(self, job_id: str) -> Job:
         assert self.job is not None
@@ -710,13 +705,16 @@ def test_selection_request_passes_selected_for_export(tmp_path: Path) -> None:
 def test_caption_request_generates_and_returns_reel_caption(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
     job = store.create_job()
-    job.storylines = [Storyline(id="s1", index=0, status=Status.READY)]
+    job.episode_number = 12
+    job.storylines = [Storyline(id="s1", index=0, status=Status.READY, title="첫 고객을 만든 방법")]
     service = FakeService(store, job)
+    notes = FakeNotesProvider()
     app = create_app(
         static_dir=_static(tmp_path),
         media_dir=tmp_path,
         job_service=service,
         session_token="secret",
+        notes_provider=notes,
     )
 
     response = TestClient(app).post(
@@ -732,6 +730,69 @@ def test_caption_request_generates_and_returns_reel_caption(tmp_path: Path) -> N
         "model": "gpt-5.4-mini",
     }
     assert response.json()["storylines"][0]["instagram_caption"].startswith("Ep 1. ")
+    assert "note_sync" not in response.json()
+    assert notes.saved_notes == []
+
+
+def test_caption_note_request_saves_body_without_heading(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    job.episode_number = 12
+    job.storylines = [
+        Storyline(
+            id="s1",
+            index=0,
+            status=Status.READY,
+            title="검증한 문제",
+            instagram_caption="Ep 12. 검증한 문제\n\n첫 문단\n\n두 번째 문단",
+        )
+    ]
+    service = FakeService(store, job)
+    notes = FakeNotesProvider()
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+        notes_provider=notes,
+    )
+
+    response = TestClient(app).post(
+        f"/api/jobs/{job.id}/storylines/s1/caption/note?token=secret",
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"saved": True, "folder": "릴스 캡션"}
+    assert notes.saved_notes == [("에피소드12_검증한 문제", "첫 문단\n\n두 번째 문단")]
+
+
+def test_caption_note_request_reports_notes_failure(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    job.storylines = [
+        Storyline(
+            id="s1",
+            index=0,
+            status=Status.READY,
+            title="검증한 문제",
+            instagram_caption="Ep 1. 검증한 문제\n\n본문",
+        )
+    ]
+    service = FakeService(store, job)
+    app = create_app(
+        static_dir=_static(tmp_path),
+        media_dir=tmp_path,
+        job_service=service,
+        session_token="secret",
+        notes_provider=FakeNotesProvider(error="메모 자동화 권한이 필요합니다."),
+    )
+
+    response = TestClient(app).post(
+        f"/api/jobs/{job.id}/storylines/s1/caption/note?token=secret",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "메모 자동화 권한이 필요합니다."
 
 
 def test_export_request_passes_requested_subtitle_state(tmp_path: Path) -> None:
@@ -785,11 +846,11 @@ def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Pa
     assert response.status_code == 200
     assert service.batch_export_args == {
         "job_id": job.id,
-        "destination_dir": my_drive / "릴스(에피소드)" / "에피소드1_창업자",
+        "destination_dir": my_drive / "에피소드1_창업자",
         "storyline_ids": storyline_ids,
         "subtitles_on": False,
     }
-    assert dialogs.opened_directories == [my_drive / "릴스(에피소드)" / "에피소드1_창업자"]
+    assert dialogs.opened_directories == [my_drive / "에피소드1_창업자"]
 
 
 def test_batch_export_requires_connected_google_drive(tmp_path: Path) -> None:
@@ -814,7 +875,7 @@ def test_batch_export_requires_connected_google_drive(tmp_path: Path) -> None:
     assert service.batch_export_args is None
 
 
-def test_google_drive_settings_choose_and_persist_my_drive(tmp_path: Path) -> None:
+def test_google_drive_settings_persist_exact_selected_folder(tmp_path: Path) -> None:
     google_drive = tmp_path / "GoogleDrive-account"
     my_drive = google_drive / "My Drive"
     my_drive.mkdir(parents=True)
@@ -835,55 +896,11 @@ def test_google_drive_settings_choose_and_persist_my_drive(tmp_path: Path) -> No
     assert saved.status_code == 200
     assert saved.json() == {
         "configured": True,
-        "my_drive_path": str(my_drive),
+        "my_drive_path": str(google_drive),
         "cancelled": False,
     }
-    assert loaded.json() == {"configured": True, "my_drive_path": str(my_drive)}
-    assert load_config(tmp_path / "config.yaml").google_drive_root == str(my_drive)
-
-
-def test_buffer_settings_and_publish_keep_api_key_server_side(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("BUFFER_API_KEY", raising=False)
-    store = JobStore(tmp_path / "jobs")
-    job = store.create_job()
-    service = FakeService(store, job)
-    config_path = tmp_path / "config.yaml"
-    app = create_app(
-        static_dir=_static(tmp_path),
-        media_dir=tmp_path,
-        job_service=service,
-        session_token="secret",
-        config_path=config_path,
-    )
-    client = TestClient(app)
-
-    saved = client.put(
-        "/api/settings/buffer?token=secret",
-        json={
-            "api_key": "buf-secret-1234",
-            "channel_id": "instagram-channel",
-            "cloudinary_cloud_name": "demo",
-            "cloudinary_upload_preset": "unsigned-reels",
-        },
-    )
-
-    assert saved.status_code == 200
-    assert saved.json()["configured"] is True
-    assert "buf-secret-1234" not in str(saved.json())
-    published = client.post(
-        f"/api/jobs/{job.id}/buffer?token=secret",
-        json={"storyline_ids": ["s2"]},
-    )
-    assert published.status_code == 200
-    assert published.json()["posts"][0]["id"] == "buffer-post-1"
-    assert service.buffer_publish_args == {
-        "job_id": job.id,
-        "storyline_ids": ["s2"],
-        "api_key": "buf-secret-1234",
-        "channel_id": "instagram-channel",
-        "cloud_name": "demo",
-        "upload_preset": "unsigned-reels",
-    }
+    assert loaded.json() == {"configured": True, "my_drive_path": str(google_drive)}
+    assert load_config(tmp_path / "config.yaml").google_drive_root == str(google_drive)
 
 
 def test_playback_speed_settings_persist_and_update_service(tmp_path: Path) -> None:

@@ -18,7 +18,6 @@ PROVIDERS = ("claude-cli", "codex-cli", "gemini-cli", "openai", "kimi", "custom"
 # StylePreset 필드 중 게이트 설정으로 조절 가능한 키
 STYLE_OVERRIDE_KEYS = ("sub_size", "title_size", "sub_highlight",
                        "title_highlight", "sub_y_frac", "sub_box_alpha", "speed")
-BUFFER_CONFIG_KEYS = ("channel_id", "cloudinary_cloud_name", "cloudinary_upload_preset")
 MAX_STORYLINES = 10
 MIN_PLAYBACK_SPEED = 1.0
 MAX_PLAYBACK_SPEED = 1.5
@@ -32,7 +31,6 @@ class AppConfig:
     base_url: str = ""         # custom 프로바이더 전용
     n_storylines: int = 3
     style: dict[str, Any] = field(default_factory=dict)
-    buffer: dict[str, str] = field(default_factory=dict)
     google_drive_root: str = ""
 
 
@@ -59,9 +57,6 @@ def _validate(cfg: AppConfig) -> AppConfig:
             raise ValueError(
                 f"style.speed는 {MIN_PLAYBACK_SPEED:.1f}~{MAX_PLAYBACK_SPEED:.1f} 사이의 숫자여야 함: {speed!r}"
             )
-    unknown_buffer = set(cfg.buffer) - set(BUFFER_CONFIG_KEYS)
-    if unknown_buffer:
-        raise ValueError(f"알 수 없는 buffer 키: {sorted(unknown_buffer)}")
     return cfg
 
 
@@ -87,7 +82,6 @@ def load_config(path: Path | None = None) -> AppConfig:
         base_url=raw.get("base_url", defaults.base_url),
         n_storylines=n_storylines,
         style={k: v for k, v in (raw.get("style") or {}).items()},
-        buffer={k: str(v) for k, v in (raw.get("buffer") or {}).items() if v is not None},
         google_drive_root=str(raw.get("google_drive_root") or ""),
     ))
 
@@ -110,27 +104,11 @@ KEY_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "kimi": "MOONSHOT_API_KEY",
     "custom": "REELS_LLM_API_KEY",
-    "buffer": "BUFFER_API_KEY",
 }
 
 
 def credentials_path() -> Path:
     return user_config_path().parent / "credentials.yaml"
-
-
-def mask_key(key: str) -> str:
-    """API 키를 `scheme-…끝4자리` 형태로 마스킹. 어떤 입력이든 끝 4자리 +
-    (있다면) 4자 이하 스킴 접두사 이상은 노출하지 않는다.
-
-    `-`가 없거나 첫 토큰이 긴 키(dashless/custom 프로바이더 등)는 접두사를
-    생략해 전체 키가 노출되는 것을 막는다.
-    """
-    if len(key) <= 8:
-        return "…"
-    prefix, sep, _rest = key.partition("-")
-    if sep and len(prefix) <= 4:
-        return f"{prefix}-…{key[-4:]}"
-    return f"…{key[-4:]}"
 
 
 def save_credential(provider: str, key: str, path: Path | None = None) -> Path:

@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from reels_editor import buffer_api, candidate_analyzer, edl, export, instagram_caption, render, title_suggestion, youtube
+from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, title_suggestion, youtube
 from reels_editor.config import AppConfig, merged_style
 from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
@@ -52,7 +52,6 @@ CODEX_CLI_MODELS = frozenset({
 EXPORT_TITLE_MAX_BYTES = 220
 DEFAULT_EPISODE_NUMBER = 1
 ARCHIVE_RETENTION_DAYS = 7
-GOOGLE_DRIVE_REELS_DIRECTORY = "릴스(에피소드)"
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _FILENAME_WHITESPACE = re.compile(r"\s+")
 
@@ -76,7 +75,6 @@ class JobServiceDeps:
     write_outputs: Callable[[Path, dict[str, Any], dict[str, Any]], None] = export.write_outputs
     write_srt: Callable[[list[list], Path], Path] = export.write_srt
     download_youtube_source: Callable[..., youtube.YouTubeSource] = youtube.download_youtube_source
-    publish_to_buffer: Callable[..., buffer_api.BufferPost] = buffer_api.publish_reel
 
 
 class JobService:
@@ -1060,43 +1058,6 @@ class JobService:
             job.message = f"선택한 영상 {len(exports)}개 내보내기가 완료되었습니다."
             return self._save(job)
 
-    def publish_many_to_buffer(
-        self,
-        job_id: str,
-        *,
-        storyline_ids: list[str],
-        api_key: str,
-        channel_id: str,
-        cloud_name: str,
-        upload_preset: str,
-    ) -> list[buffer_api.BufferPost]:
-        selected_ids = list(dict.fromkeys(storyline_ids))
-        if not selected_ids:
-            raise JobServiceError("at least one storyline_id is required")
-        if not all((api_key, channel_id, cloud_name, upload_preset)):
-            raise JobServiceError("Buffer와 Cloudinary 설정을 먼저 완료하세요.")
-        job = self.store.load(job_id)
-        posts: list[buffer_api.BufferPost] = []
-        try:
-            for storyline_id in selected_ids:
-                story = self._find_storyline(job, storyline_id)
-                variant = self._active_variant(story)
-                if variant.path is None or variant.status is not Status.READY:
-                    raise JobServiceError(f"selected variant is not ready: {storyline_id}")
-                text = story.instagram_caption.strip() or story.title.strip()
-                posts.append(self.deps.publish_to_buffer(
-                    Path(variant.path),
-                    text=text,
-                    api_key=api_key,
-                    channel_id=channel_id,
-                    cloud_name=cloud_name,
-                    upload_preset=upload_preset,
-                ))
-        except buffer_api.BufferPublishError as exc:
-            prefix = f"{len(posts)}개는 Buffer 큐에 추가됐지만 " if posts else ""
-            raise JobServiceError(f"{prefix}{exc}") from exc
-        return posts
-
     def _new_selection_export_directory(self, job: Job) -> Path:
         safe_title = _safe_filename_component(
             job.project_name or "YouTube 인터뷰",
@@ -1107,33 +1068,39 @@ class JobService:
         destination.mkdir(parents=True, exist_ok=False)
         return destination
 
-    def google_drive_export_directory(self, job_id: str, my_drive_root: Path) -> Path:
-        """Return the episode folder below a locally mounted Google Drive root."""
+    def google_drive_export_directory(self, job_id: str, export_root: Path) -> Path:
+        """Create a uniquely named episode folder below the selected export root."""
         try:
-            root = my_drive_root.expanduser().resolve(strict=True)
+            root = export_root.expanduser().resolve(strict=True)
         except OSError as exc:
-            raise JobServiceError("연결된 Google Drive 폴더를 찾을 수 없습니다.") from exc
+            raise JobServiceError("선택한 Google Drive 저장 폴더를 찾을 수 없습니다.") from exc
         if not root.is_dir():
-            raise JobServiceError("연결된 Google Drive 경로가 폴더가 아닙니다.")
+            raise JobServiceError("선택한 Google Drive 저장 경로가 폴더가 아닙니다.")
 
         job = self.store.load(job_id)
         founder_name = self._founder_name(job)
         prefix = f"에피소드{job.episode_number}_"
+        collision_suffix = "-9999차"
         safe_founder = _safe_filename_component(
             founder_name,
-            max_bytes=max(1, 255 - len(prefix.encode("utf-8"))),
+            max_bytes=min(
+                EXPORT_TITLE_MAX_BYTES,
+                255 - len(prefix.encode("utf-8")) - len(collision_suffix.encode("utf-8")),
+            ),
         )
-        reels_root = root / GOOGLE_DRIVE_REELS_DIRECTORY
-        if reels_root.exists() and reels_root.is_symlink():
-            raise JobServiceError("Google Drive 릴스 폴더가 심볼릭 링크입니다.")
-        destination = reels_root / f"{prefix}{safe_founder}"
-        if destination.exists() and destination.is_symlink():
-            raise JobServiceError("Google Drive 내보내기 폴더가 심볼릭 링크입니다.")
-        destination.mkdir(parents=True, exist_ok=True)
-        resolved = destination.resolve()
-        if not self._is_relative_to(resolved, root):
-            raise JobServiceError("Google Drive 내보내기 폴더가 연결 경로 밖에 있습니다.")
-        return resolved
+        base_name = f"{prefix}{safe_founder}"
+        for export_index in range(10_000):
+            suffix = "" if export_index == 0 else f"-{export_index}차"
+            destination = root / f"{base_name}{suffix}"
+            try:
+                destination.mkdir(exist_ok=False)
+            except FileExistsError:
+                continue
+            resolved = destination.resolve()
+            if not self._is_relative_to(resolved, root):
+                raise JobServiceError("Google Drive 내보내기 폴더가 선택 경로 밖에 있습니다.")
+            return resolved
+        raise JobServiceError("Google Drive 내보내기 폴더 이름 충돌 한도를 초과했습니다.")
 
     @staticmethod
     def _founder_name(job: Job) -> str:

@@ -1,4 +1,4 @@
-"""Generate five ranked replacement titles in one model response."""
+"""Generate four ranked replacement titles in one model response."""
 from __future__ import annotations
 
 import re
@@ -60,17 +60,17 @@ def generate_title_suggestion(
             value = re.sub(r"^```(?:json)?\s*|\s*```$", "", value)
             payload = json.loads(value)
             titles = payload.get("titles") if isinstance(payload, dict) else None
-            if not isinstance(titles, list) or len(titles) != 5 or not all(isinstance(title, str) for title in titles):
-                raise ValueError("titles 배열에 제목 문자열을 정확히 5개 넣을 것")
+            if not isinstance(titles, list) or len(titles) != 4 or not all(isinstance(title, str) for title in titles):
+                raise ValueError("titles 배열에 제목 문자열을 정확히 4개 넣을 것")
             suggestions = [validate_generated_title(title) for title in titles]
             if normalized_current in suggestions:
                 raise ValueError("현재 제목과 같음 — 다른 관점과 표현으로 다시 쓸 것")
-            if len(set(suggestions)) != 5:
-                raise ValueError("후보 제목 5개를 중복 없이 만들 것")
+            if len(set(suggestions)) != 4:
+                raise ValueError("후보 제목 4개를 중복 없이 만들 것")
             return suggestions
         except ValueError as exc:
             last_error = str(exc)
-            feedback = f"이전 제목 후보가 검증에 실패했다: {last_error}. 후보 5개 전체를 다시 출력할 것."
+            feedback = f"이전 제목 후보가 검증에 실패했다: {last_error}. 후보 4개 전체를 다시 출력할 것."
     raise RuntimeError(f"새 화면 제목 생성 3회 실패 — {last_error}")
 
 

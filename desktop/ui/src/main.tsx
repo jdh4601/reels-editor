@@ -1510,7 +1510,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     if (!snapshot || storyline.status !== "ready") return;
     setTitleStates((current) => ({ ...current, [storyline.id]: "generating" }));
     setTitleErrors((current) => ({ ...current, [storyline.id]: null }));
-    setLiveMessage(`${storyline.label}의 제목 후보 5개를 만드는 중입니다.`);
+    setLiveMessage(`${storyline.label}의 제목 후보 4개를 만드는 중입니다.`);
     try {
       let suggestions: TitleDraft[];
       if (isDemoMode()) {
@@ -1520,7 +1520,6 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
           { upper: "회사가 커질수록", lower: "대표가 더 외로워지는 이유" },
           { upper: "성장하는 회사에", lower: "내 자존심을 걸지 마세요" },
           { upper: "성공을 붙잡다가", lower: "팀을 놓치는 대표들의 특징" },
-          { upper: "회사는 마라톤인데", lower: "혼자 달리는 대표들" },
         ];
       } else {
         const response = await apiMutation(
@@ -1528,7 +1527,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
           { method: "POST" },
         );
         const payload = await response.json() as { suggestions?: { title_upper?: string; title_lower?: string }[] };
-        if (!Array.isArray(payload.suggestions) || payload.suggestions.length !== 5) throw new Error("제목 후보 5개를 받지 못했습니다.");
+        if (!Array.isArray(payload.suggestions) || payload.suggestions.length !== 4) throw new Error("제목 후보 4개를 받지 못했습니다.");
         suggestions = payload.suggestions.map((item) => ({
           upper: String(item.title_upper ?? "").trim(),
           lower: String(item.title_lower ?? "").trim(),
@@ -1541,7 +1540,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       setTitleSuggestions((current) => ({ ...current, [storyline.id]: suggestions }));
       setTitleDrafts((current) => ({ ...current, [storyline.id]: suggestions[0] }));
       setTitleStates((current) => ({ ...current, [storyline.id]: "suggested" }));
-      setLiveMessage(`제목 후보 5개를 만들었습니다. 추천 제목을 먼저 선택했습니다. 원하는 후보를 고른 뒤 수정하기를 누르세요.`);
+      setLiveMessage(`제목 후보 4개를 만들었습니다. 추천 제목을 먼저 선택했습니다. 원하는 후보를 고른 뒤 수정하기를 누르세요.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : "새 화면 제목을 제안받지 못했습니다.";
       setTitleStates((current) => ({ ...current, [storyline.id]: "error" }));
@@ -2460,15 +2459,15 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                         </div>
                         <div className="title-editor-actions">
                           <button type="button" className="title-regenerate-button" disabled={overlayBusy} onClick={() => { void regenerateTitle(storyline); }}>
-                            {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{titleStates[storyline.id] === "generating" ? "5개 생성 중" : "후보 5개 생성"}
+                            {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{titleStates[storyline.id] === "generating" ? "4개 생성 중" : "후보 4개 생성"}
                           </button>
                           <button type="button" disabled={overlayBusy || !titleChanged} onClick={() => { void updateTitle(storyline); }}>
                             {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{titleStates[storyline.id] === "saving" ? "반영 중" : "수정하기"}
                           </button>
                         </div>
                       </div>
-                      {titleSuggestions[storyline.id]?.length === 5 ? (
-                        <div className="title-suggestions" role="group" aria-label="제목 후보 5개">
+                      {titleSuggestions[storyline.id]?.length === 4 ? (
+                        <div className="title-suggestions" role="group" aria-label="제목 후보 4개">
                           <p className="title-editor-help">원하는 제목을 선택하세요. 선택 후 ‘수정하기’를 누르면 영상에 반영됩니다.</p>
                           {titleSuggestions[storyline.id].map((suggestion, index) => (
                             <button key={combineTitleLines(suggestion)} type="button" disabled={overlayBusy}

@@ -88,27 +88,36 @@ try {
     assert.equal(job.episode_number, index + 11);
     assert.deepEqual(job.selected_candidate_ids, [`c${index + 1}`]);
   }
-  // Five ranked titles arrive in one request; choosing a candidate edits only
+  // Four ranked titles arrive in one request; choosing a candidate edits only
   // the draft, retains it across tabs, and does not rerender until explicitly saved.
   await tabs.nth(0).click();
   const beforeTitle = (await readJob(jobs[0])).storylines[0].title;
   await panel().getByRole("button", { name: "제목·이름·에피소드·캡션 수정하기" }).click();
   const titleResponse = page.waitForResponse((response) => response.url().endsWith("/title/suggestion"));
-  await panel().getByRole("button", { name: "후보 5개 생성" }).click();
-  assert.equal((await (await titleResponse).json()).suggestions.length, 5);
-  const candidates = panel().getByRole("group", { name: "제목 후보 5개" });
+  await panel().getByRole("button", { name: "후보 4개 생성" }).click();
+  assert.equal((await (await titleResponse).json()).suggestions.length, 4);
+  const candidates = panel().getByRole("group", { name: "제목 후보 4개" });
   await candidates.waitFor();
-  assert.equal(await candidates.getByRole("button").count(), 5);
+  assert.equal(await candidates.getByRole("button").count(), 4);
   assert.equal(await candidates.getByRole("button").first().getAttribute("aria-pressed"), "true");
   await candidates.getByRole("button").nth(1).click();
   const selectedText = await panel().locator('.title-editor:not(.metadata-editor) input').evaluateAll((inputs) => inputs.map((input) => input.value).join(" "));
   assert.equal(selectedText, "회사가 커질수록 대표가 외로워지는 이유");
   assert.equal((await readJob(jobs[0])).storylines[0].title, beforeTitle);
   await page.setViewportSize({ width: 800, height: 900 });
+  const boxes = await candidates.getByRole("button").evaluateAll((buttons) => buttons.map((button) => {
+    const rect = button.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width };
+  }));
+  assert.equal(boxes[0].y, boxes[1].y);
+  assert.equal(boxes[2].y, boxes[3].y);
+  assert.equal(boxes[0].x, boxes[2].x);
+  assert.equal(boxes[1].x, boxes[3].x);
+  assert.ok(boxes[1].x > boxes[0].x && boxes[2].y > boxes[0].y);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await page.screenshot({ path: path.join(root, "desktop/ui/test-results/title-candidates.png"), fullPage: true });
   await tabs.nth(1).click();
-  assert.equal(await panel().getByRole("group", { name: "제목 후보 5개" }).count(), 0);
+  assert.equal(await panel().getByRole("group", { name: "제목 후보 4개" }).count(), 0);
   await tabs.nth(0).click();
   assert.equal(await candidates.getByRole("button").nth(1).getAttribute("aria-pressed"), "true");
   await tabs.nth(2).click();

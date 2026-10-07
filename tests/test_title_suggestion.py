@@ -24,11 +24,10 @@ TITLES = [
     "성장할수록 더 조심해야 하는 창업가의 이유",
     "리더를 무너뜨린 성장의 뜻밖의 대가",
     "회사가 커질수록 대표가 외로워지는 이유",
-    "성공을 붙잡다가 팀을 놓치는 대표들",
 ]
 
 
-def test_generates_five_ranked_titles_in_one_call_without_losing_evidence():
+def test_generates_four_ranked_titles_in_one_call_without_losing_evidence():
     prompts = []
     def runner(prompt):
         prompts.append(prompt)
@@ -43,10 +42,10 @@ def test_generates_five_ranked_titles_in_one_call_without_losing_evidence():
 
 @pytest.mark.parametrize("invalid,error", [
     (["기존 제목 그대로", *TITLES[1:]], "최소 12자"),
-    ([TITLES[0]] * 5, "중복"),
-    (TITLES[:4], "정확히 5개"),
+    ([TITLES[0]] * 4, "중복"),
+    (TITLES[:3], "정확히 4개"),
     (["짧은 제목", *TITLES[1:]], "최소 12자"),
-    ([123, *TITLES[1:]], "정확히 5개"),
+    ([123, *TITLES[1:]], "정확히 4개"),
 ])
 def test_invalid_batch_retries_as_a_whole(invalid,error):
     prompts=[]

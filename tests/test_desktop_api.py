@@ -144,7 +144,7 @@ class FakeService:
 
     def generate_storyline_title_suggestion(self, job_id: str, storyline_id: str) -> list[str]:
         self.title_suggestion_args = {"job_id": job_id, "storyline_id": storyline_id}
-        return ["성장이 독이 된 순간", "대표가 성장하면서 놓치는 위험 신호", "성공에 내 자존심을 걸면 안 되는 이유", "회사가 커질수록 대표가 외로워지는 이유", "성공을 붙잡다가 팀을 놓치는 대표들"]
+        return ["성장이 독이 된 순간", "대표가 성장하면서 놓치는 위험 신호", "성공에 내 자존심을 걸면 안 되는 이유", "회사가 커질수록 대표가 외로워지는 이유"]
 
     def suggested_export_filename(
         self,
@@ -679,7 +679,7 @@ def test_title_suggestion_returns_editable_title_lines(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert service.title_suggestion_args == {"job_id": job.id, "storyline_id": "s1"}
-    assert len(response.json()["suggestions"]) == 5
+    assert len(response.json()["suggestions"]) == 4
     assert response.json()["suggestions"][0] == {
         "title": "성장이 독이 된 순간",
         "title_upper": "",

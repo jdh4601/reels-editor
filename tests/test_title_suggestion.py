@@ -72,4 +72,4 @@ def test_title_prompt_prioritizes_self_recognition_and_grounded_sharing():
     prompt = title_suggestion.build_prompt(current_title='기존 제목', candidate=None, doc=_doc(), segments=_segments())
     assert '혹시 나도 해당하나?' in prompt and '이거 내 친구 얘기다' in prompt
     assert '구체적인 행동·막힘·실패 상황' in prompt
-    assert '99%나 망한다는 결과' in prompt
+    assert '수사적 `99%`는 허용한다' in prompt

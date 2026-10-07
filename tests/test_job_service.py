@@ -1166,27 +1166,33 @@ def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Pat
     assert exported.export.output_path == str(destination)
 
 
-def test_google_drive_export_directory_uses_episode_founder_and_collision_suffix(tmp_path: Path) -> None:
+def test_google_drive_export_reuses_existing_folder_and_keeps_file_collisions_safe(tmp_path: Path) -> None:
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, Calls()))
     job = _run_ready(service, candidate_count=1, episode_number=11)
     my_drive = tmp_path / "My Drive"
     my_drive.mkdir()
+    episode_folder = my_drive / "릴스(에피소드)"
+    episode_folder.mkdir()
 
     destination = service.google_drive_export_directory(job.id, my_drive)
     exported = service.export_many(job.id, destination, storyline_ids=["s1"])
     repeated_destination = service.google_drive_export_directory(job.id, my_drive)
 
-    assert destination == my_drive / "에피소드11_김현지"
+    assert destination == episode_folder
     assert destination.is_dir()
     assert [path.name for path in destination.glob("*.mp4")] == [
         "에피소드 11 - https youtu.be A 제목 1.mp4"
     ]
     assert exported.export.output_path == str(destination)
-    assert repeated_destination == my_drive / "에피소드11_김현지-1차"
+    assert repeated_destination == episode_folder
     assert repeated_destination.is_dir()
 
-    third_destination = service.google_drive_export_directory(job.id, my_drive)
-    assert third_destination == my_drive / "에피소드11_김현지-2차"
+    service.export_many(job.id, repeated_destination, storyline_ids=["s1"])
+    assert sorted(path.name for path in episode_folder.iterdir()) == [
+        "에피소드 11 - https youtu.be A 제목 1 (2).mp4",
+        "에피소드 11 - https youtu.be A 제목 1.mp4",
+    ]
+    assert service.google_drive_export_directory(job.id, episode_folder) == episode_folder
 
 
 def test_default_batch_export_creates_isolated_selection_folder(tmp_path: Path) -> None:
@@ -1349,7 +1355,8 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
 
 
 
-def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cached", [True, False])
+def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_path: Path, cached: bool) -> None:
     calls = Calls()
     store = JobStore(tmp_path / "jobs")
     fresh_prompts = []
@@ -1367,7 +1374,8 @@ def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_pat
     segments = _segments(video)
     segments["segments"][0]["source_end_us"] = 30_000_000
     (source / "segments.json").write_text(json.dumps(segments))
-    (work / "llm_raw_s1.txt").write_text("invalid cached JSON")
+    if cached:
+        (work / "llm_raw_s1.txt").write_text("invalid cached JSON")
     job = Job(id="recover-fresh", input_path=str(video), duration_s=35,
               n_storylines=1, status=Status.FAILED, selected_candidate_ids=["c1"],
               storylines=[Storyline(id="s1", index=0, angle_name="원칙형",
@@ -1375,7 +1383,8 @@ def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_pat
     store.save(job)
     recovered = service.retry_storyline(job.id, "s1")
     assert len(fresh_prompts) == 1
-    assert "JSON 파싱" in fresh_prompts[0]
+    if cached:
+        assert "JSON 파싱" in fresh_prompts[0]
     assert recovered.status is Status.READY
     assert recovered.storylines[0].title == job.storylines[0].title
 
@@ -1850,3 +1859,58 @@ def test_transcript_first_shared_cache_deduplicates_tabs_and_survives_job_deleti
     cache.write_text(json.dumps(payload))
     service.run_youtube_job_sync(urls[0])
     assert counts["download"] == 1 and counts["analysis"] == 4
+
+
+def test_metadata_edit_persists_and_survives_title_and_subtitle_changes(tmp_path: Path) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls), archive_root=tmp_path / "archive")
+    ready = _run_ready(service, candidate_count=2, episode_number=12)
+    before = (calls.generate, calls.base, calls.overlay)
+    updated = service.update_storyline_metadata(ready.id, "s1", name=" 새 이름 ", role=" 회사 CEO ", episode_number=15)
+    story = updated.storylines[0]
+    assert story.speaker_override == {"name": "새 이름", "role": "회사 CEO"}
+    assert story.episode_number == 15
+    assert updated.storylines[1].episode_number is None
+    assert updated.episode_number == 12
+    assert (calls.generate, calls.base) == before[:2]
+    assert calls.overlay == before[2] + 1
+    assert calls.speaker_texts[-1] == "새 이름 (회사 CEO)"
+    assert calls.episode_texts[-1] == "에피소드 15 / 1000"
+    assert Path(story.archive_path).read_bytes() == Path(story.active_variant_path).read_bytes()
+    assert service.store.load(ready.id).storylines[0].speaker_override == story.speaker_override
+    service.update_storyline_title(ready.id, "s1", "새로운 제목입니다")
+    service.select_variant(ready.id, "s1", subtitles_on=False)
+    assert calls.speaker_texts[-1] == "새 이름 (회사 CEO)"
+    assert calls.episode_texts[-1] == "에피소드 15 / 1000"
+    service.generate_instagram_caption(ready.id, "s1")
+    assert calls.caption_requests[-1]["episode_number"] == 15
+
+
+def test_metadata_edit_restores_previous_state_on_render_failure(tmp_path: Path) -> None:
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    original = deps.render_overlay_variant
+    def fail_metadata(assets: RenderAssets, **kwargs: Any) -> Path:
+        if kwargs.get("speaker_text") == "새 이름":
+            raise RuntimeError("metadata render failed")
+        return original(assets, **kwargs)
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=replace(deps, render_overlay_variant=fail_metadata), archive_root=tmp_path / "archive")
+    ready = _run_ready(service, candidate_count=1)
+    previous = ready.storylines[0]
+    video = Path(previous.active_variant_path).read_bytes()
+    archive = Path(previous.archive_path).read_bytes()
+    with pytest.raises(JobServiceError, match="metadata render failed"):
+        service.update_storyline_metadata(ready.id, "s1", name="새 이름", role="", episode_number=15)
+    story = service.store.load(ready.id).storylines[0]
+    assert story.speaker_override is None
+    assert story.episode_number is None
+    assert story.status is Status.READY
+    assert Path(story.active_variant_path).read_bytes() == video
+    assert Path(story.archive_path).read_bytes() == archive
+
+
+@pytest.mark.parametrize("name,episode", [(" ", 1), ("이름", 0), ("이름", True), ("이름", 1.5)])
+def test_metadata_edit_rejects_invalid_values(tmp_path: Path, name: str, episode: Any) -> None:
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, Calls()))
+    with pytest.raises(JobServiceError):
+        service.update_storyline_metadata("missing", "s1", name=name, role="", episode_number=episode)

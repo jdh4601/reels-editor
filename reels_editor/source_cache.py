@@ -5,6 +5,8 @@ import fcntl
 import hashlib
 import json
 import os
+import re
+import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -64,24 +66,56 @@ def selected_ranges(doc: dict, segments: dict) -> list[tuple[int, int]]:
 def download_section(url: str, output_dir: Path, start_us: int, end_us: int,
                      *, cancelled: Callable[[], bool]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    def hook(_event: dict) -> None:
-        if cancelled():
-            raise youtube.YouTubeSourceError("구간 다운로드가 취소되었습니다.")
     options = {
         "quiet": True, "no_warnings": True, "noplaylist": True,
-        "format": youtube.DOWNLOAD_FORMAT, "merge_output_format": "mp4",
-        "outtmpl": str(output_dir / "source.%(ext)s"),
-        "download_ranges": lambda _info, _ydl: [{"start_time": start_us / US,
-                                                  "end_time": end_us / US}],
-        # Stream-copy can start at a preceding keyframe and shift subtitles.
-        "force_keyframes_at_cuts": True,
-        "external_downloader_args": {"ffmpeg_o": ["-c:v", "libx264", "-preset", "veryfast",
-                                                   "-crf", "18", "-c:a", "aac"]},
-        "progress_hooks": [hook], "socket_timeout": 20, "retries": 3, "overwrites": True,
+        "format": youtube.DOWNLOAD_FORMAT, "socket_timeout": 20, "retries": 3,
     }
-    with youtube._default_ydl_factory(options) as ydl:
-        ydl.extract_info(youtube.validate_youtube_url(url), download=True)
-    return youtube._find_downloaded_video(output_dir)
+    temp = output_dir / "section.tmp.mp4"
+    output = output_dir / "source.mp4"
+    for attempt in range(3):
+        if cancelled():
+            raise youtube.YouTubeSourceError("구간 다운로드가 취소되었습니다.")
+        # Refresh signed stream URLs on each retry. Run FFmpeg through our
+        # process registry so cancellation and stderr work in the desktop app.
+        with youtube._default_ydl_factory(options) as ydl:
+            info = ydl.extract_info(youtube.validate_youtube_url(url), download=False)
+        formats = info.get("requested_formats") or [info]
+        args = ["ffmpeg", "-v", "error", "-y"]
+        maps = []
+        for index, fmt in enumerate(formats):
+            headers = fmt.get("http_headers") or info.get("http_headers") or {}
+            if headers:
+                args += ["-headers", "".join(f"{key}: {value}\r\n" for key, value in headers.items())]
+            args += ["-rw_timeout", "20000000", "-ss", str(start_us / US),
+                     "-t", str((end_us - start_us) / US), "-i", fmt["url"]]
+            if fmt.get("vcodec") != "none":
+                maps += ["-map", f"{index}:v:0?"]
+            if fmt.get("acodec") != "none":
+                maps += ["-map", f"{index}:a:0?"]
+        # Re-encode for accurate cuts rather than copying a preceding keyframe.
+        args += [*maps, "-t", str((end_us - start_us) / US), "-c:v", "libx264",
+                 "-threads", "2", "-preset", "veryfast", "-crf", "18",
+                 "-c:a", "aac", "-movflags", "+faststart", str(temp)]
+        try:
+            result = processes.run(args, capture_output=True, text=True, timeout=180)
+            if result.returncode == 0:
+                if cancelled():
+                    raise youtube.YouTubeSourceError("구간 다운로드가 취소되었습니다.")
+                os.replace(temp, output)
+                return output
+            # Never persist signed URLs or headers in diagnostics.
+            detail = re.sub(r"https?://\S+", "[stream URL]", result.stderr or "")[-2000:]
+            problem = f"FFmpeg 종료 코드 {result.returncode}: {detail.strip()}"
+        except subprocess.TimeoutExpired:
+            problem = "구간 다운로드 제한 시간(180초) 초과"
+        (output_dir / "download-error.txt").write_text(problem, encoding="utf-8")
+        temp.unlink(missing_ok=True)
+        if attempt < 2:
+            for _ in range(10 * (attempt + 1)):
+                if cancelled():
+                    raise youtube.YouTubeSourceError("구간 다운로드가 취소되었습니다.")
+                time.sleep(0.1)
+    raise youtube.YouTubeSourceError(f"영상 구간 다운로드 3회 실패 — {problem}")
 
 
 def _duration_us(path: Path) -> int:

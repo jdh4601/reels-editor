@@ -72,17 +72,17 @@ def test_build_tracking_windows_rechecks_long_segments_every_two_seconds() -> No
     assert [window.segment_indexes for window in windows] == [(0,), (0,), (0,)]
 
 
-def test_choose_active_face_does_not_move_single_person_frame_even_off_center() -> None:
+def test_choose_active_face_keeps_off_center_face_visible() -> None:
     frames = [
         [FaceSignal(0.82, 0.18, openness, y=0.38)]
         for openness in (0.3, 0.8, 0.4, 0.9, 0.5)
     ]
 
-    assert choose_active_face(frames) == speaker_focus.FocusPoint()
+    assert choose_active_face(frames) == speaker_focus.FocusPoint(x=1.0)
 
 
-def test_choose_active_face_centers_single_distant_person() -> None:
-    """얼굴이 작거나 치우쳐 있어도 한 명뿐인 화면은 중앙에 고정한다."""
+def test_choose_active_face_tracks_single_detected_distant_person() -> None:
+    """투샷에서 두 번째 얼굴을 놓쳐도 감지한 얼굴이 잘리지 않아야 한다."""
     frames = [
         [FaceSignal(0.84, 0.055, openness, y=0.38)]
         for openness in (0.2, 0.4, 0.3, 0.5, 0.2)
@@ -90,7 +90,7 @@ def test_choose_active_face_centers_single_distant_person() -> None:
 
     point = choose_active_face(frames)
 
-    assert point == speaker_focus.FocusPoint()
+    assert point == speaker_focus.FocusPoint(x=1.0)
 
 
 def test_single_person_center_survives_asymmetric_content_crop() -> None:
@@ -103,14 +103,14 @@ def test_single_person_center_survives_asymmetric_content_crop() -> None:
     ) == 0.5
 
 
-def test_two_person_layout_must_persist_across_most_frames() -> None:
+def test_partial_two_person_detection_does_not_force_empty_center() -> None:
     frames = [
         [FaceSignal(0.18, 0.08, 0.8), FaceSignal(0.82, 0.08, 0.3)]
         if index < 7 else [FaceSignal(0.82, 0.20, 0.7)]
         for index in range(10)
     ]
 
-    assert choose_active_face(frames) == speaker_focus.FocusPoint()
+    assert choose_active_face(frames) == speaker_focus.FocusPoint(x=0.0)
 
 
 def test_analysis_cache_skips_reextracting_the_same_source_window(
@@ -247,3 +247,67 @@ def test_sample_frames_are_extracted_with_low_compression_loss(
     command = commands[0]
     assert "-q:v" in command
     assert int(command[command.index("-q:v") + 1]) <= 2
+
+
+def test_per_frame_tracking_reacts_immediately_to_brief_two_shot():
+    centered = [FaceSignal(.5, .25, .4)]
+    two = [FaceSignal(.18, .07, .2), FaceSignal(.83, .07, .8)]
+    frames = [centered]*12 + [two]*2 + [centered]*12
+    points = speaker_focus.frame_focus_points(frames)
+    assert points[11].x == .5
+    assert points[12].x == 1.0 and points[13].x == 1.0
+    assert points[14] == speaker_focus.FocusPoint()
+
+
+def test_per_frame_tracking_holds_anchor_when_detection_is_missing():
+    frames = [[FaceSignal(.83, .07, .6)], [], [], [FaceSignal(.5, .25, .4)]]
+    points = speaker_focus.frame_focus_points(frames)
+    assert [point.x for point in points] == [1.0, 1.0, 1.0, .5]
+
+
+def test_brief_two_shot_is_detected_and_slices_cover_full_segment(tmp_path, monkeypatch):
+    import json
+    video = tmp_path/'source.mp4'
+    video.write_bytes(b'video')
+    def extract(_video, _window, directory):
+        directory.mkdir(parents=True)
+        (directory/'frame-times.json').write_text(json.dumps([i/30 for i in range(30)]))
+        return [directory/f'{i}.jpg' for i in range(30)]
+    def detect(path):
+        i = int(path.stem)
+        if 12 <= i < 15:
+            return [FaceSignal(.18, .07, .2), FaceSignal(.83, .07, .8)]
+        return [FaceSignal(.5, .25, .4)]
+    monkeypatch.setattr(speaker_focus, '_extract_sample_frames', extract)
+    monkeypatch.setattr(speaker_focus, '_detect_faces', detect)
+    slices = speaker_focus.analyze_speaker_focus(video, [{'source_start_us':0, 'source_end_us':1_000_000}],
+                                               [1], (1920,1080), None, tmp_path/'render')
+    assert slices is not None and len(slices) == 3
+    assert slices[1].start_s == .4 and slices[1].end_s == .5
+    assert slices[1].point.x == 1.0
+    assert slices[0].start_s == 0 and slices[-1].end_s == 1
+    assert all(a.end_s == b.start_s for a,b in zip(slices,slices[1:]))
+
+
+def test_extraction_checks_every_frame_and_preserves_timestamps(tmp_path):
+    import json
+    import shutil
+    import subprocess
+    import pytest
+    if not shutil.which('ffmpeg'):
+        pytest.skip('FFmpeg required')
+    video = tmp_path/'source.mp4'
+    subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','testsrc2=s=160x90:r=30',
+                    '-t','1','-c:v','libx264','-preset','ultrafast',str(video)], check=True)
+    paths = speaker_focus._extract_sample_frames(video, speaker_focus.FocusWindow((0,), 0,.5), tmp_path/'frames')
+    times = json.loads((tmp_path/'frames/frame-times.json').read_text())
+    assert len(paths) == len(times) == 15
+    assert abs(times[-1]-14/30) < 1e-5
+
+
+def test_wide_shot_does_not_jitter_when_only_listener_is_detected():
+    both = [FaceSignal(.18,.07,.8), FaceSignal(.83,.07,.2)]
+    frames = [both, [both[1]], both, [], [both[1]], [FaceSignal(.5,.25,.4)]]
+    points = speaker_focus.frame_focus_points(frames)
+    assert all(point == speaker_focus.FocusPoint(x=0, zoom=1.3) for point in points[:5])
+    assert points[-1] == speaker_focus.FocusPoint()

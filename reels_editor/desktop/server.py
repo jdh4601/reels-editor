@@ -18,7 +18,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from reels_editor import candidate_analyzer
+from reels_editor import candidate_analyzer, render
+from reels_editor.drive_paths import episode_export_root
 from reels_editor.config import (
     AppConfig,
     DEFAULT_PLAYBACK_SPEED,
@@ -80,6 +81,12 @@ class StorylineTitleRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     title_upper: str | None = Field(default=None, max_length=200)
     title_lower: str | None = Field(default=None, max_length=200)
+
+
+class StorylineMetadataRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    role: str = Field(max_length=100)
+    episode_number: int = Field(strict=True, ge=1)
 
 
 class PlaybackSpeedSettingsRequest(BaseModel):
@@ -159,9 +166,13 @@ def create_app(
     def google_drive_settings() -> dict[str, Any]:
         persisted = load_config(effective_config_path)
         raw_path = persisted.google_drive_root.strip()
-        root = Path(raw_path).expanduser() if raw_path else None
+        selected = Path(raw_path).expanduser() if raw_path else None
+        try:
+            root = episode_export_root(selected) if selected else None
+        except (OSError, ValueError):
+            return {"configured": False, "my_drive_path": raw_path}
         return {
-            "configured": bool(root and root.is_dir()),
+            "configured": root is not None,
             "my_drive_path": str(root) if root else "",
         }
 
@@ -192,8 +203,9 @@ def create_app(
         if not chosen:
             return {**google_drive_settings(), "cancelled": True}
         try:
-            root = Path(chosen).expanduser().resolve(strict=True)
-        except OSError as exc:
+            root = episode_export_root(Path(chosen))
+            root.mkdir(exist_ok=True)
+        except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="선택한 Google Drive 폴더를 찾을 수 없습니다.") from exc
         if not root.is_dir():
             raise HTTPException(status_code=400, detail="Google Drive에서 사용할 저장 폴더를 선택하세요.")
@@ -358,6 +370,17 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"saved": True, "folder": "릴스 캡션"}
 
+    @app.patch("/api/jobs/{job_id}/storylines/{storyline_id}/metadata")
+    def update_storyline_metadata(
+        job_id: str, storyline_id: str, request: StorylineMetadataRequest,
+        _auth: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        try:
+            job = service.update_storyline_metadata(job_id, storyline_id, **request.model_dump())
+        except JobServiceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _snapshot_from_job(job)
+
     @app.patch("/api/jobs/{job_id}/storylines/{storyline_id}/title")
     def update_storyline_title(
         job_id: str,
@@ -420,10 +443,9 @@ def create_app(
                 detail="설정에서 Google Drive 저장 폴더를 먼저 선택하세요.",
             )
         try:
-            destination_dir = service.google_drive_export_directory(
-                job_id,
-                Path(drive["my_drive_path"]),
-            )
+            episode_root = Path(drive["my_drive_path"])
+            episode_root.mkdir(exist_ok=True)
+            destination_dir = service.google_drive_export_directory(job_id, episode_root)
             job = service.export_many(
                 job_id,
                 destination_dir,
@@ -583,6 +605,18 @@ def _candidate_snapshot(candidate: ContentCandidate) -> dict[str, Any]:
     }
 
 
+def _speaker_fields(storyline: Storyline) -> dict[str, str]:
+    if storyline.speaker_override is not None:
+        return storyline.speaker_override
+    try:
+        doc = json.loads(Path(storyline.edl_path or "").read_text(encoding="utf-8"))
+        label = render.speaker_label(doc)
+    except (OSError, ValueError):
+        label = ""
+    name, separator, role = label.partition(" (")
+    return {"name": name, "role": role.removesuffix(")") if separator else ""}
+
+
 def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
     variant = _active_variant(storyline)
     artifact_id = _artifact_for_variant(job, variant)
@@ -601,6 +635,8 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
         "title": storyline.title,
         "title_upper": storyline.title_upper,
         "title_lower": storyline.title_lower,
+        "speaker": _speaker_fields(storyline),
+        "episode_number": storyline.episode_number or job.episode_number,
         "instagram_caption": storyline.instagram_caption,
         "archive_path": storyline.archive_path,
         "completed_at": storyline.completed_at,
@@ -633,7 +669,7 @@ def _archive_items(jobs: list[Job]) -> list[dict[str, Any]]:
                 {
                     "job_id": job.id,
                     "storyline_id": storyline.id,
-                    "episode_number": job.episode_number,
+                    "episode_number": storyline.episode_number or job.episode_number,
                     "project_name": job.project_name or "YouTube 인터뷰",
                     "source_title": job.project_name or "YouTube 인터뷰",
                     "source_url": job.source_url,
@@ -644,6 +680,7 @@ def _archive_items(jobs: list[Job]) -> list[dict[str, Any]]:
                     "completed_at": storyline.completed_at or job.updated_at,
                     "generated_at": job.updated_at,
                     "video_url": snapshot["video_url"],
+                    "speaker": _speaker_fields(storyline),
                     "instagram_caption": storyline.instagram_caption,
                     "archive_path": storyline.archive_path,
                     "export_path": storyline.archive_path,

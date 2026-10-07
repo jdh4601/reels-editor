@@ -71,3 +71,75 @@ def test_cancelled_cache_wait_does_not_download(tmp_path: Path):
     with pytest.raises(RuntimeError, match="취소"):
         prepare_selected_source("https://youtu.be/abc123", segments, doc, tmp_path,
                                 cancelled=lambda: True)
+
+
+def test_section_download_refreshes_streams_and_saves_redacted_diagnostics(tmp_path, monkeypatch):
+    from reels_editor import source_cache
+    extracts, commands = [], []
+    class YDL:
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def extract_info(self, url, *, download):
+            extracts.append(download)
+            return {'requested_formats': [
+                {'url': f'https://video.test/stream?signature={len(extracts)}', 'vcodec': 'h264', 'acodec': 'none'},
+                {'url': 'https://audio.test/stream', 'vcodec': 'none', 'acodec': 'aac'}]}
+    monkeypatch.setattr(source_cache.youtube, '_default_ydl_factory', lambda _options: YDL())
+    monkeypatch.setattr(source_cache.time, 'sleep', lambda _seconds: None)
+    def run(args, **kwargs):
+        commands.append(args)
+        if len(commands) == 1:
+            return subprocess.CompletedProcess(args, 8, '', 'Error opening https://video.test/stream?signature=secret HTTP 403')
+        Path(args[-1]).write_bytes(b'video')
+        return subprocess.CompletedProcess(args, 0, '', '')
+    monkeypatch.setattr(source_cache.processes, 'run', run)
+    output = source_cache.download_section('https://youtu.be/abc123', tmp_path, US, 3*US, cancelled=lambda: False)
+    assert output.read_bytes() == b'video'
+    assert extracts == [False, False]
+    assert 'signature=2' in ' '.join(commands[1])
+    assert '0:v:0?' in commands[0] and '1:a:0?' in commands[0]
+    assert 'secret' not in (tmp_path/'download-error.txt').read_text()
+    assert 'HTTP 403' in (tmp_path/'download-error.txt').read_text()
+
+
+def test_cancelled_section_download_does_not_extract(tmp_path, monkeypatch):
+    from reels_editor import source_cache
+    monkeypatch.setattr(source_cache.youtube, '_default_ydl_factory', lambda _opts: pytest.fail('must not extract'))
+    with pytest.raises(RuntimeError, match='취소'):
+        source_cache.download_section('https://youtu.be/abc123', tmp_path, 0, US, cancelled=lambda: True)
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg required')
+def test_section_downloader_exact_cut_with_real_http_ffmpeg(tmp_path, monkeypatch):
+    import functools
+    import threading
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from reels_editor import source_cache
+    source = tmp_path/'original.mp4'
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=30',
+                    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '3',
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-movflags', '+faststart',
+                    str(source)], check=True)
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *_args): pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(tmp_path)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    class YDL:
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def extract_info(self, _url, *, download):
+            return {'url': f'http://127.0.0.1:{server.server_port}/original.mp4',
+                    'vcodec': 'h264', 'acodec': 'aac', 'http_headers': {'User-Agent': 'reels-test'}}
+    monkeypatch.setattr(source_cache.youtube, '_default_ydl_factory', lambda _opts: YDL())
+    try:
+        out = source_cache.download_section('https://youtu.be/abc123', tmp_path/'section',
+                                            800_000, 1_700_000, cancelled=lambda: False)
+        assert abs(source_cache._duration_us(out)-900_000) < 100_000
+        probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_name',
+                                '-of', 'csv=p=0', str(out)], capture_output=True, text=True, check=True)
+        assert 'h264' in probe.stdout and 'aac' in probe.stdout
+        subprocess.run(['ffmpeg', '-v', 'error', '-i', str(out), '-f', 'null', '-'], check=True)
+    finally:
+        server.shutdown()
+        server.server_close()

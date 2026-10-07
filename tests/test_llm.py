@@ -293,3 +293,41 @@ def test_speaker_search_runner_enables_live_search(monkeypatch) -> None:
     assert llm.build_speaker_search_runner()("find role") == '{"speakers": []}'
     assert 'web_search="live"' in seen["args"]
     assert seen["timeout"] == 180
+
+
+def test_codex_capacity_retries_same_prompt_and_model(monkeypatch):
+    from pathlib import Path
+    from reels_editor import llm
+    calls = []
+    monkeypatch.setattr(llm.time, 'sleep', lambda _seconds: None)
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs['input']))
+        if len(calls) < 3:
+            return subprocess.CompletedProcess(args, 1, '', 'ERROR: Selected model is at capacity.')
+        Path(args[args.index('--output-last-message') + 1]).write_text('{"ok": true}')
+        return subprocess.CompletedProcess(args, 0, '', '')
+    monkeypatch.setattr(llm.processes, 'run', fake_run)
+    assert build_runner(AppConfig(provider='codex-cli', model='gpt-5.6-sol'))('prompt') == '{"ok": true}'
+    assert len(calls) == 3
+    assert all(prompt == 'prompt' and 'gpt-5.6-sol' in args for args, prompt in calls)
+
+
+def test_codex_capacity_exhaustion_is_concise_and_other_errors_not_retried(monkeypatch):
+    from reels_editor import llm
+    monkeypatch.setattr(llm.time, 'sleep', lambda _seconds: None)
+    calls = []
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, '', 'Selected model is at capacity.')
+    monkeypatch.setattr(llm.processes, 'run', fake_run)
+    with pytest.raises(RuntimeError, match='처리 용량이 부족'):
+        build_runner(AppConfig(provider='codex-cli'))('prompt')
+    assert len(calls) == 3
+    calls.clear()
+    def auth_failure(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, '', 'authentication failed')
+    monkeypatch.setattr(llm.processes, 'run', auth_failure)
+    with pytest.raises(RuntimeError, match='authentication failed'):
+        build_runner(AppConfig(provider='codex-cli'))('prompt')
+    assert len(calls) == 1

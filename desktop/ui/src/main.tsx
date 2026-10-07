@@ -42,6 +42,7 @@ type SettingsSaveState = "idle" | "saving" | "saved" | "error";
 type CaptionActionState = "idle" | "generating" | "error" | "copied";
 type NoteActionState = "idle" | "saving" | "saved" | "error";
 type TitleActionState = "idle" | "generating" | "saving" | "error" | "suggested" | "saved";
+type MetadataDraft = { name: string; role: string; episode: string };
 type TitleDraft = { upper: string; lower: string };
 type AppView = "workspace" | "archive";
 type PlaybackSpeedSettings = {
@@ -79,6 +80,8 @@ type Storyline = {
   title: string;
   titleUpper: string;
   titleLower: string;
+  speaker?: { name: string; role: string };
+  episodeNumber?: number;
   instagramCaption: string;
   error?: string;
   revision: number;
@@ -196,6 +199,8 @@ type ApiStoryline = {
   titleUpper?: string;
   title_lower?: string;
   titleLower?: string;
+  speaker?: { name: string; role: string };
+  episode_number?: number;
   instagram_caption?: string;
   instagramCaption?: string;
   error?: string;
@@ -730,6 +735,8 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
       title,
       titleUpper: storyline.title_upper ?? storyline.titleUpper ?? fallbackLines.upper,
       titleLower: storyline.title_lower ?? storyline.titleLower ?? fallbackLines.lower,
+      speaker: storyline.speaker,
+      episodeNumber: storyline.episode_number ?? payload.episode_number ?? DEFAULT_EPISODE_NUMBER,
       instagramCaption: storyline.instagram_caption ?? storyline.instagramCaption ?? "",
       error: storyline.error,
       revision: storyline.revision ?? 1,
@@ -940,6 +947,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
   const [captionErrors, setCaptionErrors] = useState<Record<string, string | null>>({});
   const [noteStates, setNoteStates] = useState<Record<string, NoteActionState>>({});
   const [noteErrors, setNoteErrors] = useState<Record<string, string | null>>({});
+  const [metadataDrafts, setMetadataDrafts] = useState<Record<string, MetadataDraft>>({});
+  const [metadataStates, setMetadataStates] = useState<Record<string, TitleActionState>>({});
+  const [metadataErrors, setMetadataErrors] = useState<Record<string, string | null>>({});
   const [titleDrafts, setTitleDrafts] = useState<Record<string, TitleDraft>>({});
   const [titleStates, setTitleStates] = useState<Record<string, TitleActionState>>({});
   const [titleErrors, setTitleErrors] = useState<Record<string, string | null>>({});
@@ -983,6 +993,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       setCaptionErrors({});
       setNoteStates({});
       setNoteErrors({});
+      setMetadataDrafts({});
+      setMetadataStates({});
+      setMetadataErrors({});
       setTitleStates({});
       setTitleErrors({});
       setExportState("idle");
@@ -1028,7 +1041,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
   useEffect(() => {
     if (isDemoMode()) {
-      setGoogleDriveSettings({ configured: true, my_drive_path: "~/Google Drive/My Drive" });
+      setGoogleDriveSettings({ configured: true, my_drive_path: "~/Google Drive/My Drive/릴스(에피소드)" });
       return;
     }
     let cancelled = false;
@@ -1394,6 +1407,43 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       setLiveMessage(message);
     } finally {
       setDeletingAllArchive(false);
+    }
+  }
+
+  async function updateMetadata(storyline: Storyline, draft: MetadataDraft) {
+    if (!snapshot || storyline.status !== "ready") return;
+    const episode = Number(draft.episode);
+    if (!draft.name.trim() || !Number.isSafeInteger(episode) || episode < 1) {
+      setMetadataErrors((current) => ({ ...current, [storyline.id]: "이름과 1 이상의 정수 에피소드 번호를 입력하세요." }));
+      return;
+    }
+    setMetadataStates((current) => ({ ...current, [storyline.id]: "saving" }));
+    setMetadataErrors((current) => ({ ...current, [storyline.id]: null }));
+    setLiveMessage(`${storyline.label} 이름·직책과 에피소드를 영상에 반영합니다.`);
+    try {
+      let next: Snapshot;
+      if (isDemoMode()) {
+        next = { ...snapshot, storylines: snapshot.storylines.map((item) => item.id === storyline.id
+          ? { ...item, speaker: { name: draft.name.trim(), role: draft.role.trim() }, episodeNumber: episode, instagramCaption: "", revision: item.revision + 1 }
+          : item) };
+      } else {
+        const response = await apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/metadata`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: draft.name.trim(), role: draft.role.trim(), episode_number: episode }),
+        });
+        next = normalizeSnapshot((await response.json()) as ApiSnapshot);
+        next.storylines = next.storylines.map((item) => item.id === storyline.id
+          ? { ...item, videoUrl: cacheBustedMediaUrl(item.videoUrl, `${item.revision}-${Date.now()}`) } : item);
+      }
+      applySnapshot(archiveModeRef.current ? completedOnlySnapshot(next, storyline.id) : next);
+      setMetadataDrafts((current) => { const updated = { ...current }; delete updated[storyline.id]; return updated; });
+      setMetadataStates((current) => ({ ...current, [storyline.id]: "saved" }));
+      setLiveMessage("이름·직책과 에피소드를 영상에 반영했습니다.");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "화면 정보를 수정하지 못했습니다.";
+      setMetadataStates((current) => ({ ...current, [storyline.id]: "error" }));
+      setMetadataErrors((current) => ({ ...current, [storyline.id]: detail }));
+      setLiveMessage(detail);
     }
   }
 
@@ -1890,7 +1940,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             <strong>{googleDriveSettings?.configured ? "연결됨" : "미설정"}</strong>
           </div>
           <p className="drive-path" title={googleDriveSettings?.my_drive_path || undefined}>
-            {googleDriveSettings?.my_drive_path || "MP4를 저장할 폴더를 선택하세요."}
+            {googleDriveSettings?.my_drive_path || "Google Drive 폴더를 선택하면 릴스(에피소드) 안에 저장합니다."}
           </p>
           <button
             type="button"
@@ -1900,7 +1950,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             <FolderOpen size={15} aria-hidden="true" />
             {googleDriveConnecting ? "선택 중" : googleDriveSettings?.configured ? "폴더 다시 선택" : "저장 폴더 선택"}
           </button>
-          <p className="settings-note">선택 폴더에 에피소드N_창업자이름 폴더를 만들고 MP4를 저장합니다.</p>
+          <p className="settings-note">기존 릴스(에피소드) 폴더에 MP4 파일을 바로 저장합니다.</p>
         </div>
 
       </div>
@@ -2274,6 +2324,15 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
           const detailsOpen = expandedDetailsId === storyline.id;
           const titleDraft = titleDrafts[storyline.id]
             ?? { upper: storyline.titleUpper, lower: storyline.titleLower };
+          const metadataDraft = metadataDrafts[storyline.id] ?? {
+            name: storyline.speaker?.name ?? "", role: storyline.speaker?.role ?? "",
+            episode: String(storyline.episodeNumber ?? snapshot?.episodeNumber ?? DEFAULT_EPISODE_NUMBER),
+          };
+          const metadataSaving = metadataStates[storyline.id] === "saving";
+          const overlayBusy = metadataSaving || titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating";
+          const metadataChanged = metadataDraft.name.trim() !== (storyline.speaker?.name ?? "")
+            || metadataDraft.role.trim() !== (storyline.speaker?.role ?? "")
+            || Number(metadataDraft.episode) !== (storyline.episodeNumber ?? snapshot?.episodeNumber);
           const titleChanged = titleDraft.upper.trim() !== storyline.titleUpper
             || titleDraft.lower.trim() !== storyline.titleLower;
           return (
@@ -2341,7 +2400,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
               </div>
 
               <button type="button" className="details-toggle" aria-expanded={detailsOpen} aria-controls={`${tabId}-${storyline.id}-details`} onClick={() => toggleDetails(storyline)}>
-                <Pencil size={16} /> {detailsOpen ? "수정 내용 접기" : "제목·캡션·시나리오 수정하기"}
+                <Pencil size={16} /> {detailsOpen ? "수정 내용 접기" : "제목·이름·에피소드·캡션 수정하기"}
                 {detailsOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
               </button>
 
@@ -2376,7 +2435,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                             <label className={`title-editor-field ${key}`} key={key} htmlFor={`${tabId}-${storyline.id}-title-${key}`}>
                               <span><i aria-hidden="true" />{label}<small>{tone}</small></span>
                               <input id={`${tabId}-${storyline.id}-title-${key}`} type="text" value={titleDraft[key]}
-                                disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"}
+                                disabled={overlayBusy}
                                 aria-invalid={Boolean(titleErrors[storyline.id])} aria-describedby={`${tabId}-${storyline.id}-title-help`}
                                 onChange={(event) => {
                                   const nextDraft = { ...titleDraft, [key]: event.target.value };
@@ -2388,10 +2447,10 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                           ))}
                         </div>
                         <div className="title-editor-actions">
-                          <button type="button" className="title-regenerate-button" disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"} onClick={() => { void regenerateTitle(storyline); }}>
+                          <button type="button" className="title-regenerate-button" disabled={overlayBusy} onClick={() => { void regenerateTitle(storyline); }}>
                             {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{titleStates[storyline.id] === "generating" ? "생성 중" : "다시 생성"}
                           </button>
-                          <button type="button" disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating" || !titleChanged} onClick={() => { void updateTitle(storyline); }}>
+                          <button type="button" disabled={overlayBusy || !titleChanged} onClick={() => { void updateTitle(storyline); }}>
                             {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{titleStates[storyline.id] === "saving" ? "반영 중" : "수정하기"}
                           </button>
                         </div>
@@ -2401,6 +2460,38 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                       </p>
                     </div>
                   ) : <div className="lane-title"><p className="eyebrow">화면 제목</p><strong>{storyline.title}</strong></div>}
+
+                  {storyline.status === "ready" ? (
+                    <div className="lane-title title-editor metadata-editor">
+                      <div className="title-editor-heading"><p className="eyebrow">이름·직책 및 에피소드</p></div>
+                      <div className="title-editor-controls">
+                        <div className="title-editor-fields metadata-editor-fields">
+                          {([{ key: "name", label: "이름", placeholder: "마이클 트루엘" }, { key: "role", label: "직책", placeholder: "Anysphere CEO" }, { key: "episode", label: "에피소드 번호", placeholder: "15" }] as const).map(({ key, label, placeholder }) => (
+                            <label className="title-editor-field" key={key} htmlFor={`${tabId}-${storyline.id}-metadata-${key}`}>
+                              <span>{label}{key === "episode" ? <small>/ 1000</small> : null}</span>
+                              <input id={`${tabId}-${storyline.id}-metadata-${key}`} type={key === "episode" ? "number" : "text"}
+                                min={key === "episode" ? 1 : undefined} step={key === "episode" ? 1 : undefined}
+                                maxLength={key === "episode" ? undefined : 100} placeholder={placeholder} value={metadataDraft[key]}
+                                disabled={overlayBusy} aria-describedby={`${tabId}-${storyline.id}-metadata-help`}
+                                onChange={(event) => {
+                                  setMetadataDrafts((current) => ({ ...current, [storyline.id]: { ...metadataDraft, [key]: event.target.value } }));
+                                  setMetadataStates((current) => ({ ...current, [storyline.id]: "idle" }));
+                                  setMetadataErrors((current) => ({ ...current, [storyline.id]: null }));
+                                }} />
+                            </label>
+                          ))}
+                        </div>
+                        <div className="title-editor-actions">
+                          <button type="button" disabled={overlayBusy || !metadataChanged} onClick={() => { void updateMetadata(storyline, metadataDraft); }}>
+                            {metadataSaving ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{metadataSaving ? "반영 중" : "수정하기"}
+                          </button>
+                        </div>
+                      </div>
+                      <p id={`${tabId}-${storyline.id}-metadata-help`} className={`title-editor-help${metadataErrors[storyline.id] ? " error" : metadataStates[storyline.id] === "saved" ? " success" : ""}`} role={metadataErrors[storyline.id] ? "alert" : "status"}>
+                        {metadataErrors[storyline.id] ?? (metadataSaving ? "영상 오버레이를 다시 렌더링합니다." : metadataStates[storyline.id] === "saved" ? "수정 내용이 영상에 반영되었습니다." : "현재 릴스의 이름·직책과 에피소드 번호에 반영됩니다. 직책은 비워둘 수 있습니다.")}
+                      </p>
+                    </div>
+                  ) : null}
 
                   <section className={storyline.instagramCaption ? "caption-tool has-caption" : "caption-tool"} aria-label={`${storyline.label} Instagram 캡션`}>
                     <div className="caption-tool-heading">

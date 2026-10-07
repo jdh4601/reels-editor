@@ -135,6 +135,13 @@ class FakeService:
         story.title_lower = title_lower or story.title
         return self.job
 
+    def update_storyline_metadata(self, job_id: str, storyline_id: str, *, name: str, role: str, episode_number: int) -> Job:
+        assert self.job is not None
+        story = next(item for item in self.job.storylines if item.id == storyline_id)
+        story.speaker_override = {"name": name, "role": role}
+        story.episode_number = episode_number
+        return self.job
+
     def generate_storyline_title_suggestion(self, job_id: str, storyline_id: str) -> str:
         self.title_suggestion_args = {"job_id": job_id, "storyline_id": storyline_id}
         return "성장이 독이 된 순간"
@@ -848,11 +855,11 @@ def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Pa
     assert response.status_code == 200
     assert service.batch_export_args == {
         "job_id": job.id,
-        "destination_dir": my_drive / "에피소드1_창업자",
+        "destination_dir": my_drive / "릴스(에피소드)" / "에피소드1_창업자",
         "storyline_ids": storyline_ids,
         "subtitles_on": False,
     }
-    assert dialogs.opened_directories == [my_drive / "에피소드1_창업자"]
+    assert dialogs.opened_directories == [my_drive / "릴스(에피소드)" / "에피소드1_창업자"]
 
 
 def test_batch_export_requires_connected_google_drive(tmp_path: Path) -> None:
@@ -898,11 +905,11 @@ def test_google_drive_settings_persist_exact_selected_folder(tmp_path: Path) -> 
     assert saved.status_code == 200
     assert saved.json() == {
         "configured": True,
-        "my_drive_path": str(google_drive),
+        "my_drive_path": str(my_drive / "릴스(에피소드)"),
         "cancelled": False,
     }
-    assert loaded.json() == {"configured": True, "my_drive_path": str(google_drive)}
-    assert load_config(tmp_path / "config.yaml").google_drive_root == str(google_drive)
+    assert loaded.json() == {"configured": True, "my_drive_path": str(my_drive / "릴스(에피소드)")}
+    assert load_config(tmp_path / "config.yaml").google_drive_root == str(my_drive / "릴스(에피소드)")
 
 
 def test_playback_speed_settings_persist_and_update_service(tmp_path: Path) -> None:
@@ -989,3 +996,21 @@ def test_snapshot_and_websocket_are_scoped_to_requested_job(tmp_path: Path) -> N
         assert client.get(f"/api/snapshot?job_id={first.id}").status_code == 401
         with client.websocket_connect(f"/api/events?token=secret&job_id={first.id}") as socket:
             assert socket.receive_json()["job_id"] == first.id
+
+
+def test_metadata_patch_returns_saved_overlay_fields(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job()
+    job.storylines = [Storyline(id="s1", index=0, status=Status.READY, title="이전 제목입니다")]
+    app = create_app(static_dir=_static(tmp_path), media_dir=tmp_path, job_service=FakeService(store, job), session_token="secret")
+    client = TestClient(app)
+    url = f"/api/jobs/{job.id}/storylines/s1/metadata?token=secret"
+    assert client.patch(url.split("?")[0], json={"name": "새 이름", "role": "", "episode_number": 15}).status_code == 401
+    response = client.patch(url, json={"name": "새 이름", "role": "회사 CEO", "episode_number": 15})
+    assert response.status_code == 200
+    story = response.json()["storylines"][0]
+    assert story["speaker"] == {"name": "새 이름", "role": "회사 CEO"}
+    assert story["episode_number"] == 15
+    for episode in (0, True, 1.5, "15"):
+        assert client.patch(url, json={"name": "새 이름", "role": "", "episode_number": episode}).status_code == 422
+    assert client.patch(url, json={"name": "", "role": "", "episode_number": 15}).status_code == 422

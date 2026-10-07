@@ -1642,3 +1642,6 @@ kbd {
 .workspace-tabs button:disabled { opacity: .4; cursor: not-allowed; }
 .workspace-tabs button:focus-visible { outline: 2px solid #244fbe; outline-offset: -2px; }
 @media (max-width: 700px) { .workspace-tabs { padding: 0 12px; flex-wrap: wrap; } .workspace-tabs [role="tablist"] { overflow-x: auto; } .workspace-tab { flex-shrink: 0; } .workspace-tab span { max-width: 100px; } }
+
+.metadata-editor-fields { display: grid; grid-template-columns: 1fr 1.3fr 0.7fr; gap: 12px; }
+@media (max-width: 700px) { .metadata-editor-fields { grid-template-columns: 1fr; } }

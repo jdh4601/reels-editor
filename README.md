@@ -131,16 +131,19 @@ Use **New tab** (`새 탭`) to process up to three different YouTube URLs in par
 5. Review the finished reels with the arrow buttons or keyboard. Expand
    **제목·캡션·시나리오 수정하기** to edit the two-line on-screen title, request
    a new AI title, inspect the story beats, or generate an Instagram caption
-   grounded in that reel's actual script. Click **아이폰 메모장에 복사** to save
+   grounded in that reel's actual script. Captions include a 270–300 character
+   summary followed by a topic-specific comment keyword and resource CTA, with the
+   video source credit on the final line. Configure
+   that keyword and resource for the post in ManyChat. Click **아이폰 메모장에 복사** to save
    the caption body, without its first heading line, to the `릴스 캡션` folder
    in the Mac Notes iCloud account so it syncs to the iPhone.
 6. In settings, select the local Google Drive folder where exports should be
    stored. Press **Space** or use the selection control to mark approved reels,
    then click **선택 영상 내보내기** (Export selected).
 
-Exports are saved below the selected folder as `에피소드N_창업자이름/`.
-If that folder already exists, the app creates `-1차`, `-2차`, and so on.
-The founder name comes from the verified speaker metadata for the generated reel.
+Exported MP4 files are saved directly in Google Drive’s existing `릴스(에피소드)` folder.
+Selecting either My Drive or `릴스(에피소드)` reuses the existing folder.
+Filename collisions add `(2)`, `(3)`, and so on, preserving existing videos.
 App-managed render archives and Google Drive export directories are kept
 separate. Completed reels remain available from the archive for seven days, so
 they can be reopened, revised, and exported again without starting over.

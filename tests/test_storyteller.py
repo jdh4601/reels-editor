@@ -908,3 +908,25 @@ def test_generate_script_retries_short_titles_with_legacy_speaker_shape(
     assert len(calls) == 2
     assert "최소 12자" in calls[1]
     assert out["title_candidates"][0]["text"] == "대기업 합격보다 중요했던 창업가의 선택"
+
+
+def test_generate_script_keeps_response_before_transport_failure(segments, tmp_path):
+    raw = 'invalid JSON'
+    calls = 0
+    def runner(_prompt):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return raw
+        raise RuntimeError('Selected model is at capacity')
+    dump = tmp_path / 'raw.txt'
+    with pytest.raises(RuntimeError, match='at capacity'):
+        storyteller.generate_script(segments, runner=runner, raw_dump=dump)
+    assert dump.read_text() == raw
+
+
+def test_generate_script_keeps_valid_response_for_download_retry(segments, edl_doc, tmp_path):
+    raw = json.dumps(edl_doc, ensure_ascii=False)
+    dump = tmp_path / 'raw.txt'
+    storyteller.generate_script(segments, runner=lambda _prompt: raw, raw_dump=dump)
+    assert dump.read_text() == raw

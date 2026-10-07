@@ -150,6 +150,8 @@ class Storyline:
     error: str | None = None
     title_upper: str = ""
     title_lower: str = ""
+    speaker_override: dict[str, str] | None = None
+    episode_number: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         base_path = self.base_video_path or self.base_path
@@ -167,6 +169,8 @@ class Storyline:
             "title": title,
             "title_upper": title_upper,
             "title_lower": title_lower,
+            "speaker_override": self.speaker_override,
+            "episode_number": self.episode_number,
             "subtitles_on": self.subtitles_on,
             "variants": [variant.to_dict() for variant in self.variants],
             "base_video_path": self.base_video_path,
@@ -214,6 +218,8 @@ class Storyline:
             archive_path=data.get("archive_path"),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
+            speaker_override=data.get("speaker_override"),
+            episode_number=data.get("episode_number"),
             title_upper=title_upper,
             title_lower=title_lower,
         )

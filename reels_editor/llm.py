@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -80,7 +81,7 @@ def _claude_cli_runner(model: str) -> Callable[[str], str]:
 
 
 def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str], str]:
-    def run(prompt: str) -> str:
+    def attempt(prompt: str) -> str:
         with tempfile.TemporaryDirectory(prefix="reels-codex-") as tmp:
             output_path = Path(tmp) / "last-message.txt"
             args = [
@@ -121,6 +122,23 @@ def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str]
             if not detail:
                 detail = "종료 코드 0 (응답 및 오류 출력 없음)"
             raise RuntimeError(f"codex exec가 최종 응답을 생성하지 않았습니다.\n{detail}")
+
+    def run(prompt: str) -> str:
+        for retry in range(3):
+            try:
+                return attempt(prompt)
+            except RuntimeError as exc:
+                if "Selected model is at capacity" not in str(exc):
+                    raise
+                if retry == 2:
+                    raise RuntimeError("AI 모델의 처리 용량이 부족합니다. 잠시 후 이 클립만 다시 시도하세요.") from exc
+                registry = processes.current_registry()
+                # Short, cancellable backoff. Keep the selected model and prompt.
+                for _ in range((5 * 2**retry) * 10):
+                    if registry is not None and registry.cancelled:
+                        raise RuntimeError("job was cancelled") from exc
+                    time.sleep(0.1)
+        raise AssertionError("unreachable")
     return run
 
 

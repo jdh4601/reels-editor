@@ -409,6 +409,11 @@ def generate_script(segments: dict, duration_s: int = 30,
             min_duration_s=min_duration_s,
             max_duration_s=max_duration_s,
         ))
+        # Keep every response, including valid EDLs and the response before a
+        # transport failure on a later validation attempt, available for retry.
+        if raw_dump is not None:
+            raw_dump.parent.mkdir(parents=True, exist_ok=True)
+            raw_dump.write_text(last_raw, encoding="utf-8")
         try:
             doc = extract_json(last_raw)
         except (ValueError, json.JSONDecodeError) as e:

@@ -66,3 +66,10 @@ def test_generate_title_suggestion_retries_a_one_line_length_title() -> None:
 
     assert result == "성장할수록 더 조심해야 하는 창업가의 이유"
     assert "두 줄 표시를 위해 최소 12자" in prompts[1]
+
+
+def test_title_prompt_prioritizes_self_recognition_and_grounded_sharing():
+    prompt = title_suggestion.build_prompt(current_title='기존 제목', candidate=None, doc=_doc(), segments=_segments())
+    assert '혹시 나도 해당하나?' in prompt and '이거 내 친구 얘기다' in prompt
+    assert '구체적인 행동·막힘·실패 상황' in prompt
+    assert '99%나 망한다는 결과' in prompt

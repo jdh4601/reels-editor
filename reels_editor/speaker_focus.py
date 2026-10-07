@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import threading
 from dataclasses import asdict, dataclass
@@ -27,7 +28,7 @@ MIN_TWO_PERSON_FRAME_RATIO = 0.80
 LEFT_ANCHOR_MAX_X = 1 / 3
 RIGHT_ANCHOR_MIN_X = 2 / 3
 TWO_PERSON_ZOOM = 1.3
-ANALYSIS_CACHE_VERSION = 6
+ANALYSIS_CACHE_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -177,14 +178,39 @@ def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
     chosen = max(viable, key=score)
     chosen_signals = [signal for _index, signal in chosen]
     x = statistics.median(signal.x for signal in chosen_signals)
+    # A missed second face must not hide the detected person at the edge.
     if two_person_frames < required_two_person_frames:
+        if horizontal_anchor(x) != 0.5:
+            return FocusPoint(x=horizontal_anchor(x))
         return FocusPoint()
-    return FocusPoint(
-        x=horizontal_anchor(x),
-        # 2인 풀샷은 좌우 끝 중 하나로 고정하고 30% 확대한다.
-        y=0.5,
-        zoom=TWO_PERSON_ZOOM,
-    )
+    return FocusPoint(x=0.0 if x < 0.5 else 1.0, zoom=TWO_PERSON_ZOOM)
+
+
+def frame_focus_points(frames: list[list[FaceSignal]], previous: FocusPoint = FocusPoint()) -> list[FocusPoint]:
+    """React on the first two-shot frame, with lip-motion context and no empty-frame recentering."""
+    points = []
+    for index, faces in enumerate(frames):
+        if len(faces) >= 2:
+            context = [frame for frame in frames[max(0, index-3):index+4] if len(frame) >= 2]
+            selected = choose_active_face(context) or previous
+            # Restrict the selected anchor to faces visible in this frame.
+            anchors = {0.0 if face.x < 0.5 else 1.0 for face in faces}
+            # Keep the selected person throughout a wide shot; intermittent
+            # mouth/second-face detection must not alternate the camera sides.
+            anchor = previous.x if previous.x in anchors else (
+                selected.x if selected.x in anchors else min(anchors, key=lambda x: abs(x-previous.x))
+            )
+            previous = FocusPoint(x=anchor, zoom=TWO_PERSON_ZOOM)
+        elif faces:
+            face = faces[0]
+            anchor = horizontal_anchor(face.x)
+            if anchor == 0.5 or face.width >= 0.12 or previous.x == 0.5:
+                previous = FocusPoint(x=anchor)
+            # One small edge face often means the other face in a wide shot was
+            # missed. Keep the established side and zoom until a close-up.
+        # No detection: hold the last camera position until a face is visible.
+        points.append(previous)
+    return points
 
 
 def analyze_speaker_focus(
@@ -195,108 +221,91 @@ def analyze_speaker_focus(
     content_crop: tuple[int, int, int, int] | None,
     work_dir: Path,
 ) -> list[FocusSlice] | None:
-    """각 EDL 컷의 발화자 위치를 계산한다. 실패하면 중앙 크롭으로 안전하게 폴백한다."""
-    _ = cut_sizes  # 이전 호출부와의 호환성. 추적 주기는 EDL 컷보다 촘촘하다.
+    """Detect every decoded frame and coalesce equal crop positions before rendering."""
+    _ = cut_sizes
     windows = build_tracking_windows(ordered)
     if not windows:
         return None
     focus_root = work_dir / "speaker-focus"
     focus_root.mkdir(parents=True, exist_ok=True)
     slices: list[FocusSlice] = []
-    report: dict[str, Any] = {"windows": [], "error": None}
+    report: dict[str, Any] = {"windows": [], "error": None, "mode": "every-frame"}
     detected_faces = 0
+    previous = FocusPoint()
     try:
         for window_index, window in enumerate(windows):
-            cache_path = _window_cache_path(
-                video_path,
-                window,
-                source_size,
-                content_crop,
-            )
+            cache_path = _window_cache_path(video_path, window, source_size, content_crop)
             cached = _read_cached_window(cache_path)
+            cache_hit = cached is not None
             if cached is None:
-                frames = _extract_sample_frames(
-                    video_path,
-                    window,
-                    focus_root / f"cut-{window_index:02d}",
-                )
-                observations = [_detect_faces(path) for path in frames]
-                face_counts = [len(frame) for frame in observations]
-                window_faces = sum(face_counts)
-                point = choose_active_face(observations) or FocusPoint()
-                point = FocusPoint(
-                    x=content_relative_focus_x(point, source_size, content_crop),
-                    y=0.5,
-                    zoom=point.zoom,
-                )
-                cached = {
-                    "focus": asdict(point),
-                    "detected_faces": window_faces,
-                    "frame_count": len(frames),
-                    "face_counts": face_counts,
-                }
+                directory = focus_root / f"cut-{window_index:02d}"
+                paths = _extract_sample_frames(video_path, window, directory)
+                observations = [_detect_faces(path) for path in paths]
+                timing_path = directory / "frame-times.json"
+                if timing_path.is_file():
+                    times = json.loads(timing_path.read_text())
+                else:
+                    times = [(window.end_s-window.start_s)*i/max(1, len(paths)) for i in range(len(paths))]
+                cached = {"observations": [[asdict(face) for face in frame] for frame in observations],
+                          "times": times, "detected_faces": sum(map(len, observations))}
                 _write_cached_window(cache_path, cached)
-                cache_hit = False
-            else:
-                focus = cached["focus"]
-                point = FocusPoint(
-                    x=float(focus.get("x", 0.5)),
-                    y=float(focus.get("y", 0.5)),
-                    zoom=float(focus.get("zoom", 1.0)),
-                )
-                cache_hit = True
-            detected_faces += int(cached.get("detected_faces", 0))
-            slices.append(FocusSlice(
-                segment_index=window.segment_indexes[0],
-                start_s=window.start_s,
-                end_s=window.end_s,
-                point=point,
-            ))
-            report["windows"].append({
-                "index": window_index,
-                "start_s": window.start_s,
-                "end_s": window.end_s,
-                "frame_count": int(cached.get("frame_count", 0)),
-                "face_counts": list(cached.get("face_counts", [])),
-                "focus": asdict(point),
-                "cache_hit": cache_hit,
-            })
-    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            observations = [[FaceSignal(**face) for face in frame] for frame in cached["observations"]]
+            # Use content-relative face positions before deciding left/right.
+            observations = [[FaceSignal(x=_content_relative_x(face.x, source_size, content_crop),
+                                         width=face.width, mouth_open=face.mouth_open,
+                                         y=face.y, height=face.height) for face in frame] for frame in observations]
+            points = frame_focus_points(observations, previous)
+            if points:
+                previous = points[-1]
+            times = cached["times"]
+            if not points:
+                slices.append(FocusSlice(window.segment_indexes[0], window.start_s, window.end_s, previous))
+            for index, point in enumerate(points):
+                start = window.start_s if index == 0 else window.start_s + times[index]
+                end = window.end_s if index+1 == len(points) else window.start_s + times[index+1]
+                start, end = max(window.start_s, start), min(window.end_s, end)
+                if end <= start:
+                    continue
+                segment_index = window.segment_indexes[0]
+                if (slices and slices[-1].segment_index == segment_index
+                    and abs(slices[-1].end_s-start) < 1e-6 and slices[-1].point == point):
+                    last = slices.pop()
+                    start = last.start_s
+                slices.append(FocusSlice(segment_index, start, end, point))
+            detected_faces += cached["detected_faces"]
+            report["windows"].append({"index": window_index, "start_s": window.start_s,
+                "end_s": window.end_s, "frame_count": len(points),
+                "face_counts": list(map(len, observations)), "cache_hit": cache_hit})
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError) as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         _write_report(focus_root / "plan.json", report)
         return None
+    report["slices"] = [asdict(item) for item in slices]
     _write_report(focus_root / "plan.json", report)
-    if not detected_faces:
-        return None
-    # 단독 샷만 있는 릴스는 기존 중앙 고정 필터를 그대로 사용한다.
-    return slices if any(abs(item.point.x - 0.5) >= 0.05 for item in slices) else None
+    return slices if detected_faces and any(item.point.x != 0.5 for item in slices) else None
 
 
 def _extract_sample_frames(video_path: Path, window: FocusWindow, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("frame-*.jpg"):
         old.unlink()
-    duration = max(0.25, window.end_s - window.start_s)
-    sample_count = sample_count_for(duration)
-    fps = sample_count / duration
-    output_pattern = out_dir / "frame-%02d.jpg"
+    duration = window.end_s - window.start_s
+    output_pattern = out_dir / "frame-%06d.jpg"
     result = processes.run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-ss", f"{window.start_s:.3f}", "-t", f"{duration:.3f}",
-            "-i", str(video_path),
-            "-vf", f"fps={fps:.6f},scale={SAMPLE_WIDTH}:-2",
-            # 기본 압축은 작은 입술 영역을 뭉개서 다문 입을 벌어진 것으로 만든다.
-            "-q:v", str(SAMPLE_QUALITY),
-            "-frames:v", str(sample_count),
-            str(output_pattern),
-        ],
-        capture_output=True,
-        text=True,
+        ["ffmpeg", "-y", "-loglevel", "info", "-ss", f"{window.start_s:.6f}",
+         "-t", f"{duration:.6f}", "-i", str(video_path),
+         "-vf", f"scale={SAMPLE_WIDTH}:-2,showinfo", "-fps_mode", "passthrough",
+         "-q:v", str(SAMPLE_QUALITY), str(output_pattern)],
+        capture_output=True, text=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"화자 분석 프레임 추출 실패: {result.stderr.strip()}")
-    return sorted(out_dir.glob("frame-*.jpg"))
+    paths = sorted(out_dir.glob("frame-*.jpg"))
+    times = [float(value) for value in re.findall(r"\bpts_time:([-+0-9.eE]+)", result.stderr)]
+    if len(times) != len(paths):
+        raise RuntimeError("화자 분석 프레임과 시간 정보가 일치하지 않습니다.")
+    (out_dir / "frame-times.json").write_text(json.dumps(times))
+    return paths
 
 
 def _window_cache_path(
@@ -335,10 +344,9 @@ def _read_cached_window(path: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
-    focus = data.get("focus")
-    if not isinstance(focus, dict):
+    if not isinstance(data.get("observations"), list) or not isinstance(data.get("times"), list):
         return None
-    if any(not isinstance(focus.get(key), (int, float)) for key in ("x", "y", "zoom")):
+    if len(data["observations"]) != len(data["times"]):
         return None
     if not isinstance(data.get("detected_faces"), int):
         return None

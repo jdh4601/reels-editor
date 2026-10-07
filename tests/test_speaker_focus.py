@@ -311,3 +311,42 @@ def test_wide_shot_does_not_jitter_when_only_listener_is_detected():
     points = speaker_focus.frame_focus_points(frames)
     assert all(point == speaker_focus.FocusPoint(x=0, zoom=1.3) for point in points[:5])
     assert points[-1] == speaker_focus.FocusPoint()
+
+
+def test_visible_closeup_stays_centered_across_thirds_boundary():
+    frames = [[FaceSignal(x, .16, .5)] for x in (.65, .67, .66, .68, .65)]
+    assert speaker_focus.frame_focus_points(frames) == [speaker_focus.FocusPoint()] * len(frames)
+
+
+def test_centered_closeup_ignores_smaller_foreground_listener():
+    frames = [[FaceSignal(.52, .24, .6), FaceSignal(.12, .08, .9)]] * 10
+    assert speaker_focus.frame_focus_points(frames) == [speaker_focus.FocusPoint()] * 10
+
+
+def test_center_lock_uses_actual_visible_crop_and_releases_for_clipped_face():
+    frames = [[FaceSignal(.65, .16, .5)], [FaceSignal(.84, .16, .5)]]
+    points = speaker_focus.frame_focus_points(frames, center_visible_width=.6)
+    assert points == [speaker_focus.FocusPoint(), speaker_focus.FocusPoint(x=1)]
+
+
+def test_center_lock_hysteresis_prevents_small_boundary_oscillations():
+    frames = [[FaceSignal(x, .16, .5)] for x in (.72, .73, .72, .73, .70, .72)]
+    points = speaker_focus.frame_focus_points(frames, speaker_focus.FocusPoint(x=1), .64)
+    assert [point.x for point in points] == [1] * len(frames)
+    assert speaker_focus.frame_focus_points([[FaceSignal(.5, .16, .5)]], points[-1])[0].x == .5
+
+
+def test_closeup_boundary_noise_does_not_move_camera():
+    frames = [[FaceSignal(x, .2, .5)] for x in (.68, .70, .68, .71, .68) * 5]
+    assert all(point.x == .5 for point in speaker_focus.frame_focus_points(frames, center_visible_width=.59))
+
+
+def test_sustained_clipped_closeup_moves_across_analysis_windows():
+    state = speaker_focus.FocusStability()
+    frames = [[FaceSignal(.74, .2, .5)]] * 5
+    first = speaker_focus.frame_focus_points(frames, center_visible_width=.59,
+        times=[i/30 for i in range(5)], stability=state)
+    second = speaker_focus.frame_focus_points(frames, first[-1], .59,
+        times=[i/30 for i in range(5,10)], stability=state)
+    assert all(point.x == .5 for point in first)
+    assert second[-1].x == 1

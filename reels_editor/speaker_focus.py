@@ -49,6 +49,12 @@ class FocusPoint:
     zoom: float = 1.0
 
 
+@dataclass
+class FocusStability:
+    pending: FocusPoint | None = None
+    since_s: float = 0.0
+
+
 @dataclass(frozen=True)
 class FocusWindow:
     segment_indexes: tuple[int, ...]
@@ -186,11 +192,29 @@ def choose_active_face(frames: list[list[FaceSignal]]) -> FocusPoint | None:
     return FocusPoint(x=0.0 if x < 0.5 else 1.0, zoom=TWO_PERSON_ZOOM)
 
 
-def frame_focus_points(frames: list[list[FaceSignal]], previous: FocusPoint = FocusPoint()) -> list[FocusPoint]:
-    """React on the first two-shot frame, with lip-motion context and no empty-frame recentering."""
+def frame_focus_points(frames: list[list[FaceSignal]], previous: FocusPoint = FocusPoint(),
+                       center_visible_width: float = 0.72, *,
+                       times: list[float] | None = None,
+                       stability: FocusStability | None = None) -> list[FocusPoint]:
+    """Lock a visible close-up to center before considering wide-shot edge tracking."""
     points = []
+    stability = stability if stability is not None else FocusStability()
     for index, faces in enumerate(frames):
-        if len(faces) >= 2:
+        before = previous
+        largest = max(faces, key=lambda face: face.width, default=None)
+        others = [face.width for face in faces if face is not largest]
+        dominant = largest is not None and largest.width >= 0.12 and (
+            not others or largest.width >= max(others) * 1.6)
+        # A foreground listener or transient second detection does not make a
+        # close-up a wide shot. Use the actual output crop, not thirds of source.
+        # A tighter entry margin than retention margin prevents boundary jitter.
+        margin = 0.0 if previous.x == 0.5 else 0.025
+        half_visible = center_visible_width / 2 - margin
+        centered = dominant and (
+            abs(largest.x - 0.5) + largest.width / 2 <= half_visible)
+        if centered:
+            previous = FocusPoint()
+        elif len(faces) >= 2:
             context = [frame for frame in frames[max(0, index-3):index+4] if len(frame) >= 2]
             selected = choose_active_face(context) or previous
             # Restrict the selected anchor to faces visible in this frame.
@@ -209,6 +233,19 @@ def frame_focus_points(frames: list[list[FaceSignal]], previous: FocusPoint = Fo
             # One small edge face often means the other face in a wide shot was
             # missed. Keep the established side and zoom until a close-up.
         # No detection: hold the last camera position until a face is visible.
+        # Debounce only ambiguous close-up boundary crossings. Real wide shots
+        # and clearly relocated faces still move immediately to protect faces.
+        ambiguous = dominant and abs(largest.x - .5) > .12 and abs(largest.x - .5) < .30
+        if previous != before and ambiguous:
+            now = times[index] if times is not None else index / 30
+            if stability.pending != previous:
+                stability.pending, stability.since_s = previous, now
+            if now - stability.since_s < .25:
+                previous = before
+            else:
+                stability.pending = None
+        else:
+            stability.pending = None
         points.append(previous)
     return points
 
@@ -220,6 +257,7 @@ def analyze_speaker_focus(
     source_size: tuple[int, int],
     content_crop: tuple[int, int, int, int] | None,
     work_dir: Path,
+    center_visible_width: float = 0.72,
 ) -> list[FocusSlice] | None:
     """Detect every decoded frame and coalesce equal crop positions before rendering."""
     _ = cut_sizes
@@ -232,6 +270,7 @@ def analyze_speaker_focus(
     report: dict[str, Any] = {"windows": [], "error": None, "mode": "every-frame"}
     detected_faces = 0
     previous = FocusPoint()
+    stability = FocusStability()
     try:
         for window_index, window in enumerate(windows):
             cache_path = _window_cache_path(video_path, window, source_size, content_crop)
@@ -251,10 +290,12 @@ def analyze_speaker_focus(
                 _write_cached_window(cache_path, cached)
             observations = [[FaceSignal(**face) for face in frame] for frame in cached["observations"]]
             # Use content-relative face positions before deciding left/right.
+            width_scale = source_size[0] / content_crop[0] if content_crop else 1.0
             observations = [[FaceSignal(x=_content_relative_x(face.x, source_size, content_crop),
-                                         width=face.width, mouth_open=face.mouth_open,
+                                         width=face.width * width_scale, mouth_open=face.mouth_open,
                                          y=face.y, height=face.height) for face in frame] for frame in observations]
-            points = frame_focus_points(observations, previous)
+            points = frame_focus_points(observations, previous, center_visible_width,
+                times=[window.start_s + time for time in cached["times"]], stability=stability)
             if points:
                 previous = points[-1]
             times = cached["times"]

@@ -866,6 +866,8 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
     # 단독 샷은 중앙 고정, 투샷만 실제 발화 인물 쪽 끝으로 수평 이동한다.
     source_size = _probe_size(video_path)
     content = detect_content_crop(video_path, ordered[0]["source_start_us"] / US)
+    content_size = content[:2] if content else source_size
+    center_crop_width = video_crop_box(content_size, style)[0] / content_size[0]
     focus_slices = speaker_focus.analyze_speaker_focus(
         video_path,
         ordered,
@@ -873,6 +875,7 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
         source_size,
         content,
         work_dir,
+        center_visible_width=center_crop_width,
     )
     filt = build_base_filter(
         ordered,

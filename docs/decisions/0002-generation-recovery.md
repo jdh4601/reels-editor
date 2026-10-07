@@ -57,3 +57,12 @@ analysis caches. All five clips were rerendered and their outputs verified.
 The reported s3 regression inspected 947 frames; the same subtitle scene now
 shows an intact face. Speaker identity is still inferred from visual signals,
 so this change does not guarantee that the selected person is always speaking.
+
+The Greg Brockman episode-17 s3 regression exposed rapid center/right toggles
+around the source's two-thirds boundary. Close-ups now prefer a fixed center
+whenever the dominant face fits the actual rendered crop; smaller foreground
+listeners do not override that lock. Entry/retention margins and a 250 ms
+confirmation for ambiguous close-up boundary crossings suppress head-motion
+jitter, including across extraction windows. Wide shots and clearly relocated
+faces still switch immediately. Raw observation caches remain reusable because
+the new crop decisions are recomputed with the current output geometry.

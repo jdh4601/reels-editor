@@ -696,9 +696,9 @@ def test_title_suggestion_uses_job_model_without_rerendering(tmp_path: Path) -> 
     deps = _deps(tmp_path, calls)
     requests: list[dict[str, Any]] = []
 
-    def suggest(**kwargs: Any) -> str:
+    def suggest(**kwargs: Any) -> list[str]:
         requests.append(kwargs)
-        return "성장이 독이 된 순간"
+        return ["성장이 독이 된 순간"] * 5
 
     service = JobService(
         store=JobStore(tmp_path / "jobs"),
@@ -715,7 +715,7 @@ def test_title_suggestion_uses_job_model_without_rerendering(tmp_path: Path) -> 
 
     title = service.generate_storyline_title_suggestion(ready.id, "s1")
 
-    assert title == "성장이 독이 된 순간"
+    assert title == ["성장이 독이 된 순간"] * 5
     assert calls.overlay == before_overlay
     assert calls.providers[-1] == "codex-cli"
     assert calls.models[-1] == "gpt-5.6-terra"

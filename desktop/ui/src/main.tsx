@@ -951,6 +951,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
   const [metadataStates, setMetadataStates] = useState<Record<string, TitleActionState>>({});
   const [metadataErrors, setMetadataErrors] = useState<Record<string, string | null>>({});
   const [titleDrafts, setTitleDrafts] = useState<Record<string, TitleDraft>>({});
+  const [titleSuggestions, setTitleSuggestions] = useState<Record<string, TitleDraft[]>>({});
   const [titleStates, setTitleStates] = useState<Record<string, TitleActionState>>({});
   const [titleErrors, setTitleErrors] = useState<Record<string, string | null>>({});
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
@@ -997,6 +998,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       setMetadataStates({});
       setMetadataErrors({});
       setTitleStates({});
+      setTitleSuggestions({});
       setTitleErrors({});
       setExportState("idle");
       setExpandedDetailsId(null);
@@ -1508,28 +1510,38 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     if (!snapshot || storyline.status !== "ready") return;
     setTitleStates((current) => ({ ...current, [storyline.id]: "generating" }));
     setTitleErrors((current) => ({ ...current, [storyline.id]: null }));
-    setLiveMessage(`${storyline.label}의 새 화면 제목을 제안받는 중입니다.`);
+    setLiveMessage(`${storyline.label}의 제목 후보 5개를 만드는 중입니다.`);
     try {
-      let suggestion: TitleDraft;
+      let suggestions: TitleDraft[];
       if (isDemoMode()) {
         await new Promise((resolve) => window.setTimeout(resolve, 550));
-        suggestion = { upper: "성장이 독이 된 순간", lower: "리더가 놓친 위험 신호" };
+        suggestions = [
+          { upper: "성장이 독이 된 순간", lower: "리더가 놓친 위험 신호" },
+          { upper: "회사가 커질수록", lower: "대표가 더 외로워지는 이유" },
+          { upper: "성장하는 회사에", lower: "내 자존심을 걸지 마세요" },
+          { upper: "성공을 붙잡다가", lower: "팀을 놓치는 대표들의 특징" },
+          { upper: "회사는 마라톤인데", lower: "혼자 달리는 대표들" },
+        ];
       } else {
         const response = await apiMutation(
           `/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/title/suggestion`,
           { method: "POST" },
         );
-        const payload = await response.json() as { title_upper?: string; title_lower?: string };
-        suggestion = {
-          upper: String(payload.title_upper ?? "").trim(),
-          lower: String(payload.title_lower ?? "").trim(),
-        };
+        const payload = await response.json() as { suggestions?: { title_upper?: string; title_lower?: string }[] };
+        if (!Array.isArray(payload.suggestions) || payload.suggestions.length !== 5) throw new Error("제목 후보 5개를 받지 못했습니다.");
+        suggestions = payload.suggestions.map((item) => ({
+          upper: String(item.title_upper ?? "").trim(),
+          lower: String(item.title_lower ?? "").trim(),
+        }));
       }
-      const validationError = titleValidationMessage(suggestion);
-      if (validationError) throw new Error(validationError);
-      setTitleDrafts((current) => ({ ...current, [storyline.id]: suggestion }));
+      for (const suggestion of suggestions) {
+        const validationError = titleValidationMessage(suggestion);
+        if (validationError) throw new Error(validationError);
+      }
+      setTitleSuggestions((current) => ({ ...current, [storyline.id]: suggestions }));
+      setTitleDrafts((current) => ({ ...current, [storyline.id]: suggestions[0] }));
       setTitleStates((current) => ({ ...current, [storyline.id]: "suggested" }));
-      setLiveMessage(`${storyline.label}의 새 제목을 제안했습니다. 다듬은 뒤 수정하기를 누르세요.`);
+      setLiveMessage(`제목 후보 5개를 만들었습니다. 추천 제목을 먼저 선택했습니다. 원하는 후보를 고른 뒤 수정하기를 누르세요.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : "새 화면 제목을 제안받지 못했습니다.";
       setTitleStates((current) => ({ ...current, [storyline.id]: "error" }));
@@ -2448,13 +2460,30 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                         </div>
                         <div className="title-editor-actions">
                           <button type="button" className="title-regenerate-button" disabled={overlayBusy} onClick={() => { void regenerateTitle(storyline); }}>
-                            {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{titleStates[storyline.id] === "generating" ? "생성 중" : "다시 생성"}
+                            {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{titleStates[storyline.id] === "generating" ? "5개 생성 중" : "후보 5개 생성"}
                           </button>
                           <button type="button" disabled={overlayBusy || !titleChanged} onClick={() => { void updateTitle(storyline); }}>
                             {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{titleStates[storyline.id] === "saving" ? "반영 중" : "수정하기"}
                           </button>
                         </div>
                       </div>
+                      {titleSuggestions[storyline.id]?.length === 5 ? (
+                        <div className="title-suggestions" role="group" aria-label="제목 후보 5개">
+                          <p className="title-editor-help">원하는 제목을 선택하세요. 선택 후 ‘수정하기’를 누르면 영상에 반영됩니다.</p>
+                          {titleSuggestions[storyline.id].map((suggestion, index) => (
+                            <button key={combineTitleLines(suggestion)} type="button" disabled={overlayBusy}
+                              aria-pressed={suggestion.upper === titleDraft.upper && suggestion.lower === titleDraft.lower}
+                              onClick={() => {
+                                setTitleDrafts((current) => ({ ...current, [storyline.id]: suggestion }));
+                                setTitleStates((current) => ({ ...current, [storyline.id]: "suggested" }));
+                                setTitleErrors((current) => ({ ...current, [storyline.id]: null }));
+                              }}>
+                              <span>{index + 1}{index === 0 ? " · AI 추천" : ""}</span>
+                              <strong>{suggestion.upper}<br />{suggestion.lower}</strong>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                       <p id={`${tabId}-${storyline.id}-title-help`} className={titleErrors[storyline.id] ? "title-editor-help error" : titleStates[storyline.id] === "saved" ? "title-editor-help success" : "title-editor-help"} role={titleErrors[storyline.id] ? "alert" : "status"}>
                         {titleErrors[storyline.id] ?? (titleStates[storyline.id] === "saving" ? "제목 오버레이를 다시 렌더링합니다." : titleStates[storyline.id] === "saved" ? "수정 내용이 영상에 반영되었습니다." : "두 문구가 영상의 흰색·주황색 제목에 반영됩니다.")}
                       </p>

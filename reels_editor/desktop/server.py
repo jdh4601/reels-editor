@@ -408,17 +408,16 @@ def create_app(
         job_id: str,
         storyline_id: str,
         _auth: None = Depends(require_token),
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         try:
-            title = service.generate_storyline_title_suggestion(job_id, storyline_id)
-            title_upper, title_lower = editor_title_lines(title)
+            titles = service.generate_storyline_title_suggestion(job_id, storyline_id)
+            suggestions = []
+            for title in titles:
+                title_upper, title_lower = editor_title_lines(title)
+                suggestions.append({"title": title, "title_upper": title_upper, "title_lower": title_lower})
         except (JobServiceError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {
-            "title": title,
-            "title_upper": title_upper,
-            "title_lower": title_lower,
-        }
+        return {"suggestions": suggestions}
 
     @app.post("/api/jobs/{job_id}/export")
     def export_job(job_id: str, request: ExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:

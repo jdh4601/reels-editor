@@ -42,7 +42,7 @@ try {
   const jobs = [];
   for (let index = 0; index < 3; index += 1) {
     if (index) await add.click();
-    await panel().getByRole("textbox").fill(urls[index]);
+    await panel().getByRole("textbox", { name: "창업가 인터뷰 YouTube 링크" }).fill(urls[index]);
     await panel().getByLabel("에피소드 번호").fill(String(index + 11));
     const response = page.waitForResponse((response) => response.url() === `${base}/api/jobs` && response.request().method() === "POST");
     await panel().getByRole("button", { name: "후보 10개 분석" }).click();
@@ -60,12 +60,12 @@ try {
   assert.equal(await tabs.nth(2).getAttribute("aria-selected"), "true");
   for (let index = 0; index < 3; index += 1) {
     await tabs.nth(index).click();
-    assert.equal(await panel().getByRole("textbox").inputValue(), urls[index]);
+    assert.equal(await panel().getByRole("textbox", { name: "창업가 인터뷰 YouTube 링크" }).inputValue(), urls[index]);
     assert.equal(await panel().getByLabel("에피소드 번호").inputValue(), String(index + 11));
     assert.equal(await panel().locator('.candidate-item input:checked').count(), 1);
     assert.equal(await panel().locator('.candidate-item input').nth(index).isChecked(), true);
     await panel().getByRole("button", { name: "선택한 후보로 릴스 생성" }).click();
-    await panel().getByRole("textbox").waitFor();
+    await panel().getByRole("textbox", { name: "창업가 인터뷰 YouTube 링크" }).waitFor();
     await page.waitForFunction((id) => document.querySelector(`[aria-controls="${id}"]`)?.textContent.includes("처리 중"), await panel().getAttribute("id"));
     assert.equal(await page.getByRole("button", { name: `작업 ${index + 1} 탭 닫기` }).isDisabled(), true);
   }
@@ -81,23 +81,47 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"] small')].every((node) => node.textContent === "완료"));
   for (let index = 0; index < 3; index += 1) {
     await tabs.nth(index).click();
-    assert.equal(await panel().getByRole("textbox").inputValue(), urls[index]);
+    assert.equal(await panel().getByRole("textbox", { name: "창업가 인터뷰 YouTube 링크" }).inputValue(), urls[index]);
     assert.equal(await panel().locator(".reel-card").count(), 1);
     const job = await readJob(jobs[index]);
     assert.equal(job.status, "ready");
     assert.equal(job.episode_number, index + 11);
     assert.deepEqual(job.selected_candidate_ids, [`c${index + 1}`]);
   }
+  // Five ranked titles arrive in one request; choosing a candidate edits only
+  // the draft, retains it across tabs, and does not rerender until explicitly saved.
+  await tabs.nth(0).click();
+  const beforeTitle = (await readJob(jobs[0])).storylines[0].title;
+  await panel().getByRole("button", { name: "제목·이름·에피소드·캡션 수정하기" }).click();
+  const titleResponse = page.waitForResponse((response) => response.url().endsWith("/title/suggestion"));
+  await panel().getByRole("button", { name: "후보 5개 생성" }).click();
+  assert.equal((await (await titleResponse).json()).suggestions.length, 5);
+  const candidates = panel().getByRole("group", { name: "제목 후보 5개" });
+  await candidates.waitFor();
+  assert.equal(await candidates.getByRole("button").count(), 5);
+  assert.equal(await candidates.getByRole("button").first().getAttribute("aria-pressed"), "true");
+  await candidates.getByRole("button").nth(1).click();
+  const selectedText = await panel().locator('.title-editor:not(.metadata-editor) input').evaluateAll((inputs) => inputs.map((input) => input.value).join(" "));
+  assert.equal(selectedText, "회사가 커질수록 대표가 외로워지는 이유");
+  assert.equal((await readJob(jobs[0])).storylines[0].title, beforeTitle);
+  await page.setViewportSize({ width: 800, height: 900 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+  await page.screenshot({ path: path.join(root, "desktop/ui/test-results/title-candidates.png"), fullPage: true });
+  await tabs.nth(1).click();
+  assert.equal(await panel().getByRole("group", { name: "제목 후보 5개" }).count(), 0);
+  await tabs.nth(0).click();
+  assert.equal(await candidates.getByRole("button").nth(1).getAttribute("aria-pressed"), "true");
+  await tabs.nth(2).click();
   // A tab reset must leave the other completed jobs and their subscriptions intact.
   await panel().getByRole("button", { name: "비우기" }).click();
-  assert.equal(await panel().getByRole("textbox").inputValue(), "");
+  assert.equal(await panel().getByRole("textbox", { name: "창업가 인터뷰 YouTube 링크" }).inputValue(), "");
   await tabs.nth(0).click();
-  assert.equal(await panel().getByRole("textbox").inputValue(), urls[0]);
+  assert.equal(await panel().getByRole("textbox", { name: "창업가 인터뷰 YouTube 링크" }).inputValue(), urls[0]);
   await page.getByRole("button", { name: "작업 3 탭 닫기" }).click();
   assert.equal(await tabs.count(), 2);
   assert.equal(await add.isEnabled(), true);
   await add.click();
-  assert.equal(await panel().getByRole("textbox").inputValue(), "");
+  assert.equal(await panel().getByRole("textbox", { name: "창업가 인터뷰 YouTube 링크" }).inputValue(), "");
   await page.setViewportSize({ width: 800, height: 900 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await page.screenshot({ path: path.join(root, "desktop/ui/test-results/parallel-compact.png"), fullPage: true });

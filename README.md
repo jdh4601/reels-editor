@@ -130,7 +130,7 @@ Use **New tab** (`새 탭`) to process up to three different YouTube URLs in par
    downloaded and your picks are rendered at 20–40 seconds each.
 5. Review the finished reels with the arrow buttons or keyboard. Expand
    **제목·캡션·시나리오 수정하기** to edit the two-line on-screen title, request
-   a new AI title, inspect the story beats, or generate an Instagram caption
+   five AI title candidates ranked with the recommended title first, inspect the story beats, or generate an Instagram caption
    grounded in that reel's actual script. Captions include a 270–300 character
    summary followed by a topic-specific comment keyword and resource CTA, with the
    video source credit on the final line. Configure

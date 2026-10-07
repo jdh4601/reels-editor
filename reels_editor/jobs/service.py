@@ -68,7 +68,7 @@ class JobServiceDeps:
     analyze_candidates: Callable[..., list[ContentCandidate]] = candidate_analyzer.generate_candidates
     generate_selected_candidates: Callable[..., list[StorylineResult]] = candidate_analyzer.generate_selected_candidates
     generate_instagram_caption: Callable[..., str] = instagram_caption.generate_caption
-    generate_title_suggestion: Callable[..., str] = title_suggestion.generate_title_suggestion
+    generate_title_suggestion: Callable[..., list[str]] = title_suggestion.generate_title_suggestion
     generate_script: Callable[..., dict[str, Any]] = generate_script
     build_runner: Callable[[AppConfig], Callable[[str], str]] = build_runner
     load_style: Callable[[Path], StylePreset] = load_style
@@ -619,7 +619,7 @@ class JobService:
         self,
         job_id: str,
         storyline_id: str,
-    ) -> str:
+    ) -> list[str]:
         with self._lock:
             job = self.store.load(job_id)
             storyline = self._find_storyline(job, storyline_id)

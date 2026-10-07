@@ -1,7 +1,8 @@
-"""Generate one grounded replacement title for a finished reel."""
+"""Generate five ranked replacement titles in one model response."""
 from __future__ import annotations
 
 import re
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -38,7 +39,7 @@ def generate_title_suggestion(
     segments: dict[str, Any],
     runner: Callable[[str], str],
     raw_dump: Path | None = None,
-) -> str:
+) -> list[str]:
     feedback: str | None = None
     last_raw = ""
     last_error = "알 수 없는 제목 생성 오류"
@@ -51,29 +52,26 @@ def generate_title_suggestion(
             segments=segments,
             feedback=feedback,
         ))
-        suggestion = _normalize_response(last_raw)
+        if raw_dump is not None:
+            raw_dump.parent.mkdir(parents=True, exist_ok=True)
+            raw_dump.write_text(last_raw, encoding="utf-8")
         try:
-            if suggestion == normalized_current:
+            value = last_raw.strip()
+            value = re.sub(r"^```(?:json)?\s*|\s*```$", "", value)
+            payload = json.loads(value)
+            titles = payload.get("titles") if isinstance(payload, dict) else None
+            if not isinstance(titles, list) or len(titles) != 5 or not all(isinstance(title, str) for title in titles):
+                raise ValueError("titles 배열에 제목 문자열을 정확히 5개 넣을 것")
+            suggestions = [validate_generated_title(title) for title in titles]
+            if normalized_current in suggestions:
                 raise ValueError("현재 제목과 같음 — 다른 관점과 표현으로 다시 쓸 것")
-            suggestion = validate_generated_title(suggestion)
-            return suggestion
+            if len(set(suggestions)) != 5:
+                raise ValueError("후보 제목 5개를 중복 없이 만들 것")
+            return suggestions
         except ValueError as exc:
             last_error = str(exc)
-            feedback = f"이전 제목이 검증에 실패했다: {last_error}"
-    if raw_dump is not None:
-        raw_dump.parent.mkdir(parents=True, exist_ok=True)
-        raw_dump.write_text(last_raw, encoding="utf-8")
+            feedback = f"이전 제목 후보가 검증에 실패했다: {last_error}. 후보 5개 전체를 다시 출력할 것."
     raise RuntimeError(f"새 화면 제목 생성 3회 실패 — {last_error}")
-
-
-def _normalize_response(raw: str) -> str:
-    value = raw.strip()
-    if value.startswith("```") and value.endswith("```"):
-        value = re.sub(r"^```(?:text|markdown)?\s*", "", value)
-        value = re.sub(r"\s*```$", "", value)
-    value = re.sub(r"^\s*(?:새 제목|제목|title)\s*:\s*", "", value, flags=re.I)
-    value = value.strip().strip('"\'“”‘’')
-    return normalize_title(value)
 
 
 def _reel_context(

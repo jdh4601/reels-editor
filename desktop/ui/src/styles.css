@@ -1190,6 +1190,12 @@ h2 {
 .title-editor-help.error { color: #a23d2d; font-weight: 680; }
 .title-editor-help.success { color: #2f6a4f; font-weight: 680; }
 
+.title-suggestions { display: grid; gap: 8px; margin-top: 16px; }
+.title-suggestions button { display: flex; gap: 16px; align-items: center; text-align: left; width: 100%; padding: 12px 16px; border: 1px solid #d7d2c9; border-radius: 10px; background: #fffdf9; color: #303b35; }
+.title-suggestions button[aria-pressed="true"] { border-color: #f06400; background: #fff3e8; }
+.title-suggestions button span { font-size: 12px; flex: 0 0 84px; color: #707a74; }
+.title-suggestions button strong { min-width: 0; overflow-wrap: anywhere; }
+
 .select-video {
   align-items: center;
   border: 1px solid #ddd7cd;

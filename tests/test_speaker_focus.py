@@ -253,7 +253,7 @@ def test_per_frame_tracking_reacts_immediately_to_brief_two_shot():
     centered = [FaceSignal(.5, .25, .4)]
     two = [FaceSignal(.18, .07, .2), FaceSignal(.83, .07, .8)]
     frames = [centered]*12 + [two]*2 + [centered]*12
-    points = speaker_focus.frame_focus_points(frames)
+    points = speaker_focus.frame_focus_points(frames, center_visible_width=.59)
     assert points[11].x == .5
     assert points[12].x == 1.0 and points[13].x == 1.0
     assert points[14] == speaker_focus.FocusPoint()
@@ -261,7 +261,7 @@ def test_per_frame_tracking_reacts_immediately_to_brief_two_shot():
 
 def test_per_frame_tracking_holds_anchor_when_detection_is_missing():
     frames = [[FaceSignal(.83, .07, .6)], [], [], [FaceSignal(.5, .25, .4)]]
-    points = speaker_focus.frame_focus_points(frames)
+    points = speaker_focus.frame_focus_points(frames, center_visible_width=.59)
     assert [point.x for point in points] == [1.0, 1.0, 1.0, .5]
 
 
@@ -281,7 +281,7 @@ def test_brief_two_shot_is_detected_and_slices_cover_full_segment(tmp_path, monk
     monkeypatch.setattr(speaker_focus, '_extract_sample_frames', extract)
     monkeypatch.setattr(speaker_focus, '_detect_faces', detect)
     slices = speaker_focus.analyze_speaker_focus(video, [{'source_start_us':0, 'source_end_us':1_000_000}],
-                                               [1], (1920,1080), None, tmp_path/'render')
+                                               [1], (1920,1080), None, tmp_path/'render', center_visible_width=.59)
     assert slices is not None and len(slices) == 3
     assert slices[1].start_s == .4 and slices[1].end_s == .5
     assert slices[1].point.x == 1.0
@@ -306,9 +306,9 @@ def test_extraction_checks_every_frame_and_preserves_timestamps(tmp_path):
 
 
 def test_wide_shot_does_not_jitter_when_only_listener_is_detected():
-    both = [FaceSignal(.18,.07,.8), FaceSignal(.83,.07,.2)]
+    both = [FaceSignal(.15,.07,.8), FaceSignal(.83,.07,.2)]
     frames = [both, [both[1]], both, [], [both[1]], [FaceSignal(.5,.25,.4)]]
-    points = speaker_focus.frame_focus_points(frames)
+    points = speaker_focus.frame_focus_points(frames, center_visible_width=.59)
     assert all(point == speaker_focus.FocusPoint(x=0, zoom=1.3) for point in points[:5])
     assert points[-1] == speaker_focus.FocusPoint()
 
@@ -323,10 +323,10 @@ def test_centered_closeup_ignores_smaller_foreground_listener():
     assert speaker_focus.frame_focus_points(frames) == [speaker_focus.FocusPoint()] * 10
 
 
-def test_center_lock_uses_actual_visible_crop_and_releases_for_clipped_face():
-    frames = [[FaceSignal(.65, .16, .5)], [FaceSignal(.84, .16, .5)]]
+def test_center_lock_uses_actual_visible_crop_and_releases_only_for_absent_face():
+    frames = [[FaceSignal(.65, .16, .5)], [FaceSignal(.84, .16, .5)], [FaceSignal(.91, .16, .5)]]
     points = speaker_focus.frame_focus_points(frames, center_visible_width=.6)
-    assert points == [speaker_focus.FocusPoint(), speaker_focus.FocusPoint(x=1)]
+    assert points == [speaker_focus.FocusPoint(), speaker_focus.FocusPoint(), speaker_focus.FocusPoint(x=1)]
 
 
 def test_center_lock_hysteresis_prevents_small_boundary_oscillations():
@@ -341,7 +341,7 @@ def test_closeup_boundary_noise_does_not_move_camera():
     assert all(point.x == .5 for point in speaker_focus.frame_focus_points(frames, center_visible_width=.59))
 
 
-def test_sustained_clipped_closeup_moves_across_analysis_windows():
+def test_sustained_partial_face_remains_centered_across_analysis_windows():
     state = speaker_focus.FocusStability()
     frames = [[FaceSignal(.74, .2, .5)]] * 5
     first = speaker_focus.frame_focus_points(frames, center_visible_width=.59,
@@ -349,4 +349,19 @@ def test_sustained_clipped_closeup_moves_across_analysis_windows():
     second = speaker_focus.frame_focus_points(frames, first[-1], .59,
         times=[i/30 for i in range(5,10)], stability=state)
     assert all(point.x == .5 for point in first)
-    assert second[-1].x == 1
+    assert second[-1].x == .5
+
+
+def test_partial_face_stays_centered_even_with_foreground_listener():
+    frames = [[FaceSignal(.84, .20, .5), FaceSignal(.1, .06, .9)]] * 60
+    assert all(point.x == .5 for point in speaker_focus.frame_focus_points(frames, center_visible_width=.59))
+
+
+def test_small_single_face_also_stays_centered_while_any_part_is_visible():
+    frames = [[FaceSignal(.80, .04, .5)]] * 60
+    assert all(point.x == .5 for point in speaker_focus.frame_focus_points(frames, center_visible_width=.59))
+
+
+def test_two_faces_do_not_override_visible_target_center_lock():
+    frames = [[FaceSignal(.12, .06, .1), FaceSignal(.8, .06, .9)]] * 60
+    assert all(point.x == .5 for point in speaker_focus.frame_focus_points(frames, center_visible_width=.59))

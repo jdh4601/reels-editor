@@ -196,27 +196,33 @@ def frame_focus_points(frames: list[list[FaceSignal]], previous: FocusPoint = Fo
                        center_visible_width: float = 0.72, *,
                        times: list[float] | None = None,
                        stability: FocusStability | None = None) -> list[FocusPoint]:
-    """Lock a visible close-up to center before considering wide-shot edge tracking."""
+    """Leave center only when the target face is wholly outside the center crop."""
     points = []
     stability = stability if stability is not None else FocusStability()
     for index, faces in enumerate(frames):
         before = previous
         largest = max(faces, key=lambda face: face.width, default=None)
         others = [face.width for face in faces if face is not largest]
-        dominant = largest is not None and largest.width >= 0.12 and (
+        dominant = largest is not None and (len(faces) == 1 or (largest.width >= 0.12 and (
             not others or largest.width >= max(others) * 1.6)
-        # A foreground listener or transient second detection does not make a
-        # close-up a wide shot. Use the actual output crop, not thirds of source.
-        # A tighter entry margin than retention margin prevents boundary jitter.
+        ))
+        context = [frame for frame in frames[max(0, index-3):index+4] if len(frame) >= 2]
+        selected = choose_active_face(context) if len(faces) >= 2 and not dominant else None
+        target = largest if dominant else (
+            min(faces, key=lambda face: abs(face.x - (selected or previous).x)) if faces else None)
+        # Partial clipping is explicitly tolerated. A face bounding box must
+        # have zero overlap with the center crop before center can be released.
+        # Returning to center still requires a fully visible dominant face.
         margin = 0.0 if previous.x == 0.5 else 0.025
         half_visible = center_visible_width / 2 - margin
-        centered = dominant and (
-            abs(largest.x - 0.5) + largest.width / 2 <= half_visible)
+        center_overlap = target is not None and (
+            abs(target.x - 0.5) - target.width / 2 < center_visible_width / 2 - 1e-9)
+        centered = (previous.x == .5 and center_overlap) or (dominant and (
+            abs(largest.x - 0.5) + largest.width / 2 <= half_visible))
         if centered:
             previous = FocusPoint()
         elif len(faces) >= 2:
-            context = [frame for frame in frames[max(0, index-3):index+4] if len(frame) >= 2]
-            selected = choose_active_face(context) or previous
+            selected = selected or choose_active_face(context) or previous
             # Restrict the selected anchor to faces visible in this frame.
             anchors = {0.0 if face.x < 0.5 else 1.0 for face in faces}
             # Keep the selected person throughout a wide shot; intermittent

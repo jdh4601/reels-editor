@@ -66,3 +66,10 @@ confirmation for ambiguous close-up boundary crossings suppress head-motion
 jitter, including across extraction windows. Wide shots and clearly relocated
 faces still switch immediately. Raw observation caches remain reusable because
 the new crop decisions are recomputed with the current output geometry.
+
+The follow-up requirement explicitly tolerates partial face clipping. Center
+now releases only when the target face bounding box has zero horizontal overlap
+with the actual center crop. This applies to single faces of any size, dominant
+close-ups with a foreground listener, and the visually selected face in a
+two-shot. Returning from an edge still requires a fully visible dominant face,
+so partially clipped faces cannot repeatedly recenter the camera.

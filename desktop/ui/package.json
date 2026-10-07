@@ -8,7 +8,8 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "test:dashboard": "node scripts/dashboard-visual.mjs",
-    "test:video": "node scripts/video-smoke.mjs"
+    "test:video": "node scripts/video-smoke.mjs",
+    "test:parallel": "npm run build && node scripts/parallel-smoke.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",

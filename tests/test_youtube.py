@@ -177,7 +177,8 @@ class _FakeYoutubeDL:
 
     def extract_info(self, _url: str, *, download: bool) -> dict:
         if download:
-            (self.output_dir / "source.mp4").write_bytes(b"video")
+            if not self.options.get("skip_download"):
+                (self.output_dir / "source.mp4").write_bytes(b"video")
             (self.output_dir / "source.en.json3").write_text(
                 json.dumps({"events": [{"tStartMs": 0, "dDurationMs": 2000, "segs": [{"utf8": "Startups are hard"}]}]}),
                 encoding="utf-8",
@@ -294,3 +295,22 @@ def test_download_progress_ignores_subtitles_and_aggregates_video_and_audio(tmp_
     assert details[0].speed_bytes_per_second == 3500
     assert details[0].downloaded_bytes == 50
     assert details[0].total_bytes == 100
+
+
+def test_transcript_only_analysis_does_not_download_media(tmp_path: Path) -> None:
+    info = {"id": "abc123", "title": "Interview", "duration": 100,
+            "subtitles": {"en": [{"ext": "json3"}]}}
+    seen = []
+    def factory(options):
+        seen.append(options)
+        (tmp_path / "source.info.json").write_text(json.dumps(info))
+        return _FakeYoutubeDL(options, info, tmp_path)
+    source = download_youtube_source("https://youtu.be/abc123", tmp_path,
+                                    transcript_only=True, ydl_factory=factory)
+    assert seen[-1]["skip_download"] is True
+    assert not source.video_path.exists()
+    assert source.transcript_path.is_file()
+    assert load_cached_youtube_source(tmp_path, source.source_url) is None
+    cached = load_cached_youtube_source(tmp_path, source.source_url, transcript_only=True)
+    assert cached is not None
+    assert cached.segments == source.segments

@@ -5,10 +5,12 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from reels_editor.storyteller import format_speaker_label, normalize_speaker_data
+
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "instagram-caption.md"
 MAX_RETRIES = 2
-MIN_CAPTION_CHARS = 350
-MAX_CAPTION_CHARS = 1_200
+MAX_CAPTION_CHARS = 300
+MAX_QUESTION_CHARS = 30
 CTA = "다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
 SOURCE_CREDIT_PREFIX = "원본 출처:"
 UNKNOWN_CHANNEL = "채널 정보 없음"
@@ -22,6 +24,7 @@ def build_prompt(
     doc: dict[str, Any],
     segments: dict[str, Any],
     feedback: str | None = None,
+    output_budget: int = MAX_CAPTION_CHARS,
 ) -> str:
     context = _reel_context(selected_title, candidate, doc, segments)
     feedback_block = f"# 수정 피드백\n\n{feedback}\n" if feedback else ""
@@ -29,6 +32,7 @@ def build_prompt(
         PROMPT_PATH.read_text(encoding="utf-8")
         .replace("{episode_number}", str(max(1, episode_number)))
         .replace("{reel_context}", context)
+        .replace("{output_budget}", str(output_budget))
         .replace("{feedback_block}", feedback_block)
     )
 
@@ -42,7 +46,12 @@ def generate_caption(
     segments: dict[str, Any],
     runner: Callable[[str], str],
     raw_dump: Path | None = None,
+    channel_name: str = "",
+    source_url: str = "",
 ) -> str:
+    output_budget = MAX_CAPTION_CHARS
+    if source_url:
+        output_budget -= len(append_source_credit("", channel_name=channel_name, source_url=source_url))
     feedback: str | None = None
     last_raw = ""
     last_errors: list[str] = ["알 수 없는 캡션 생성 오류"]
@@ -54,9 +63,20 @@ def generate_caption(
             doc=doc,
             segments=segments,
             feedback=feedback,
+            output_budget=output_budget,
         ))
         caption = _normalize(last_raw)
-        errors = validate_caption(caption, episode_number)
+        errors = validate_caption(caption, episode_number, max_chars=output_budget)
+        speaker = normalize_speaker_data(doc.get("speaker"))
+        if format_speaker_label(speaker) != speaker["name"]:
+            paragraphs = caption.split("\n\n")
+            introduction = paragraphs[1] if len(paragraphs) > 1 else ""
+            if speaker["name"] not in introduction:
+                errors.append("첫 문단에 확인된 화자 이름이 빠짐")
+            if speaker["company"] and speaker["company"] not in introduction:
+                errors.append("첫 문단에 확인된 기업명이 빠짐")
+            if speaker["role"] and speaker["role"] not in introduction:
+                errors.append("첫 문단에 확인된 화자 직책이 빠짐")
         if not errors:
             return caption
         last_errors = errors
@@ -70,21 +90,35 @@ def generate_caption(
     raise RuntimeError("Instagram 캡션 생성 3회 실패 — " + "; ".join(last_errors))
 
 
-def validate_caption(caption: str, episode_number: int) -> list[str]:
+def validate_caption(caption: str, episode_number: int, *, max_chars: int = MAX_CAPTION_CHARS) -> list[str]:
     errors: list[str] = []
     if not caption.startswith(f"Ep {max(1, episode_number)}. "):
         errors.append(f"첫 줄은 'Ep {max(1, episode_number)}. '로 시작해야 함")
-    if len(caption) < MIN_CAPTION_CHARS:
-        errors.append(f"캡션이 {MIN_CAPTION_CHARS}자보다 짧음")
-    if len(caption) > MAX_CAPTION_CHARS:
-        errors.append(f"캡션이 {MAX_CAPTION_CHARS}자를 초과함")
+    if len(caption) > max_chars:
+        errors.append(f"캡션이 {max_chars}자를 초과함 (현재 {len(caption)}자)")
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", caption) if part.strip()]
-    if len(paragraphs) < 5:
-        errors.append("빈 줄로 구분된 문단이 5개보다 적음")
+    if len(paragraphs) != 4:
+        errors.append("제목 뒤 빈 줄 하나와 정확히 3개의 본문 문단이 필요함")
+    else:
+        if "\n" in paragraphs[0]:
+            errors.append("제목은 첫 줄에만 쓰고 본문과 빈 줄로 구분해야 함")
+        for paragraph in paragraphs[1:3]:
+            if not paragraph.endswith("다.") or re.search(r"(?:[습합입]니다|해요|네요|세요)[.!?]", paragraph):
+                errors.append("설명 문장은 '~한다.', '~이다.'의 평서체로 써야 함")
+        final_lines = paragraphs[3].splitlines()
+        if len(final_lines) != 2 or final_lines[-1] != CTA:
+            errors.append("세 번째 문단은 질문과 고정 팔로우 문장을 빈 줄 없이 두 줄로 써야 함")
+        question = final_lines[0]
+        if not question.endswith("?") or question.count("?") != 1:
+            errors.append("마지막 질문은 물음표로 끝나는 한 문장이어야 함")
+        if len(question) > MAX_QUESTION_CHARS:
+            errors.append(f"마지막 질문이 {MAX_QUESTION_CHARS}자를 초과함")
     if not caption.endswith(CTA):
-        errors.append("지정된 디원 팔로우 문장으로 끝나지 않음")
-    if len(paragraphs) >= 2 and not paragraphs[-2].endswith("?"):
-        errors.append("마지막 질문 문단이 물음표로 끝나지 않음")
+        errors.append("본문이 지정된 디원 팔로우 문장으로 끝나지 않음")
+    if "창업자 창업자" in caption:
+        errors.append("창업자 직책을 중복해서 쓰면 안 됨")
+    if "원본 출처:" in caption:
+        errors.append("출처는 앱이 붙이므로 직접 출력하면 안 됨")
     if "```" in caption or re.search(r"(?m)^\s*#{1,6}\s", caption):
         errors.append("Markdown 또는 해시태그를 포함함")
     return errors
@@ -110,10 +144,13 @@ def append_source_credit(
         "",
         normalized_caption,
     ).rstrip()
-    return (
+    result = (
         f"{normalized_caption}\n\n"
         f"{SOURCE_CREDIT_PREFIX} {normalized_channel} {normalized_url}"
     )
+    if len(result) > MAX_CAPTION_CHARS:
+        raise ValueError(f"출처 포함 캡션이 {MAX_CAPTION_CHARS}자를 초과합니다 (현재 {len(result)}자).")
+    return result
 
 
 def _normalize(raw: str) -> str:
@@ -144,10 +181,9 @@ def _reel_context(
         ])
     speaker = doc.get("speaker")
     if isinstance(speaker, dict):
-        lines.append(
-            f"- 화자: {' '.join(str(speaker.get('name', '')).split())}"
-            f" ({' '.join(str(speaker.get('role', '')).split())})"
-        )
+        lines.append(f"- 검증된 화자 소개: {format_speaker_label(speaker)}")
+        if speaker.get("source_url"):
+            lines.append(f"- 화자 직책 확인 출처 (캡션에 URL 출력하지 않음): {speaker['source_url']}")
     story = doc.get("story")
     if isinstance(story, dict):
         five_lines = story.get("five_lines")

@@ -129,7 +129,7 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             "- 선택한 클립에서 실제로 말하는 사람을 speaker에 적는다. 진행자보다 인터뷰 답변자를 우선한다.\n"
             "- 이름·기업·역할은 제공된 영상 맥락이나 SEGMENTS에서 직접 확인되는 정보만 쓴다.\n"
             "- 기업과 역할을 확인할 수 있으면 둘 다 반드시 채우고, evidence에는 그 기업명과 역할이 함께 드러난 원문을 인용한다.\n"
-            "- YouTube 영상에서는 name과 검증된 직책(company+role 또는 alternate_role)이 모두 있어야 한다.\n"
+            "- 직책의 직접 근거가 없으면 name만 쓰고 company, role, alternate_role은 빈 문자열로 둔다.\n"
         )
     else:
         source_context = ""
@@ -264,6 +264,9 @@ def normalize_speaker_data(speaker: Any) -> dict[str, str]:
     }
     if evidence:
         normalized["evidence"] = evidence
+    for key in ("source_url", "source_name", "checked_at"):
+        if speaker.get(key):
+            normalized[key] = str(speaker[key])
     return normalized
 
 
@@ -362,9 +365,7 @@ def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]
                 # company and role are independently present in the source.
                 normalized["evidence"] = f"{normalized['company']} {normalized['role']}"
             else:
-                # Remove the unsupported claim. The completeness gate below
-                # will retry YouTube generation instead of rendering a
-                # name-only label.
+                # Remove unsupported identity claims and retain the name-only label.
                 normalized = {
                     "name": normalized["name"],
                     "company": "",
@@ -372,13 +373,6 @@ def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]
                     "alternate_role": "",
                 }
     doc["speaker"] = normalized
-    if source_context_available and not (
-        (normalized["company"] and normalized["role"])
-        or normalized["alternate_role"]
-    ):
-        return [
-            "speaker의 직책이 비어있음 — 검증된 company+role 또는 alternate_role이 필요함"
-        ]
     return []
 
 
@@ -400,7 +394,8 @@ def generate_script(segments: dict, duration_s: int = 30,
                     angle: str | None = None,
                     speed: float = DEFAULT_SPEED,
                     min_duration_s: int = 0,
-                    max_duration_s: int | None = None) -> dict:
+                    max_duration_s: int | None = None,
+                    fixed_title: str | None = None) -> dict:
     run = runner or _run_claude
     last_raw = ""
     last_problem = "알 수 없는 생성 오류"
@@ -424,7 +419,15 @@ def generate_script(segments: dict, duration_s: int = 30,
                 "문자열 안의 큰따옴표는 \\\"로 이스케이프한 유효한 JSON 하나만 출력할 것."
             )
             continue
-        title_errs = validate_and_normalize_title_candidates(doc)
+        if fixed_title is not None:
+            # Candidate titles were validated during analysis and are the actual
+            # overlay title. Unused model alternatives must not block this clip.
+            doc["title_candidates"] = [
+                {"text": normalize_title(fixed_title), "keyword": ""} for _ in range(3)
+            ]
+            title_errs = []
+        else:
+            title_errs = validate_and_normalize_title_candidates(doc)
         speaker_errs = validate_and_normalize_speaker(doc, segments)
         translation_errs = validate_subtitle_translations(doc, segments)
         edl_errs = edl_mod.validate_edl(doc, segments)

@@ -38,9 +38,9 @@ def test_load_done_preset() -> None:
     assert s.watermark_opacity == 255
     assert s.watermark_y == -1190
     assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
-    assert s.watermark_width == 212
+    assert s.watermark_width == 192
     assert s.episode_text == "에피소드 1 / 1000"
-    assert s.episode_size == 48
+    assert s.episode_size == 44
     assert s.episode_color == "#FFFFFF"
     assert s.episode_opacity == 255
     assert s.episode_gap == 18

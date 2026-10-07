@@ -278,3 +278,18 @@ def test_build_runner_unknown_provider_raises_korean_error() -> None:
     cfg = AppConfig(provider="typo")
     with pytest.raises(RuntimeError, match="알 수 없는 프로바이더"):
         build_runner(cfg)
+
+
+def test_speaker_search_runner_enables_live_search(monkeypatch) -> None:
+    from pathlib import Path
+    from reels_editor import llm
+    seen = {}
+    def fake_run(args, **kwargs):
+        seen.update(args=args, timeout=kwargs["timeout"])
+        path = Path(args[args.index("--output-last-message") + 1])
+        path.write_text('{"speakers": []}')
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    monkeypatch.setattr(llm.processes, "run", fake_run)
+    assert llm.build_speaker_search_runner()("find role") == '{"speakers": []}'
+    assert 'web_search="live"' in seen["args"]
+    assert seen["timeout"] == 180

@@ -452,9 +452,7 @@ def test_fresh_legacy_shaped_speaker_role_still_requires_direct_evidence(
 
     errors = storyteller.validate_and_normalize_speaker(doc, source)
 
-    assert errors == [
-        "speaker의 직책이 비어있음 — 검증된 company+role 또는 alternate_role이 필요함"
-    ]
+    assert errors == []
     assert doc["speaker"] == {
         "name": "Synthetic Person",
         "company": "",
@@ -495,47 +493,30 @@ def test_generate_script_retries_when_youtube_speaker_is_missing(
     assert out["speaker"]["name"] == "샘 알트만"
 
 
-def test_generate_script_retries_when_youtube_speaker_role_is_missing(
+def test_generate_script_accepts_youtube_name_only_without_inventing_role(
         segments: dict, edl_doc: dict) -> None:
-    youtube_segments = {
-        **segments,
-        "source_title": "Hudson Leogrande interview",
-        "source_channel": "First Things THRST",
-        "source_description": "Hudson Leogrande is the founder of Comfrt.",
-    }
-    name_only = {
-        **edl_doc,
-        "speaker": {
-            "name": "허드슨 레오그란데",
-            "company": "",
-            "role": "",
-            "alternate_role": "",
-            "evidence": "Hudson Leogrande",
-        },
-    }
-    complete = {
-        **edl_doc,
-        "speaker": {
-            "name": "허드슨 레오그란데",
-            "company": "Comfrt",
-            "role": "Founder",
-            "alternate_role": "",
-            "evidence": "Hudson Leogrande is the founder of Comfrt.",
-        },
-    }
-    calls: list[str] = []
-
+    source = {**segments, "source_title": "What I Learned From Being Around The Top 0.01%",
+              "source_channel": "Chamath Palihapitiya"}
+    doc = {**edl_doc, "speaker": {"name": "차마스", "company": "", "role": "",
+                               "alternate_role": "전 AOL 관리자", "evidence": "not in source"}}
+    calls = []
     def runner(prompt: str) -> str:
         calls.append(prompt)
-        return json.dumps(name_only if len(calls) == 1 else complete, ensure_ascii=False)
+        return json.dumps(doc, ensure_ascii=False)
+    out = storyteller.generate_script(source, runner=runner)
+    assert len(calls) == 1
+    assert storyteller.format_speaker_label(out["speaker"]) == "차마스"
+    assert out["speaker"]["role"] == ""
+    assert out["speaker"]["alternate_role"] == ""
 
-    out = storyteller.generate_script(youtube_segments, runner=runner)
 
-    assert len(calls) == 2
-    assert "speaker의 직책이 비어있음" in calls[1]
-    assert storyteller.format_speaker_label(out["speaker"]) == (
-        "허드슨 레오그란데 (Comfrt 창업자)"
-    )
+def test_fixed_candidate_title_ignores_unused_model_titles(
+        segments: dict, edl_doc: dict) -> None:
+    doc = {**edl_doc, "title_candidates": []}
+    title = "투자 손실보다 더 위험한 남 탓"
+    out = storyteller.generate_script(
+        segments, runner=lambda _: json.dumps(doc), fixed_title=title)
+    assert out["title_candidates"][0]["text"] == title
 
 
 def test_speaker_company_role_requires_script_evidence(segments: dict) -> None:

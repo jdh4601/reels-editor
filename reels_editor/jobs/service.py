@@ -11,12 +11,12 @@ import time
 import uuid
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, title_suggestion, youtube
+from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, speaker_identity, source_cache, title_suggestion, youtube
 from reels_editor.config import AppConfig, merged_style
 from reels_editor.llm import build_runner
 from reels_editor.processes import ProcessRegistry, use_process_registry
@@ -50,6 +50,7 @@ CODEX_CLI_MODELS = frozenset({
     "gpt-5.4-mini",
 })
 EXPORT_TITLE_MAX_BYTES = 220
+MAX_CONCURRENT_JOBS = 3
 DEFAULT_EPISODE_NUMBER = 1
 ARCHIVE_RETENTION_DAYS = 7
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -62,6 +63,7 @@ class JobServiceError(RuntimeError):
 
 @dataclass(frozen=True)
 class JobServiceDeps:
+    enrich_speakers: Callable[..., None] = speaker_identity.enrich_speakers
     analyze_candidates: Callable[..., list[ContentCandidate]] = candidate_analyzer.generate_candidates
     generate_selected_candidates: Callable[..., list[StorylineResult]] = candidate_analyzer.generate_selected_candidates
     generate_instagram_caption: Callable[..., str] = instagram_caption.generate_caption
@@ -75,6 +77,7 @@ class JobServiceDeps:
     write_outputs: Callable[[Path, dict[str, Any], dict[str, Any]], None] = export.write_outputs
     write_srt: Callable[[list[list], Path], Path] = export.write_srt
     download_youtube_source: Callable[..., youtube.YouTubeSource] = youtube.download_youtube_source
+    prepare_selected_source: Callable[..., tuple[Path, dict]] = source_cache.prepare_selected_source
 
 
 class JobService:
@@ -105,14 +108,25 @@ class JobService:
         )
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
-        self._active_job_id: str | None = None
-        self._worker: threading.Thread | None = None
+        self._active_job_ids: set[str] = set()
+        self._workers: dict[str, threading.Thread] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._process_registries: dict[str, ProcessRegistry] = {}
         self._operation_counts: dict[str, int] = {}
         self._shutdown = threading.Event()
         self._archive_lock = threading.RLock()
         self._notify_callback = notify
+
+    @property
+    def _active_job_id(self) -> str | None:
+        # Legacy callers without a job ID see one active project.
+        return next(iter(self._active_job_ids), None)
+
+    def _check_job_capacity(self, job_id: str | None = None) -> None:
+        if job_id in self._active_job_ids:
+            raise JobServiceError("this job is already active")
+        if len(self._active_job_ids) >= MAX_CONCURRENT_JOBS:
+            raise JobServiceError(f"최대 {MAX_CONCURRENT_JOBS}개 작업까지 동시에 실행할 수 있습니다.")
 
     def _notify(self, title: str, message: str) -> None:
         if self._notify_callback is None:
@@ -146,8 +160,7 @@ class JobService:
         selected_provider = self._validated_provider(provider)
         selected_model = self._validated_model(selected_provider, model)
         with self._lock:
-            if self._active_job_id is not None:
-                raise JobServiceError("another job is already active")
+            self._check_job_capacity()
             job = self._create_job(
                 selected_provider,
                 selected_model,
@@ -158,14 +171,14 @@ class JobService:
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
             self._operation_counts[job.id] = 1
-            self._active_job_id = job.id
-            self._worker = threading.Thread(
+            self._active_job_ids.add(job.id)
+            self._workers[job.id] = threading.Thread(
                 target=self._run_job_guarded,
                 args=(job.id,),
                 daemon=True,
                 name=f"reels-analyze-{job.id[:8]}",
             )
-            self._worker.start()
+            self._workers[job.id].start()
             return job
 
     def run_youtube_job_sync(
@@ -182,8 +195,7 @@ class JobService:
         selected_provider = self._validated_provider(provider)
         selected_model = self._validated_model(selected_provider, model)
         with self._lock:
-            if self._active_job_id is not None:
-                raise JobServiceError("another job is already active")
+            self._check_job_capacity()
             job = self._create_job(
                 selected_provider,
                 selected_model,
@@ -194,37 +206,35 @@ class JobService:
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
             self._operation_counts[job.id] = 1
-            self._active_job_id = job.id
+            self._active_job_ids.add(job.id)
         self._run_job_guarded(job.id)
         return self.store.load(job.id)
 
     def start_selected_generation(self, job_id: str, candidate_ids: list[str]) -> Job:
         with self._lock:
-            if self._active_job_id is not None:
-                raise JobServiceError("another job is already active")
+            self._check_job_capacity(job_id)
             job = self._prepare_selected_generation(job_id, candidate_ids)
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
             self._operation_counts[job.id] = 1
-            self._active_job_id = job.id
-            self._worker = threading.Thread(
+            self._active_job_ids.add(job.id)
+            self._workers[job.id] = threading.Thread(
                 target=self._run_generation_guarded,
                 args=(job.id,),
                 daemon=True,
                 name=f"reels-generate-{job.id[:8]}",
             )
-            self._worker.start()
+            self._workers[job.id].start()
             return job
 
     def generate_selected_sync(self, job_id: str, candidate_ids: list[str]) -> Job:
         with self._lock:
-            if self._active_job_id is not None:
-                raise JobServiceError("another job is already active")
+            self._check_job_capacity(job_id)
             job = self._prepare_selected_generation(job_id, candidate_ids)
             self._cancel_events[job.id] = threading.Event()
             self._process_registries[job.id] = ProcessRegistry()
             self._operation_counts[job.id] = 1
-            self._active_job_id = job.id
+            self._active_job_ids.add(job.id)
         self._run_generation_guarded(job.id)
         return self.store.load(job.id)
 
@@ -245,8 +255,6 @@ class JobService:
 
     def open_job(self, job_id: str) -> Job:
         with self._lock:
-            if self._active_job_id is not None:
-                raise JobServiceError("cannot open another project while a job is active")
             job = self.store.set_current(job_id)
             self._condition.notify_all()
             return job
@@ -285,7 +293,7 @@ class JobService:
     def delete_archive_item(self, job_id: str, storyline_id: str) -> None:
         """Delete one completed reel and its app-managed files."""
         with self._archive_lock, self._lock:
-            if self._active_job_id == job_id:
+            if job_id in self._active_job_ids:
                 raise JobServiceError("cannot delete a reel while its job is active")
             job = self.store.load(job_id)
             story = self._find_storyline(job, storyline_id)
@@ -417,10 +425,10 @@ class JobService:
             marker.unlink()
         directory.rmdir()
 
-    def wait_for_update(self, after_seq: int, timeout: float | None = None) -> Job | None:
+    def wait_for_update(self, after_seq: int, timeout: float | None = None, *, job_id: str | None = None) -> Job | None:
         with self._condition:
             def newer() -> Job | None:
-                job = self.snapshot()
+                job = self.snapshot(job_id)
                 return job if job is not None and job.seq > after_seq else None
 
             current = newer()
@@ -449,22 +457,18 @@ class JobService:
     def shutdown(self) -> None:
         self._shutdown.set()
         with self._lock:
-            active = self._active_job_id
-        if active is not None:
+            active_ids = list(self._active_job_ids)
+            workers = list(self._workers.values())
+        for job_id in active_ids:
             try:
-                self.cancel(active)
+                self.cancel(job_id)
             except JobServiceError:
                 pass
-        else:
-            for event in self._cancel_events.values():
-                event.set()
-            for registry in self._process_registries.values():
-                registry.terminate_all()
         with self._condition:
             self._condition.notify_all()
-        worker = self._worker
-        if worker and worker.is_alive():
-            worker.join(timeout=2)
+        for worker in workers:
+            if worker.is_alive():
+                worker.join(timeout=2)
 
     def select_variant(
         self,
@@ -593,6 +597,8 @@ class JobService:
                 segments=segments,
                 runner=managed_runner,
                 raw_dump=raw_dump,
+                channel_name=str(segments.get("source_channel") or ""),
+                source_url=source_url,
             )
             caption = instagram_caption.append_source_credit(
                 caption,
@@ -856,13 +862,44 @@ class JobService:
             merged_style(self.deps.load_style(self.style_path), self.config.style),
             job.episode_number,
         )
+        segments.setdefault("source_title", job.project_name or "")
+        candidate_id = (
+            job.selected_candidate_ids[storyline.index]
+            if storyline.index < len(job.selected_candidate_ids) else None
+        )
+        candidate = next((item for item in job.candidates if item.id == candidate_id), None)
+        fresh_runner = None
+        used_cached_response = False
+
+        def recovery_runner(prompt: str) -> str:
+            nonlocal fresh_runner, used_cached_response
+            if not used_cached_response:
+                used_cached_response = True
+                return raw
+            # Validation feedback needs a new response, not the same invalid
+            # cached JSON on every attempt.
+            if fresh_runner is None:
+                provider = job.provider or self.config.provider
+                fresh_runner = self.deps.build_runner(AppConfig(
+                    provider=provider,
+                    model=job.model or "",
+                    base_url=self.config.base_url if provider == self.config.provider else "",
+                ))
+            return fresh_runner(prompt)
+
         try:
             doc = self.deps.generate_script(
                 segments,
                 job.duration_s,
-                runner=lambda _prompt: raw,
+                runner=recovery_runner,
+                angle=candidate_analyzer.candidate_brief(candidate) if candidate else None,
                 raw_dump=raw_path,
                 speed=style.speed,
+                **({
+                    "min_duration_s": candidate_analyzer.MIN_DURATION_S,
+                    "max_duration_s": candidate_analyzer.MAX_DURATION_S,
+                    "fixed_title": storyline.title,
+                } if job.selected_candidate_ids else {}),
             )
         except RuntimeError as exc:
             with self._lock:
@@ -1613,12 +1650,37 @@ class JobService:
             with use_process_registry(registry):
                 return runner(prompt)
 
-        candidates = self.deps.analyze_candidates(
-            segments,
-            job.content_types,
-            runner=managed_runner,
-            raw_dump=work / "candidate_analysis_raw.txt",
-        )
+        cache_dir = self._source_cache_dir(job.source_url or "")
+        analysis_key = source_cache.fingerprint({
+            "version": 1,
+            "provider": cfg.provider, "model": cfg.model, "base_url": cfg.base_url,
+            "prompt": candidate_analyzer.build_candidate_prompt(segments, job.content_types),
+            "metadata": {key: segments.get(key) for key in
+                         ("source_title", "source_channel", "source_description")},
+        })
+        analysis_path = cache_dir / "analysis" / f"{analysis_key}.json"
+        with source_cache.locked(analysis_path.with_suffix(".lock"),
+                                 lambda: self._is_cancelled(job_id)):
+            candidates = None
+            try:
+                payload = json.loads(analysis_path.read_text(encoding="utf-8"))
+                available = {item["id"] for item in segments["segments"]}
+                if (isinstance(payload, list) and len(payload) == candidate_analyzer.CANDIDATE_COUNT
+                    and all(isinstance(item, dict) and item.get("segment_ids")
+                            and set(item["segment_ids"]) <= available for item in payload)):
+                    candidates = [ContentCandidate.from_dict(item) for item in payload]
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+            if candidates is None:
+                candidates = self.deps.analyze_candidates(
+                    segments, job.content_types, runner=managed_runner,
+                    raw_dump=work / "candidate_analysis_raw.txt",
+                )
+                self._raise_if_cancelled(job_id)
+                source_cache.write_json(analysis_path, [asdict(item) for item in candidates])
+            else:
+                self._set_job_progress(job_id, phase="analyzing", progress=0.95,
+                                       message="같은 자막·분석 조건의 저장된 후보를 재사용합니다.")
         with self._lock:
             job = self.store.load(job_id)
             if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
@@ -1704,6 +1766,8 @@ class JobService:
         )
         # 의존성을 대체한 호출 경로까지 포함해 렌더 직전 한 번 더 정규화한다.
         # 함수는 멱등이므로 기본 candidate_analyzer 경로와 중복 호출해도 안전하다.
+        self.deps.enrich_speakers(results, segments, cache_path=work / "speaker_lookup.json")
+        self._raise_if_cancelled(job_id)
         harmonize_speaker_metadata(results)
         with self._lock:
             job = self.store.load(job_id)
@@ -1778,7 +1842,16 @@ class JobService:
             ),
         )
 
+    def _source_cache_dir(self, source_url: str) -> Path:
+        identity = youtube.video_id_from_url(source_url) or source_url
+        return self.store.root / ".source-cache" / source_cache.fingerprint(identity)
+
     def _prepare_youtube_source(self, job_id: str, job: Job) -> youtube.YouTubeSource:
+        cache_dir = self._source_cache_dir(job.source_url or "")
+        with source_cache.locked(cache_dir / ".transcript.lock", lambda: self._is_cancelled(job_id)):
+            return self._prepare_youtube_source_locked(job_id, job)
+
+    def _prepare_youtube_source_locked(self, job_id: str, job: Job) -> youtube.YouTubeSource:
         source_url = job.source_url
         if not source_url:
             raise JobServiceError("YouTube URL이 비어 있습니다.")
@@ -1789,8 +1862,8 @@ class JobService:
                 phase="transcript",
                 progress=0.17,
                 message=(
-                    "기존에 저장된 YouTube 영상과 원문 자막을 재사용합니다. "
-                    f"다운로드를 건너뛰었습니다. · {cached.transcript_language} {cached.transcript_kind}"
+                    "저장된 원문 자막을 재사용합니다. "
+                    f"자막 다운로드를 건너뛰었습니다. · {cached.transcript_language} {cached.transcript_kind}"
                 ),
             )
             self._save_youtube_transcript_metadata(job_id, cached)
@@ -1799,7 +1872,7 @@ class JobService:
             job_id,
             phase="downloading",
             progress=0.04,
-            message="YouTube 영상을 이 Mac으로 다운로드하는 중입니다.",
+            message="YouTube 자막만 다운로드하는 중입니다. 영상은 후보 선택 후 준비합니다.",
         )
         last_reported = -1.0
 
@@ -1836,11 +1909,35 @@ class JobService:
 
         source = self.deps.download_youtube_source(
             source_url,
-            self.store.job_dir(job_id) / "source",
+            self._source_cache_dir(source_url),
+            transcript_only=True,
             progress_cb=on_download_progress,
             progress_detail_cb=on_download_progress_detail,
             cancelled=lambda: self._is_cancelled(job_id),
         )
+        cache_dir = self._source_cache_dir(source_url)
+        # Keep independent cache files so deleting a job cannot invalidate other tabs.
+        if source.video_path.is_file() and source.video_path.parent != cache_dir:
+            cached_video = cache_dir / ("source" + source.video_path.suffix)
+            shutil.copy2(source.video_path, cached_video)
+            source = replace(source, video_path=cached_video)
+        if source.transcript_path.parent != cache_dir:
+            cached_transcript = cache_dir / source.transcript_path.name
+            shutil.copy2(source.transcript_path, cached_transcript)
+            source = replace(source, transcript_path=cached_transcript)
+        cached_segments = {**source.segments,
+                           "video_path": str(source.video_path),
+                           "transcript_language": source.transcript_language,
+                           "transcript_kind": source.transcript_kind}
+        cached_segments.setdefault("source_title", source.title)
+        cached_segments.setdefault("source_channel", "")
+        cached_segments.setdefault("source_description", "")
+        source_cache.write_json(cache_dir / "segments.json", cached_segments)
+        info_path = cache_dir / "source.info.json"
+        if not info_path.is_file():
+            source_cache.write_json(info_path, {"id": source.video_id, "title": source.title,
+                                                "thumbnail": source.thumbnail_url})
+        source = replace(source, segments=cached_segments)
         self._raise_if_cancelled(job_id)
         self._set_job_progress(
             job_id,
@@ -1856,6 +1953,11 @@ class JobService:
 
     def _find_cached_youtube_source(self, job_id: str, source_url: str) -> youtube.YouTubeSource | None:
         requested_video_id = youtube.video_id_from_url(source_url)
+        cache_dir = self._source_cache_dir(source_url)
+        shared = youtube.load_cached_youtube_source(cache_dir, source_url,
+                    expected_video_id=requested_video_id, transcript_only=True)
+        if shared is not None:
+            return shared
         for candidate in self.store.list_recent(limit=1000):
             if candidate.id == job_id or not candidate.source_url:
                 continue
@@ -1873,7 +1975,21 @@ class JobService:
                 fallback_title=candidate.project_name or "YouTube 인터뷰",
             )
             if cached is not None:
-                return cached
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                for path in cached.transcript_path.parent.iterdir():
+                    if path.is_file() and (path.name.startswith("source.") or
+                                           path.name in {"segments.json", "transcript.txt"}):
+                        target = cache_dir / path.name
+                        if not target.exists():
+                            if path.suffix.lower() in {".mp4", ".webm", ".mkv", ".mov", ".m4v"}:
+                                try:
+                                    os.link(path, target)
+                                except OSError:
+                                    shutil.copy2(path, target)
+                            else:
+                                shutil.copy2(path, target)
+                return youtube.load_cached_youtube_source(cache_dir, source_url,
+                    expected_video_id=requested_video_id, transcript_only=True)
         return None
 
     @staticmethod
@@ -1944,7 +2060,22 @@ class JobService:
         )
         try:
             self._raise_if_cancelled(job_id)
+            self.deps.enrich_speakers(
+                [result], segments,
+                cache_path=self.store.job_dir(job_id) / "speaker_lookup.json",
+            )
+            self._raise_if_cancelled(job_id)
             sdir = self.store.job_dir(job_id) / story_id
+            if not video.is_file():
+                source_job = self.store.load(job_id)
+                self._set_storyline_render_progress(job_id, story_id, progress=0.30,
+                    status=Status.RENDERING_BASE,
+                    detail="대본에 필요한 영상·오디오 구간만 다운로드하는 중입니다.")
+                video, segments = self.deps.prepare_selected_source(
+                    source_job.source_url or "", segments, result.doc,
+                    self._source_cache_dir(source_job.source_url or ""),
+                    cancelled=lambda: self._is_cancelled(job_id),
+                )
             self._write_storyline_outputs_once(sdir, result.doc, segments, speed)
             self._raise_if_cancelled(job_id)
             self._set_storyline_render_progress(
@@ -2257,8 +2388,16 @@ class JobService:
         segments: dict[str, Any],
         speed: float,
     ) -> None:
-        if not (sdir / "edl.json").is_file():
+        edl_path = sdir / "edl.json"
+        if not edl_path.is_file():
             self.deps.write_outputs(sdir, doc, segments)
+        else:
+            persisted = json.loads(edl_path.read_text(encoding="utf-8"))
+            if persisted.get("speaker") != doc.get("speaker"):
+                persisted["speaker"] = doc.get("speaker")
+                tmp = edl_path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(persisted, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(tmp, edl_path)
         if not (sdir / "reel.srt").is_file():
             ordered = edl.ordered_segments(doc, segments)
             groups = render.group_captions(
@@ -2383,10 +2522,9 @@ class JobService:
     @contextmanager
     def _job_operation(self, job_id: str):
         with self._lock:
-            active = self._active_job_id
-            if active is not None and active != job_id:
-                raise JobServiceError("another job is already active")
-            self._active_job_id = job_id
+            if job_id not in self._active_job_ids:
+                self._check_job_capacity()
+            self._active_job_ids.add(job_id)
             self._operation_counts[job_id] = self._operation_counts.get(job_id, 0) + 1
             registry = self._process_registries.setdefault(job_id, ProcessRegistry())
         try:
@@ -2402,8 +2540,8 @@ class JobService:
             self._operation_counts[job_id] = remaining
             return
         self._operation_counts.pop(job_id, None)
-        if self._active_job_id == job_id:
-            self._active_job_id = None
+        self._active_job_ids.discard(job_id)
+        self._workers.pop(job_id, None)
         self._process_registries.pop(job_id, None)
 
 

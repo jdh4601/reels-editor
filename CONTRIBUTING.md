@@ -41,6 +41,7 @@ cd desktop/ui
 npm run typecheck
 npm run build
 npm run test:dashboard   # only needed for dashboard layout changes
+npm run test:parallel    # desktop tabs and three concurrent jobs
 ```
 
 `npm run test:dashboard` drives the real dashboard with Playwright at three
@@ -83,3 +84,11 @@ Match the surrounding code rather than importing a new style.
 
 Include the version (`git rev-parse --short HEAD`), your macOS and Python
 version, and the exact error. Strip API keys out of anything you paste.
+
+`npm run test:parallel` builds the packaged UI and connects Chrome/Chromium to a
+real local FastAPI job service. External YouTube, AI, and render calls use test
+substitutes. It checks independent URLs and candidate selections, simultaneous
+rendering, the three-job limit, scoped WebSocket updates, tab reset/close, and
+compact desktop layout. Screenshots go to `desktop/ui/test-results/parallel-*.png`.
+If Playwright Chromium is unavailable, use an installed Chrome with
+`REELS_TEST_BROWSER_CHANNEL=chrome npm run test:parallel`.

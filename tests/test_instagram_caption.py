@@ -5,11 +5,10 @@ from reels_editor import instagram_caption
 
 def _valid_caption(episode: int = 2) -> str:
     return (
-        f"Ep {episode}. 광고 없이 첫 고객을 만든 가장 작은 실험\n\n"
-        "이 창업가는 제품을 완성한 뒤 고객을 찾지 않았습니다. 해결하려는 문제가 실제로 존재하는지 확인하기 위해 가장 가까운 잠재 고객부터 직접 만났습니다. 거창한 출시보다 대화가 먼저였습니다.\n\n"
-        "첫 고객은 광고 예산에서 나오지 않았습니다. 반복해서 들리는 불편을 정리하고, 그중 비용을 지불할 만큼 큰 문제 하나에 집중한 결과였습니다. 기능을 더하는 대신 구매 이유를 선명하게 만들었습니다.\n\n"
-        "1인 창업가에게 중요한 것은 많은 사람에게 알리는 속도보다 누구의 어떤 문제를 해결하는지 확인하는 순서입니다. 작은 인터뷰와 유료 제안은 제품 개발과 마케팅을 동시에 검증하는 가장 현실적인 방법이 될 수 있습니다.\n\n"
-        "여러분은 지금 제품을 설명하고 있나요, 아니면 고객이 돈을 내고 해결하고 싶은 문제를 확인하고 있나요?\n\n"
+        f"Ep {episode}. 광고 없이 첫 고객을 만든 실험\n\n"
+        "마루 창업자 김대표는 제품보다 고객 대화가 먼저라고 말한다.\n\n"
+        "반복되는 불편 중 돈을 낼 문제 하나를 찾는 것이 핵심이다.\n\n"
+        "고객은 어떤 문제에 돈을 내는가?\n"
         f"{instagram_caption.CTA}"
     )
 
@@ -34,7 +33,9 @@ def test_build_prompt_contains_only_reel_evidence() -> None:
     assert "Ep 2." in prompt
     assert "광고보다 문제 검증이 먼저다" in prompt
     assert "첫 고객을 직접 만났습니다" in prompt
-    assert "Comfrt나 수치·사실은 절대 가져오지 않는다" in prompt
+    assert "300자 이내" in prompt
+    assert "정확히 3문단" in prompt
+    assert "~한다." in prompt
 
 
 def test_generate_caption_returns_grounded_valid_format() -> None:
@@ -83,3 +84,51 @@ def test_append_source_credit_adds_normalized_channel_and_url_as_last_line() -> 
     assert caption.endswith("원본 출처: Y Combinator https://youtu.be/abc123")
     assert caption.splitlines()[-1] == "원본 출처: Y Combinator https://youtu.be/abc123"
     assert caption.count("원본 출처:") == 1
+
+
+def test_rejects_old_polite_style_and_extra_paragraphs() -> None:
+    assert instagram_caption.validate_caption(_valid_caption().replace("말한다.", "말합니다."), 2)
+    assert instagram_caption.validate_caption(_valid_caption().replace("핵심이다.", "핵심이다.\n\n추가 문단이다."), 2)
+
+
+def test_rejects_long_question() -> None:
+    caption = _valid_caption().replace("고객은 어떤 문제에 돈을 내는가?", "지금 당신의 사업에서 고객이 돈을 내고 해결하고 싶은 문제는 무엇인가?")
+    assert any("질문이 30자" in error for error in instagram_caption.validate_caption(caption, 2))
+
+
+def test_source_credit_counts_toward_300_character_limit() -> None:
+    import pytest
+    with pytest.raises(ValueError, match="출처 포함"):
+        instagram_caption.append_source_credit("가" * 280, channel_name="채널", source_url="https://youtu.be/abc123")
+
+
+def test_generation_reserves_source_budget_and_requires_company() -> None:
+    prompts = []
+    def runner(prompt):
+        prompts.append(prompt)
+        return _valid_caption()
+    caption = instagram_caption.generate_caption(
+        episode_number=2, selected_title="첫 고객", candidate=None,
+        doc={"speaker": {"name": "김대표", "company": "마루", "role": "창업자",
+                         "evidence": "마루 창업자 김대표"}},
+        segments={"segments": []}, runner=runner,
+        channel_name="Y Combinator", source_url="https://youtu.be/abc123")
+    full = instagram_caption.append_source_credit(caption, channel_name="Y Combinator", source_url="https://youtu.be/abc123")
+    assert len(full) <= 300
+    assert "마루 창업자" in prompts[0]
+    budget = 300 - len("\n\n원본 출처: Y Combinator https://youtu.be/abc123")
+    assert f"출력은 최대 {budget}자" in prompts[0]
+
+
+def test_generation_retries_when_company_is_missing() -> None:
+    calls = []
+    def runner(prompt):
+        calls.append(prompt)
+        return _valid_caption().replace("마루 창업자", "창업자") if len(calls) == 1 else _valid_caption()
+    instagram_caption.generate_caption(
+        episode_number=2, selected_title="첫 고객", candidate=None,
+        doc={"speaker": {"name": "김대표", "company": "마루", "role": "창업자",
+                         "evidence": "마루 창업자 김대표"}},
+        segments={"segments": []}, runner=runner)
+    assert len(calls) == 2
+    assert "기업명이 빠짐" in calls[1]

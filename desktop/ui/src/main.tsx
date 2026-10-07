@@ -20,6 +20,8 @@ import {
   MessageSquareText,
   NotebookPen,
   Pencil,
+  Plus,
+  X,
   RefreshCcw,
   Scissors,
   Settings2,
@@ -311,7 +313,7 @@ const EMPTY_SUMMARY = "YouTube 인터뷰 링크를 넣으면 클립 후보와 �
 const ACTIVE_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay", "exporting"]);
 const GENERATION_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay"]);
 const GENERATION_STAGES = [
-  { label: "영상 다운로드" },
+  { label: "자막 다운로드" },
   { label: "자막 정리" },
   { label: "후보·제목 생성" },
   { label: "릴스 대본 생성" },
@@ -738,7 +740,7 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
   }
 
   return {
-    jobId: payload.job_id ?? payload.jobId ?? "active-job",
+    jobId: (payload.job_id ?? payload.jobId ?? "active-job") || "empty",
     jobStatus: payload.status ?? "idle",
     jobPhase: payload.phase ?? null,
     jobProgress: progressPercent(payload.progress),
@@ -787,7 +789,8 @@ function isHeartbeat(payload: EventPayload): payload is { event: "heartbeat"; se
   return "event" in payload && payload.event === "heartbeat";
 }
 
-async function readSnapshot(): Promise<Snapshot> {
+async function readSnapshot(jobId?: string | null): Promise<Snapshot> {
+  if (jobId === "empty") return makeEmptySnapshot("connected");
   const demo = isDemoMode();
   if (demo) {
     try {
@@ -802,7 +805,7 @@ async function readSnapshot(): Promise<Snapshot> {
     return makeDemoSnapshot();
   }
 
-  const snapshotResponse = await apiFetch("/api/snapshot");
+  const snapshotResponse = await apiFetch("/api/snapshot", undefined, { job_id: jobId });
   if (!snapshotResponse.ok) throw new Error("snapshot unavailable");
   return normalizeSnapshot((await snapshotResponse.json()) as ApiSnapshot);
 }
@@ -831,7 +834,71 @@ function Thumbnail({ src, alt, className }: { src: string; alt: string; classNam
   return <img className={className} src={src} alt={alt} onError={() => setFailed(true)} />;
 }
 
-function App() {
+const MAX_WORKSPACE_TABS = 3;
+
+type WorkspaceTab = { id: string; initialJobId?: string; label: string; status: JobStatus; busy: boolean };
+function TabbedApp() {
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([{ id: "workspace-1", label: "작업 1", status: "idle", busy: false }]);
+  const [activeTab, setActiveTab] = useState("workspace-1");
+  const updateTab = useCallback((id: string, next: Snapshot, busy: boolean) => {
+    setTabs((current) => current.map((tab) => tab.id === id ? {
+      ...tab, label: next.sourceUrl ? next.projectName : "새 작업", status: next.jobStatus, busy,
+    } : tab));
+  }, []);
+  function addTab() {
+    if (tabs.length >= MAX_WORKSPACE_TABS) return;
+    const id = `workspace-${crypto.randomUUID()}`;
+    setTabs((current) => current.length < MAX_WORKSPACE_TABS
+      ? [...current, { id, initialJobId: "empty", label: "새 작업", status: "idle", busy: false }]
+      : current);
+    setActiveTab(id);
+  }
+
+  function closeTab(tab: WorkspaceTab) {
+    if (tab.busy || tabs.length === 1) return;
+    setTabs((current) => current.filter((item) => item.id !== tab.id));
+    if (activeTab === tab.id) setActiveTab(tabs.find((item) => item.id !== tab.id)!.id);
+  }
+
+  return <>
+    <nav className="workspace-tabs" aria-label="릴스 작업 탭">
+      <div role="tablist" aria-label="병렬 작업 (최대 3개)">
+        {tabs.map((tab, index) => <div className="workspace-tab" key={tab.id}>
+          <button type="button" role="tab" id={`${tab.id}-tab`} aria-controls={`${tab.id}-panel`}
+            aria-selected={activeTab === tab.id} tabIndex={activeTab === tab.id ? 0 : -1}
+            title={tab.label} onClick={() => setActiveTab(tab.id)} onKeyDown={(event) => {
+              if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+              event.preventDefault();
+              const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+                : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+              setActiveTab(tabs[nextIndex].id);
+              document.getElementById(`${tabs[nextIndex].id}-tab`)?.focus();
+            }}>
+            {tab.busy ? <Loader2 size={14} className="spin" /> : tab.status === "ready" ? <CheckCircle2 size={14} /> : null}
+            <span>{index + 1}. {tab.label}</span>
+            <small>{tab.busy ? "처리 중" : tab.status === "awaiting_selection" ? "후보 선택" : tab.status === "failed" ? "실패" : tab.status === "ready" ? "완료" : "대기"}</small>
+          </button>
+          <button type="button" className="workspace-tab-close" aria-label={`작업 ${index + 1} 탭 닫기`}
+            disabled={tab.busy || tabs.length === 1} title={tab.busy ? "처리가 끝난 후 탭을 닫을 수 있습니다." : "탭 닫기"}
+            onClick={() => closeTab(tab)}><X size={14} /></button>
+        </div>)}
+      </div>
+      <button type="button" className="workspace-tab-add" disabled={tabs.length >= MAX_WORKSPACE_TABS} onClick={addTab}>
+        <Plus size={16} /> 새 탭 <small>{tabs.length}/{MAX_WORKSPACE_TABS}</small>
+      </button>
+    </nav>
+    {tabs.map((tab) => <div key={tab.id} role="tabpanel" id={`${tab.id}-panel`} aria-labelledby={`${tab.id}-tab`} hidden={activeTab !== tab.id}>
+      <App tabId={tab.id} active={activeTab === tab.id} initialJobId={tab.initialJobId} onTabUpdate={updateTab} />
+    </div>)}
+  </>;
+}
+function App({ tabId, active, initialJobId, onTabUpdate }: {
+  tabId: string; active: boolean; initialJobId?: string;
+  onTabUpdate: (id: string, next: Snapshot, busy: boolean) => void;
+}) {
+  const initialJobIdRef = useRef(initialJobId);
+  const requestPendingRef = useRef(false);
+  const [requestPending, setRequestPending] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedExportIds, setSelectedExportIds] = useState<string[]>([]);
@@ -928,7 +995,7 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    readSnapshot()
+    readSnapshot(initialJobIdRef.current)
       .then((payload) => {
         if (!cancelled) applySnapshot(payload);
       })
@@ -986,23 +1053,25 @@ function App() {
   }, [archiveMode]);
 
   useEffect(() => {
-    if (pendingViewFocusRef.current !== appView) return;
+    if (!active || pendingViewFocusRef.current !== appView) return;
     const heading = appView === "archive" ? archiveHeadingRef.current : workspaceHeadingRef.current;
     if (!heading) return;
     heading.focus();
     pendingViewFocusRef.current = null;
-  }, [appView, snapshot?.jobId]);
+  }, [appView, snapshot?.jobId, active]);
 
   useEffect(() => {
-    if (isDemoMode()) return undefined;
+    if (isDemoMode() || !snapshot || snapshot.jobId === "empty") return undefined;
+    const connectionJobId = snapshot.jobId;
     let closedByEffect = false;
     let reconnectAttempt = 0;
     let reconnectTimer: number | undefined;
     let events: WebSocket | null = null;
 
     const connect = () => {
-      events = new WebSocket(wsUrl("/api/events", { after: eventSeqRef.current }));
+      events = new WebSocket(wsUrl("/api/events", { after: eventSeqRef.current, job_id: connectionJobId }));
       events.onmessage = (event) => {
+        if (closedByEffect || activeJobIdRef.current !== connectionJobId) return;
         reconnectAttempt = 0;
         try {
           const payload = JSON.parse(event.data) as EventPayload;
@@ -1013,6 +1082,7 @@ function App() {
             return;
           }
           const normalized = normalizeSnapshot(extractSnapshot(payload));
+          if (normalized.jobId !== connectionJobId) return;
           applySnapshot(archiveModeRef.current ? completedOnlySnapshot(normalized) : normalized);
         } catch {
           setLiveMessage("이벤트 메시지를 해석하지 못했습니다.");
@@ -1021,8 +1091,10 @@ function App() {
       events.onclose = () => {
         if (closedByEffect) return;
         setConnection("disconnected");
-        void readSnapshot()
-          .then((next) => applySnapshot(archiveModeRef.current ? completedOnlySnapshot(next) : next))
+        void readSnapshot(connectionJobId)
+          .then((next) => {
+            if (!closedByEffect && activeJobIdRef.current === connectionJobId) applySnapshot(archiveModeRef.current ? completedOnlySnapshot(next) : next);
+          })
           .catch(() => {
             setSnapshot((current) => current ?? makeEmptySnapshot("disconnected"));
           });
@@ -1040,16 +1112,20 @@ function App() {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       events?.close();
     };
-  }, [applySnapshot, eventConnectionVersion]);
+  }, [applySnapshot, eventConnectionVersion, snapshot?.jobId]);
 
   const storylines = snapshot?.storylines ?? [];
   const selectedStoryline = storylines.find((storyline) => storyline.id === selectedId) ?? null;
   const selectedExportStorylines = storylines.filter((storyline) => selectedExportIds.includes(storyline.id));
   const readySelected = selectedExportStorylines.length > 0
     && selectedExportStorylines.every((storyline) => storyline.status === "ready");
-  const jobBusy = ACTIVE_JOB_STATUSES.has(snapshot?.jobStatus ?? "idle") || storylines.some(
+  const jobBusy = requestPending || ACTIVE_JOB_STATUSES.has(snapshot?.jobStatus ?? "idle") || storylines.some(
     (storyline) => !storyline.serverId.startsWith("placeholder-") && ["queued", "rendering", "overlaying"].includes(storyline.status),
   );
+  useEffect(() => {
+    if (snapshot) onTabUpdate(tabId, snapshot, jobBusy);
+  }, [snapshot, jobBusy, tabId, onTabUpdate]);
+
   const canAnalyze = Boolean(snapshot?.sourceUrl) && !jobBusy;
   const candidateSelectionActive = snapshot?.jobStatus === "awaiting_selection";
   const generateLabel = jobBusy ? "처리 중" : "다시 분석";
@@ -1201,12 +1277,7 @@ function App() {
     if (!snapshot?.sourceUrl || jobBusy) return;
     setLiveMessage("현재 인터뷰 선택을 비웁니다.");
     try {
-      if (isDemoMode()) {
-        applySnapshot(makeEmptySnapshot("connected"));
-      } else {
-        const response = await apiMutation("/api/snapshot", { method: "DELETE" });
-        applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
-      }
+      applySnapshot(makeEmptySnapshot("connected"));
       setYoutubeUrl("");
       setLiveMessage("인터뷰 선택을 비웠습니다. 기존 작업 파일은 유지됩니다.");
     } catch {
@@ -1438,20 +1509,28 @@ function App() {
       setLiveMessage(message);
       return;
     }
-    setLiveMessage("YouTube 영상을 읽고 콘텐츠 후보 10개를 분석합니다.");
-    const response = await apiMutation("/api/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        youtube_url: normalized,
-        episode_number: episodeNumber,
-        content_types: ALL_CONTENT_TYPES,
-        provider: selectedProvider,
-        model: selectedModel,
-      }),
-    });
-    applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
-    setEventConnectionVersion((version) => version + 1);
+    if (requestPendingRef.current || jobBusy) return;
+    requestPendingRef.current = true;
+    setRequestPending(true);
+    try {
+      setLiveMessage("YouTube 영상을 읽고 콘텐츠 후보 10개를 분석합니다.");
+      const response = await apiMutation("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          youtube_url: normalized,
+          episode_number: episodeNumber,
+          content_types: ALL_CONTENT_TYPES,
+          provider: selectedProvider,
+          model: selectedModel,
+        }),
+      });
+      applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
+      setEventConnectionVersion((version) => version + 1);
+    } finally {
+      requestPendingRef.current = false;
+      setRequestPending(false);
+    }
   }
 
   function toggleCandidate(candidateId: string) {
@@ -1463,15 +1542,22 @@ function App() {
   }
 
   async function generateSelectedCandidates() {
-    if (!snapshot || !candidateSelectionActive || selectedCandidateIds.length === 0) return;
-    setLiveMessage(`선택한 후보 ${selectedCandidateIds.length}개의 릴스를 생성합니다.`);
-    const response = await apiMutation(`/api/jobs/${snapshot.jobId}/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ candidate_ids: selectedCandidateIds }),
-    });
-    applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
-    setEventConnectionVersion((version) => version + 1);
+    if (!snapshot || !candidateSelectionActive || selectedCandidateIds.length === 0 || requestPendingRef.current) return;
+    requestPendingRef.current = true;
+    setRequestPending(true);
+    try {
+      setLiveMessage(`선택한 후보 ${selectedCandidateIds.length}개의 릴스를 생성합니다.`);
+      const response = await apiMutation(`/api/jobs/${snapshot.jobId}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_ids: selectedCandidateIds }),
+      });
+      applySnapshot(normalizeSnapshot((await response.json()) as ApiSnapshot));
+      setEventConnectionVersion((version) => version + 1);
+    } finally {
+      requestPendingRef.current = false;
+      setRequestPending(false);
+    }
   }
 
   function submitYoutube(event: React.FormEvent<HTMLFormElement>) {
@@ -1628,12 +1714,13 @@ function App() {
     setExpandedDetailsId(opening ? storyline.id : null);
     if (opening) {
       window.requestAnimationFrame(() => {
-        document.getElementById(`${storyline.id}-details`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        document.getElementById(`${tabId}-${storyline.id}-details`)?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     }
   }
 
   useEffect(() => {
+    if (!active) { Object.values(videoRefs.current).forEach((video) => video?.pause()); return; }
     if (!selectedStoryline?.videoUrl || selectedStoryline.status !== "ready") return;
     setAudioNeedsGesture(false);
     const frame = window.requestAnimationFrame(() => {
@@ -1649,10 +1736,11 @@ function App() {
       });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [selectedStoryline?.id, selectedStoryline?.videoUrl, selectedStoryline?.status, soundEnabled]);
+  }, [selectedStoryline?.id, selectedStoryline?.videoUrl, selectedStoryline?.status, soundEnabled, active]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (!active) return;
       const target = event.target as HTMLElement | null;
       if (target?.matches("input, textarea, select, button, a, [contenteditable='true']")) return;
       const key = event.key.toLowerCase();
@@ -1683,7 +1771,7 @@ function App() {
     setConnection("connecting");
     setLiveMessage("백엔드에 다시 연결합니다.");
     try {
-      const next = await readSnapshot();
+      const next = await readSnapshot(activeJobIdRef.current);
       applySnapshot(archiveModeRef.current ? completedOnlySnapshot(next) : next);
     } catch {
       setConnection("disconnected");
@@ -1692,6 +1780,7 @@ function App() {
   }
 
   useEffect(() => {
+    if (!active) return;
     if (settingsOpen) {
       const firstControl = settingsFirstControlRef.current;
       if (firstControl && !firstControl.disabled) firstControl.focus();
@@ -1701,11 +1790,11 @@ function App() {
     if (!restoreSettingsFocusRef.current) return;
     restoreSettingsFocusRef.current = false;
     settingsTriggerRef.current?.focus();
-  }, [settingsOpen]);
+  }, [settingsOpen, active]);
 
   // 설정은 팝오버 안에서만 열리므로, 바깥을 누르거나 Esc를 눌러 닫는다.
   useEffect(() => {
-    if (!settingsOpen) return;
+    if (!active || !settingsOpen) return;
     function onOutsideClick(event: MouseEvent) {
       if (!settingsMenuRef.current?.contains(event.target as Node)) closeSettingsPopover();
     }
@@ -1721,7 +1810,7 @@ function App() {
       window.removeEventListener("click", onOutsideClick);
       window.removeEventListener("keydown", onEscape);
     };
-  }, [settingsOpen]);
+  }, [settingsOpen, active]);
 
   function SettingsPopover() {
     return (
@@ -1819,6 +1908,7 @@ function App() {
   }
 
   function onVideoPlay(id: string) {
+    if (!active) { videoRefs.current[id]?.pause(); return; }
     Object.entries(videoRefs.current).forEach(([otherId, video]) => {
       if (otherId !== id && video) video.pause();
     });
@@ -2027,13 +2117,13 @@ function App() {
       </div>
 
       {generationActive ? (
-        <section className="generation-progress" aria-labelledby="generation-progress-title" aria-live="polite">
+        <section className="generation-progress" aria-labelledby={`${tabId}-generation-progress-title`} aria-live="polite">
           <div className="generation-progress-heading">
             <div className="generation-progress-title">
               <span className="generation-progress-icon" aria-hidden="true"><Loader2 size={16} className="spin" /></span>
               <div>
                 <p>현재 단계 · {activeGenerationStage + 1}/{GENERATION_STAGES.length}</p>
-                <h2 id="generation-progress-title">{downloading ? (download ? downloadLabel : "다운로드 준비 중") : GENERATION_STAGES[activeGenerationStage].label}</h2>
+                <h2 id={`${tabId}-generation-progress-title`}>{downloading ? (download ? downloadLabel : "자막 다운로드") : GENERATION_STAGES[activeGenerationStage].label}</h2>
               </div>
             </div>
             <div className="generation-progress-summary">
@@ -2056,7 +2146,7 @@ function App() {
             <span style={{ width: `${visibleProgress ?? 0}%` }} />
           </div>
           {snapshot.jobMessage ? <p className="generation-progress-detail">{snapshot.jobMessage}</p> : null}
-          {downloading ? <p className="generation-progress-note">영상과 오디오는 각각 0–100%로 표시됩니다. 다운로드 후 두 파일을 합칩니다.</p> : null}
+          {downloading ? <p className="generation-progress-note">자막을 먼저 분석합니다. 영상은 후보 선택 후 필요한 구간만 다운로드합니다.</p> : null}
         </section>
       ) : null}
 
@@ -2066,10 +2156,10 @@ function App() {
             <Thumbnail src={sourceThumbnailUrl} alt="입력한 YouTube 영상 썸네일" className="youtube-thumbnail" />
           ) : null}
           <div className="youtube-source-entry">
-            <label htmlFor="youtube-url" className="sr-only">창업가 인터뷰 YouTube 링크</label>
+            <label htmlFor={`${tabId}-youtube-url`} className="sr-only">창업가 인터뷰 YouTube 링크</label>
             <span aria-hidden="true"><Link size={17} /></span>
             <input
-              id="youtube-url"
+              id={`${tabId}-youtube-url`}
               type="url"
               inputMode="url"
               autoComplete="url"
@@ -2077,7 +2167,7 @@ function App() {
               value={youtubeUrl}
               disabled={jobBusy}
               aria-invalid={Boolean(youtubeError)}
-              aria-describedby="youtube-source-help"
+              aria-describedby={`${tabId}-youtube-source-help`}
               onChange={(event) => {
                 setYoutubeUrl(event.target.value);
                 setYoutubeError(null);
@@ -2088,10 +2178,10 @@ function App() {
               {jobBusy ? "분석 중" : "후보 10개 분석"}
             </button>
           </div>
-          <label className="episode-field" htmlFor="episode-number">
+          <label className="episode-field" htmlFor={`${tabId}-episode-number`}>
             <span>에피소드</span>
             <input
-              id="episode-number"
+              id={`${tabId}-episode-number`}
               type="number"
               inputMode="numeric"
               min="1"
@@ -2100,7 +2190,7 @@ function App() {
               disabled={jobBusy}
               aria-label="에피소드 번호"
               aria-invalid={!episodeValid}
-              aria-describedby="youtube-source-help"
+              aria-describedby={`${tabId}-youtube-source-help`}
               onChange={(event) => {
                 setEpisodeInput(event.target.value);
                 setYoutubeError(null);
@@ -2109,7 +2199,7 @@ function App() {
             <span className="episode-total">/ 1000</span>
           </label>
         </div>
-        {youtubeError ? <p id="youtube-source-help" className="youtube-source-help error">{youtubeError}</p> : null}
+        {youtubeError ? <p id={`${tabId}-youtube-source-help`} className="youtube-source-help error">{youtubeError}</p> : null}
       </form>
 
       {snapshot.jobStatus === "failed" && snapshot.jobError ? (
@@ -2120,11 +2210,11 @@ function App() {
       ) : null}
 
       {candidateSelectionActive ? (
-        <section className="candidate-workspace" aria-labelledby="candidate-workspace-title">
+        <section className="candidate-workspace" aria-labelledby={`${tabId}-candidate-workspace-title`}>
           <header className="candidate-workspace-header">
             <div>
               <p className="eyebrow">분석 완료 · 중복 제거됨</p>
-              <h2 id="candidate-workspace-title">만들고 싶은 릴스를 선택하세요</h2>
+              <h2 id={`${tabId}-candidate-workspace-title`}>만들고 싶은 릴스를 선택하세요</h2>
               <p>
                 선택한 후보만 제작하며, 선택 후 대본 생성과 렌더링까지 {remainingTimeLabel(estimatedRenderMinutes(selectedCandidateIds.length || 3) + 1)} 걸립니다.
               </p>
@@ -2156,7 +2246,7 @@ function App() {
             <span>{selectedCandidateIds.length > 0 ? `선택한 ${selectedCandidateIds.length}개만 제작합니다.` : "후보를 하나 이상 선택하세요."}</span>
             <button
               type="button"
-              disabled={selectedCandidateIds.length === 0}
+              disabled={jobBusy || selectedCandidateIds.length === 0}
               onClick={() => {
                 void generateSelectedCandidates().catch((error) => {
                   setLiveMessage(error instanceof Error ? error.message : "릴스 생성 요청이 실패했습니다.");
@@ -2187,8 +2277,8 @@ function App() {
           const titleChanged = titleDraft.upper.trim() !== storyline.titleUpper
             || titleDraft.lower.trim() !== storyline.titleLower;
           return (
-            <article className={selectedForExport ? "reel-card selected-reel" : "reel-card"} key={storyline.id} aria-labelledby={`${storyline.id}-title`}>
-              <h2 id={`${storyline.id}-title`} className="sr-only">{storyline.hook}</h2>
+            <article className={selectedForExport ? "reel-card selected-reel" : "reel-card"} key={storyline.id} aria-labelledby={`${tabId}-${storyline.id}-title`}>
+              <h2 id={`${tabId}-${storyline.id}-title`} className="sr-only">{storyline.hook}</h2>
 
               <div className="deck-stage">
                 <button type="button" className="deck-arrow previous" aria-label="이전 릴스" disabled={selectedStorylineIndex === 0} onClick={() => moveToStoryline(-1)}>
@@ -2198,7 +2288,7 @@ function App() {
                   {storyline.videoUrl ? (
                     <video
                       ref={(node) => { videoRefs.current[storyline.id] = node; }}
-                      autoPlay
+                      autoPlay={active}
                       loop
                       muted={!soundEnabled || audioNeedsGesture}
                       playsInline
@@ -2229,7 +2319,7 @@ function App() {
                   ) : null}
                   {storyline.status !== "ready" ? (
                     <div className="render-overlay" aria-live="polite">
-                      {storyline.status === "failed" ? "렌더 실패" : `${storyline.progress}%`}
+                      {storyline.status === "failed" ? "클립 생성 실패" : `${storyline.progress}%`}
                     </div>
                   ) : null}
                   <span className="reel-position" aria-label={`현재 릴스 ${selectedStorylineIndex + 1}, 전체 ${storylines.length}`}>
@@ -2250,13 +2340,13 @@ function App() {
                 <span><kbd>Enter</kbd> 내보내기</span>
               </div>
 
-              <button type="button" className="details-toggle" aria-expanded={detailsOpen} aria-controls={`${storyline.id}-details`} onClick={() => toggleDetails(storyline)}>
+              <button type="button" className="details-toggle" aria-expanded={detailsOpen} aria-controls={`${tabId}-${storyline.id}-details`} onClick={() => toggleDetails(storyline)}>
                 <Pencil size={16} /> {detailsOpen ? "수정 내용 접기" : "제목·캡션·시나리오 수정하기"}
                 {detailsOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
               </button>
 
               {detailsOpen ? (
-                <div className="reel-details" id={`${storyline.id}-details`}>
+                <div className="reel-details" id={`${tabId}-${storyline.id}-details`}>
                   <section className="story-structure" aria-label={`${storyline.label} 시나리오`}>
                     <div className="story-structure-heading">
                       <strong>시나리오</strong>
@@ -2283,11 +2373,11 @@ function App() {
                       <div className="title-editor-controls">
                         <div className="title-editor-fields">
                           {([{ key: "upper", label: "첫 번째 제목", tone: "흰색" }, { key: "lower", label: "두 번째 제목", tone: "주황색" }] as const).map(({ key, label, tone }) => (
-                            <label className={`title-editor-field ${key}`} key={key} htmlFor={`${storyline.id}-title-${key}`}>
+                            <label className={`title-editor-field ${key}`} key={key} htmlFor={`${tabId}-${storyline.id}-title-${key}`}>
                               <span><i aria-hidden="true" />{label}<small>{tone}</small></span>
-                              <input id={`${storyline.id}-title-${key}`} type="text" value={titleDraft[key]}
+                              <input id={`${tabId}-${storyline.id}-title-${key}`} type="text" value={titleDraft[key]}
                                 disabled={titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating"}
-                                aria-invalid={Boolean(titleErrors[storyline.id])} aria-describedby={`${storyline.id}-title-help`}
+                                aria-invalid={Boolean(titleErrors[storyline.id])} aria-describedby={`${tabId}-${storyline.id}-title-help`}
                                 onChange={(event) => {
                                   const nextDraft = { ...titleDraft, [key]: event.target.value };
                                   setTitleDrafts((current) => ({ ...current, [storyline.id]: nextDraft }));
@@ -2306,7 +2396,7 @@ function App() {
                           </button>
                         </div>
                       </div>
-                      <p id={`${storyline.id}-title-help`} className={titleErrors[storyline.id] ? "title-editor-help error" : titleStates[storyline.id] === "saved" ? "title-editor-help success" : "title-editor-help"} role={titleErrors[storyline.id] ? "alert" : "status"}>
+                      <p id={`${tabId}-${storyline.id}-title-help`} className={titleErrors[storyline.id] ? "title-editor-help error" : titleStates[storyline.id] === "saved" ? "title-editor-help success" : "title-editor-help"} role={titleErrors[storyline.id] ? "alert" : "status"}>
                         {titleErrors[storyline.id] ?? (titleStates[storyline.id] === "saving" ? "제목 오버레이를 다시 렌더링합니다." : titleStates[storyline.id] === "saved" ? "수정 내용이 영상에 반영되었습니다." : "두 문구가 영상의 흰색·주황색 제목에 반영됩니다.")}
                       </p>
                     </div>
@@ -2342,7 +2432,7 @@ function App() {
                     {noteStates[storyline.id] === "error" ? <p className="caption-error" role="alert">{noteErrors[storyline.id] ?? "iCloud 메모에 저장하지 못했습니다."}</p> : null}
                   </section>
 
-                  {storyline.status === "failed" && !archiveMode ? <button type="button" disabled={jobBusy} onClick={() => rerenderStoryline(storyline)}><RefreshCcw size={15} /> 리렌더링</button> : null}
+                  {storyline.status === "failed" && !archiveMode ? <button type="button" disabled={jobBusy} onClick={() => rerenderStoryline(storyline)}><RefreshCcw size={15} /> 다시 시도</button> : null}
                   {storyline.error ? <p className="lane-error" role="alert">{storyline.error}</p> : null}
                 </div>
               ) : null}
@@ -2356,4 +2446,4 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<TabbedApp />);

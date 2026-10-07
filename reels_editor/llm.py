@@ -79,7 +79,7 @@ def _claude_cli_runner(model: str) -> Callable[[str], str]:
     return run
 
 
-def _codex_cli_runner(model: str) -> Callable[[str], str]:
+def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str], str]:
     def run(prompt: str) -> str:
         with tempfile.TemporaryDirectory(prefix="reels-codex-") as tmp:
             output_path = Path(tmp) / "last-message.txt"
@@ -87,10 +87,12 @@ def _codex_cli_runner(model: str) -> Callable[[str], str]:
                 *codex_cli_args(model), "-C", tmp,
                 "--output-last-message", str(output_path), "-",
             ]
+            if web_search:
+                args[2:2] = ["-c", 'web_search="live"']
             try:
                 result = processes.run(
                     args, input=prompt, capture_output=True, text=True,
-                    timeout=TIMEOUT_S,
+                    timeout=180 if web_search else TIMEOUT_S,
                 )
             except subprocess.TimeoutExpired as e:
                 raise RuntimeError(f"codex exec 타임아웃({TIMEOUT_S}초): {e}") from e
@@ -173,3 +175,8 @@ def build_runner(cfg: AppConfig,
             f"{cfg.provider} API 키가 없습니다 — 환경변수 또는 게이트 설정에서 입력하세요.")
     from reels_editor.llm_http import openai_chat_runner  # Task 4
     return openai_chat_runner(base_url, key, model)
+
+
+def build_speaker_search_runner() -> Callable[[str], str]:
+    """Use the installed Codex CLI with live web search for identity lookup."""
+    return _codex_cli_runner("", web_search=True)

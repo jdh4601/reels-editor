@@ -188,6 +188,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         return f"Ep {kwargs['episode_number']}. 첫 고객을 만든 방법\n\n맥락\n\n전략\n\n교훈\n\n여러분은 무엇을 먼저 검증하고 있나요?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
 
     return JobServiceDeps(
+        enrich_speakers=lambda *_args, **_kwargs: None,
         analyze_candidates=lambda _segments, _types, **_kwargs: _candidates(),
         generate_selected_candidates=lambda _segments, candidates, **_kwargs: _count_generate(
             calls,
@@ -874,7 +875,7 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
             total_bytes=100 * 1024 * 1024,
         ))
         download_args["progress_snapshot"] = json.loads(
-            (output_dir.parent / "job.json").read_text(encoding="utf-8")
+            (service.store.job_dir(service.store.current_job().id) / "job.json").read_text(encoding="utf-8")
         )
         for percent in (80, 81):
             kwargs["progress_detail_cb"](DownloadProgress(
@@ -885,7 +886,7 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
                 total_bytes=100 * 1024 * 1024,
             ))
         download_args["audio_snapshot"] = json.loads(
-            (output_dir.parent / "job.json").read_text(encoding="utf-8")
+            (service.store.job_dir(service.store.current_job().id) / "job.json").read_text(encoding="utf-8")
         )
         clock[0] += 2
         kwargs["progress_detail_cb"](DownloadProgress(
@@ -894,7 +895,7 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
             total_bytes=100 * 1024 * 1024, speed_bytes_per_second=3500,
         ))
         download_args["slow_snapshot"] = json.loads(
-            (output_dir.parent / "job.json").read_text(encoding="utf-8")
+            (service.store.job_dir(service.store.current_job().id) / "job.json").read_text(encoding="utf-8")
         )
         output_dir.mkdir(parents=True, exist_ok=True)
         segments = _segments(video)
@@ -920,10 +921,11 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     assert job.status is Status.READY
     assert job.source_url == "https://www.youtube.com/watch?v=abc123"
     assert job.project_name == "1시간 창업가 인터뷰"
-    assert job.input_path == str(video)
+    assert Path(job.input_path).read_bytes() == video.read_bytes()
     assert job.transcript_language == "ko"
     assert job.transcript_kind == "automatic"
-    assert download_args["output_dir"] == tmp_path / "jobs" / job.id / "source"
+    assert download_args["output_dir"] == service._source_cache_dir(job.source_url)
+    assert download_args["transcript_only"] is True
     assert download_args["progress_snapshot"]["progress"] == pytest.approx(0.085)
     assert download_args["progress_snapshot"]["message"] == (
         "YouTube 영상 다운로드 중 · 50% · 50MB / 100MB"
@@ -975,7 +977,8 @@ def test_youtube_job_reuses_complete_prior_download_for_same_video_id(tmp_path: 
 
     assert job.status is Status.READY
     assert job.project_name == "캐시된 창업가 인터뷰"
-    assert job.input_path == str(video)
+    assert Path(job.input_path).read_bytes() == video.read_bytes()
+    assert Path(job.input_path).parent == service._source_cache_dir(job.source_url)
     assert job.transcript_language == "en-orig"
     assert job.transcript_kind == "automatic"
     assert calls.generate == 1
@@ -1345,7 +1348,38 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
     assert story.edl_path is not None
 
 
-def test_cancel_marks_active_job_and_blocks_second_active_job(tmp_path: Path) -> None:
+
+def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_path: Path) -> None:
+    calls = Calls()
+    store = JobStore(tmp_path / "jobs")
+    fresh_prompts = []
+    doc = _doc("복구 성공")
+    def fresh_runner(prompt: str) -> str:
+        fresh_prompts.append(prompt)
+        return json.dumps(doc)
+    service = JobService(store=store, deps=replace(
+        _deps(tmp_path, calls), build_runner=lambda _cfg: fresh_runner))
+    work = store.job_dir("recover-fresh")
+    source = work / "source"
+    source.mkdir(parents=True)
+    video = source / "source.mp4"
+    video.write_bytes(b"cached-video")
+    segments = _segments(video)
+    segments["segments"][0]["source_end_us"] = 30_000_000
+    (source / "segments.json").write_text(json.dumps(segments))
+    (work / "llm_raw_s1.txt").write_text("invalid cached JSON")
+    job = Job(id="recover-fresh", input_path=str(video), duration_s=35,
+              n_storylines=1, status=Status.FAILED, selected_candidate_ids=["c1"],
+              storylines=[Storyline(id="s1", index=0, angle_name="원칙형",
+                          title="투자 손실보다 더 위험한 남 탓", status=Status.FAILED)])
+    store.save(job)
+    recovered = service.retry_storyline(job.id, "s1")
+    assert len(fresh_prompts) == 1
+    assert "JSON 파싱" in fresh_prompts[0]
+    assert recovered.status is Status.READY
+    assert recovered.storylines[0].title == job.storylines[0].title
+
+def test_cancel_marks_only_target_job_while_another_job_runs(tmp_path: Path) -> None:
     calls = Calls()
 
     def slow_analyze(*_args, **_kwargs):
@@ -1357,14 +1391,14 @@ def test_cancel_marks_active_job_and_blocks_second_active_job(tmp_path: Path) ->
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
     job = service.start_youtube_job(TEST_URL)
 
-    with pytest.raises(JobServiceError):
-        service.start_youtube_job("https://youtu.be/other")
+    other = service.start_youtube_job("https://youtu.be/other")
 
     cancelled = service.cancel(job.id)
     time.sleep(0.25)
 
     assert cancelled.status is Status.CANCELLED
     assert service.store.load(job.id).status is Status.CANCELLED
+    assert service.store.load(other.id).status is Status.AWAITING_SELECTION
 
 
 def test_cancelled_job_cannot_resume_after_new_job_replaces_active_slot(tmp_path: Path) -> None:
@@ -1384,13 +1418,9 @@ def test_cancelled_job_cannot_resume_after_new_job_replaces_active_slot(tmp_path
     assert entered_generate.wait(2)
     cancelled_a = service.cancel(job_a.id)
 
-    with pytest.raises(JobServiceError):
-        service.start_youtube_job("https://youtu.be/B")
+    job_b = service.start_youtube_job("https://youtu.be/B")
 
     release_generate.set()
-    time.sleep(0.25)
-
-    job_b = service.start_youtube_job("https://youtu.be/B")
     time.sleep(0.25)
 
     assert cancelled_a.status is Status.CANCELLED
@@ -1451,7 +1481,7 @@ def test_cancel_terminates_runner_process_spawned_inside_generation_thread(tmp_p
     assert subprocess.run(["ps", "-p", str(pid)], capture_output=True, text=True).returncode != 0
 
 
-def test_cancel_terminates_overlay_process_and_blocks_new_job_until_done(tmp_path: Path) -> None:
+def test_cancel_terminates_overlay_process_while_another_job_runs(tmp_path: Path) -> None:
     calls = Calls()
     pid_file = tmp_path / "overlay.pid"
     slow_overlay = threading.Event()
@@ -1500,8 +1530,7 @@ def test_cancel_terminates_overlay_process_and_blocks_new_job_until_done(tmp_pat
     assert pid_file.is_file()
     pid = int(pid_file.read_text(encoding="utf-8"))
 
-    with pytest.raises(JobServiceError):
-        service.start_youtube_job("https://youtu.be/B")
+    other = service.start_youtube_job("https://youtu.be/B")
 
     service.cancel(job.id)
     thread.join(timeout=3)
@@ -1551,8 +1580,9 @@ def test_overlay_completion_does_not_release_active_slot_while_base_renders_cont
 
     service.select_variant(job.id, "s1", subtitles_on=False)
 
-    with pytest.raises(JobServiceError, match="another job is already active"):
-        service.start_youtube_job("https://youtu.be/replacement")
+    assert job.id in service._active_job_ids
+    with pytest.raises(JobServiceError, match="this job is already active"):
+        service.start_selected_generation(job.id, ["c1"])
 
     service.cancel(job.id)
     release_remaining.set()
@@ -1606,3 +1636,217 @@ def test_subtitle_toggle_keeps_the_candidate_title(tmp_path: Path) -> None:
     assert story.subtitles_on is False
     assert story.variants[-1].title_text == "매출보다 먼저 무너진 것"
     assert set(calls.overlay_keywords) == {""}
+
+
+def test_rerender_persists_enriched_speaker_and_source(tmp_path: Path) -> None:
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
+    job = _run_ready(service, candidate_count=1)
+    def enrich(results, _segments, **_kwargs):
+        results[0].doc["speaker"] = {
+            "name": "검증된 화자", "company": "Test Company", "role": "창업자",
+            "evidence": "Verified Speaker is founder of Test Company.",
+            "source_url": "https://example.com/team",
+        }
+    service.deps = replace(deps, enrich_speakers=enrich)
+    rerendered = service.retry_storyline(job.id, "s1")
+    doc = json.loads(Path(rerendered.storylines[0].edl_path).read_text())
+    assert doc["speaker"]["source_url"] == "https://example.com/team"
+    assert calls.speaker_texts[-1] == "검증된 화자 (Test Company 창업자)"
+
+
+def test_three_urls_analyze_and_render_in_parallel_with_capacity_limit(tmp_path: Path) -> None:
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    analysis_barrier = threading.Barrier(4)
+    render_barrier = threading.Barrier(4)
+    release = threading.Event()
+    render_base = deps.render_base_and_assets
+
+    def analyze(*_args, **_kwargs):
+        analysis_barrier.wait(timeout=5)
+        assert release.wait(5)
+        return _candidates()
+
+    def render(*args, **kwargs):
+        render_barrier.wait(timeout=5)
+        assert release.wait(5)
+        return render_base(*args, **kwargs)
+
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=replace(
+        deps, analyze_candidates=analyze, render_base_and_assets=render,
+    ))
+    workers = []
+    try:
+        jobs = [service.start_youtube_job(f"https://youtu.be/source{i}", episode_number=i + 1) for i in range(3)]
+        workers = list(service._workers.values())
+        analysis_barrier.wait(timeout=5)  # All three analysis threads must arrive simultaneously.
+        assert len(service._active_job_ids) == 3
+        with pytest.raises(JobServiceError, match="최대 3개"):
+            service.start_youtube_job("https://youtu.be/fourth")
+        with pytest.raises(JobServiceError, match="this job is already active"):
+            service.start_selected_generation(jobs[0].id, ["c1"])
+        release.set()
+        for worker in workers:
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+        assert all(service.snapshot(job.id).status is Status.AWAITING_SELECTION for job in jobs)
+        release.clear()
+        for job in jobs:
+            service.start_selected_generation(job.id, ["c1"])
+        workers = list(service._workers.values())
+        render_barrier.wait(timeout=5)  # Real generation pipeline reaches all three renderers together.
+        assert len(service._active_job_ids) == 3
+        with pytest.raises(JobServiceError, match="최대 3개"):
+            service.start_youtube_job("https://youtu.be/fourth")
+        release.set()
+        for worker in workers:
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+        assert not service._active_job_ids
+        for index, job in enumerate(jobs):
+            result = service.snapshot(job.id)
+            assert result.status is Status.READY
+            assert result.episode_number == index + 1
+            assert result.source_url.endswith(f"source{index}")
+            assert len(result.storylines) == 1
+            assert Path(result.storylines[0].active_variant_path).is_relative_to(service.store.job_dir(job.id))
+        assert calls.base == 3
+    finally:
+        release.set()
+        service.shutdown()
+        for worker in workers:
+            worker.join(timeout=5)
+
+
+def test_scoped_updates_ignore_other_jobs_and_shutdown_cancels_all(tmp_path: Path) -> None:
+    calls = Calls()
+    release = threading.Event()
+    entered = threading.Barrier(4)
+
+    def analyze(*_args, **_kwargs):
+        entered.wait(timeout=5)
+        release.wait(5)
+        return _candidates()
+
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=replace(_deps(tmp_path, calls), analyze_candidates=analyze))
+    try:
+        jobs = [service.start_youtube_job(f"https://youtu.be/parallel{i}") for i in range(3)]
+        entered.wait(timeout=5)
+        first = service.snapshot(jobs[0].id)
+        with service._lock:
+            other = service.snapshot(jobs[1].id)
+            other.message = "only the second job changed"
+            service._save(other)
+        assert service.wait_for_update(first.seq, 0.01, job_id=first.id) is None
+        service.open_job(jobs[2].id)
+        assert service.snapshot(first.id).id == first.id
+        workers = list(service._workers.values())
+        shutdown_thread = threading.Thread(target=service.shutdown)
+        shutdown_thread.start()
+        deadline = time.monotonic() + 3
+        while not all(service.snapshot(job.id).status is Status.CANCELLED for job in jobs):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        release.set()
+        shutdown_thread.join(timeout=5)
+        assert not shutdown_thread.is_alive()
+        for worker in workers:
+            worker.join(timeout=5)
+        assert all(service.snapshot(job.id).status is Status.CANCELLED for job in jobs)
+        assert not service._active_job_ids
+    finally:
+        release.set()
+        service.shutdown()
+
+
+def test_one_parallel_analysis_failure_releases_only_its_slot(tmp_path: Path) -> None:
+    release = threading.Event()
+    entered = threading.Barrier(4)
+    deps = _deps(tmp_path, Calls())
+
+    def analyze(segments, *_args, **_kwargs):
+        entered.wait(timeout=5)
+        assert release.wait(5)
+        if segments["source_title"] == "broken":
+            raise RuntimeError("analysis failed for one source")
+        return _candidates()
+
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=replace(deps, analyze_candidates=analyze))
+    workers = []
+    try:
+        jobs = [service.start_youtube_job(f"https://youtu.be/{name}") for name in ["broken", "healthy1", "healthy2"]]
+        workers = list(service._workers.values())
+        entered.wait(timeout=5)
+        release.set()
+        for worker in workers:
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+        assert service.snapshot(jobs[0].id).status is Status.FAILED
+        assert all(service.snapshot(job.id).status is Status.AWAITING_SELECTION for job in jobs[1:])
+        assert not service._active_job_ids
+        service.deps = deps
+        replacement = service.run_youtube_job_sync("https://youtu.be/replacement")
+        assert replacement.status is Status.AWAITING_SELECTION
+    finally:
+        release.set()
+        service.shutdown()
+
+
+def test_transcript_first_shared_cache_deduplicates_tabs_and_survives_job_deletion(tmp_path: Path):
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    counts = {"download": 0, "analysis": 0, "sections": 0}
+    count_lock = threading.Lock()
+    def download(url, directory, **kwargs):
+        assert kwargs["transcript_only"] is True
+        with count_lock:
+            counts["download"] += 1
+        time.sleep(0.05)
+        directory.mkdir(parents=True, exist_ok=True)
+        transcript = directory / "source.ko.json3"
+        transcript.write_text("{}")
+        video = directory / "source.mp4"  # deliberately absent until selection
+        return YouTubeSource(video, _segments(video), "Interview", "abc123", url,
+                             transcript, "ko", "automatic")
+    def analyze(*args, **kwargs):
+        with count_lock:
+            counts["analysis"] += 1
+        time.sleep(0.05)
+        return _candidates()
+    def prepare(url, segments, doc, directory, **kwargs):
+        counts["sections"] += 1
+        assert doc["cuts"] and not Path(segments["video_path"]).exists()
+        video = directory / "selected.mp4"
+        video.write_bytes(b"selected-media")
+        return video, {**segments, "video_path": str(video)}
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=replace(deps,
+                         download_youtube_source=download, analyze_candidates=analyze,
+                         prepare_selected_source=prepare))
+    urls = ["https://youtu.be/abc123?si=one", "https://youtube.com/watch?v=abc123&t=2",
+            "https://youtube.com/shorts/abc123"]
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        jobs = list(pool.map(service.run_youtube_job_sync, urls))
+    assert all(job.status is Status.AWAITING_SELECTION for job in jobs)
+    assert counts == {"download": 1, "analysis": 1, "sections": 0}
+    assert all(not Path(job.input_path).exists() for job in jobs)
+    generated = service.generate_selected_sync(jobs[0].id, [jobs[0].candidates[0].id])
+    assert generated.status is Status.READY and counts["sections"] == 1
+    assert calls.base == 1
+    # Deleting old job folders does not remove the shared transcript or analysis.
+    import shutil
+    for job in jobs:
+        shutil.rmtree(service.store.job_dir(job.id))
+    repeated = service.run_youtube_job_sync(urls[0])
+    assert repeated.status is Status.AWAITING_SELECTION
+    assert counts["download"] == 1 and counts["analysis"] == 1
+    # A changed model, content type, or transcript must not hit stale AI results.
+    service.run_youtube_job_sync(urls[0], model="gpt-5.5")
+    service.run_youtube_job_sync(urls[0], content_types=["strategy"])
+    cache = service._source_cache_dir(urls[0]) / "segments.json"
+    payload = json.loads(cache.read_text())
+    payload["segments"][0]["text"] += " changed"
+    cache.write_text(json.dumps(payload))
+    service.run_youtube_job_sync(urls[0])
+    assert counts["download"] == 1 and counts["analysis"] == 4

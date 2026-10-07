@@ -209,8 +209,11 @@ def create_app(
         return {"path": dialogs.choose_save_file(request.suggested_name)}
 
     @app.get("/api/snapshot")
-    def snapshot(_auth: None = Depends(require_token)) -> dict[str, Any]:
-        return _snapshot_from_job(service.snapshot())
+    def snapshot(job_id: str | None = None, _auth: None = Depends(require_token)) -> dict[str, Any]:
+        try:
+            return _snapshot_from_job(service.snapshot(job_id) if job_id else service.snapshot())
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
 
     @app.delete("/api/snapshot")
     def clear_snapshot(_auth: None = Depends(require_token)) -> dict[str, Any]:
@@ -441,26 +444,26 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.websocket("/api/events")
-    async def events(websocket: WebSocket, after: int = 0, token: str | None = None) -> None:
+    async def events(websocket: WebSocket, after: int = 0, token: str | None = None, job_id: str | None = None) -> None:
         if token != app.state.session_token:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
         await websocket.accept()
         cursor = after
         try:
-            first = service.snapshot()
+            first = service.snapshot(job_id) if job_id else service.snapshot()
             if first and first.seq > cursor:
                 await websocket.send_json(_snapshot_from_job(first))
                 cursor = first.seq
             while True:
-                job = await asyncio.to_thread(service.wait_for_update, cursor, 25)
+                job = await asyncio.to_thread(service.wait_for_update, cursor, 25, job_id=job_id) if job_id else await asyncio.to_thread(service.wait_for_update, cursor, 25)
                 if job is None:
                     await websocket.send_json({"event": "heartbeat", "seq": cursor})
                     continue
                 payload = _snapshot_from_job(job)
                 cursor = int(payload.get("seq", cursor))
                 await websocket.send_json(payload)
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, FileNotFoundError):
             return
 
     @app.get("/api/media")

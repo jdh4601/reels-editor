@@ -119,12 +119,15 @@ Then start the app:
 
 ## Using it
 
+Use **New tab** (`새 탭`) to process up to three different YouTube URLs in parallel. Each tab retains its URL, episode number, candidate selections, and progress. Busy tabs can be closed after processing finishes.
+
 1. Paste the YouTube link to a long-form founder interview.
 2. Pick one or more reel types: story, strategy, failure analysis, principle.
-3. Click **후보 10개 분석** (Analyze 10 candidates). The app downloads the video
-   and transcript, then proposes ten non-overlapping ideas.
+3. Click **후보 10개 분석** (Analyze 10 candidates). The app downloads only the
+   transcript, then proposes ten non-overlapping ideas.
 4. Select the ones worth making and click **선택한 후보로 릴스 생성**
-   (Generate selected reels). Only your picks get rendered, at 20–40 seconds each.
+   (Generate selected reels). After the script is finalized, only its required video/audio sections are
+   downloaded and your picks are rendered at 20–40 seconds each.
 5. Review the finished reels with the arrow buttons or keyboard. Expand
    **제목·캡션·시나리오 수정하기** to edit the two-line on-screen title, request
    a new AI title, inspect the story beats, or generate an Instagram caption
@@ -215,9 +218,13 @@ refuse; Control-click the app in Finder and choose **Open**.
 | Configuration | `~/.config/reels-editor/config.yaml` |
 | Exported MP4 | A per-run folder under `~/Movies/Reels Editor Exports/` |
 
-Re-running the same video reuses the existing download. The video ID is what
-matters, so `youtu.be/…` and `watch?v=…` links to the same video will not
-download twice.
+Transcripts, downloaded sections and candidate analyses are shared in
+`jobs/.source-cache/`, keyed by video ID across URL variants and concurrent tabs.
+Analysis is reused only when the transcript, content types, provider, model,
+server URL and analysis prompt match. Selected scripts are generated anew.
+Previously downloaded full originals are reused without requesting sections.
+The shared cache survives job deletion; quit the app before removing
+`.source-cache/` to reclaim disk space.
 
 ## CLI
 

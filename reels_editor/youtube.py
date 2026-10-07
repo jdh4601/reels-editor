@@ -128,6 +128,7 @@ def load_cached_youtube_source(
     *,
     expected_video_id: str | None = None,
     fallback_title: str = "YouTube 인터뷰",
+    transcript_only: bool = False,
 ) -> YouTubeSource | None:
     """Load a complete prior download, or return ``None`` for a partial cache."""
     try:
@@ -136,7 +137,12 @@ def load_cached_youtube_source(
             return None
         if not segments_payload["segments"]:
             return None
-        video_path = _find_downloaded_video(source_dir)
+        try:
+            video_path = _find_downloaded_video(source_dir)
+        except YouTubeSourceError:
+            if not transcript_only:
+                return None
+            video_path = source_dir / "source.mp4"
         language = str(segments_payload.get("transcript_language") or "").strip()
         kind = str(segments_payload.get("transcript_kind") or "").strip()
         if not language or not kind:
@@ -291,6 +297,7 @@ def download_youtube_source(
     progress_detail_cb: Callable[[DownloadProgress], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
     ydl_factory: Callable[[dict[str, Any]], _YoutubeDL] | None = None,
+    transcript_only: bool = False,
 ) -> YouTubeSource:
     source_url = validate_youtube_url(url)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -353,6 +360,7 @@ def download_youtube_source(
         "no_warnings": True,
         "noplaylist": True,
         "format": DOWNLOAD_FORMAT,
+        "skip_download": transcript_only,
         # Bound each request so a slow CDN connection is renewed more often.
         "http_chunk_size": 1024 * 1024,
         "socket_timeout": 20,
@@ -375,7 +383,7 @@ def download_youtube_source(
     except Exception as exc:  # noqa: BLE001 - yt-dlp errors are normalized at this boundary
         raise YouTubeSourceError(f"YouTube 영상 또는 자막 다운로드에 실패했습니다: {exc}") from exc
 
-    video_path = _find_downloaded_video(output_dir)
+    video_path = output_dir / "source.mp4" if transcript_only else _find_downloaded_video(output_dir)
     transcript_path = _find_transcript(output_dir, track.language)
     try:
         transcript = json.loads(transcript_path.read_text(encoding="utf-8"))

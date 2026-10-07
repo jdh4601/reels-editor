@@ -33,6 +33,8 @@ class FakeService:
         self.purge_calls = 0
 
     def snapshot(self, job_id: str | None = None) -> Job | None:
+        if job_id and (self.job is None or self.job.id != job_id):
+            return self.store.load(job_id)
         return self.job
 
     def clear_current(self) -> None:
@@ -193,7 +195,7 @@ class FakeService:
         self.job.status = Status.CANCELLED
         return self.job
 
-    def wait_for_update(self, after_seq: int, timeout: float | None = None) -> Job | None:
+    def wait_for_update(self, after_seq: int, timeout: float | None = None, *, job_id: str | None = None) -> Job | None:
         return None
 
 
@@ -974,3 +976,16 @@ def _static(tmp_path: Path) -> Path:
     static.mkdir(exist_ok=True)
     (static / "index.html").write_text("<div id='root'></div>", encoding="utf-8")
     return static
+
+
+def test_snapshot_and_websocket_are_scoped_to_requested_job(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    first = store.create_job(source_url="https://youtu.be/first")
+    second = store.create_job(source_url="https://youtu.be/second")
+    app = create_app(static_dir=_static(tmp_path), media_dir=tmp_path, job_service=FakeService(store, second), session_token="secret")
+    with TestClient(app) as client:
+        assert client.get(f"/api/snapshot?job_id={first.id}&token=secret").json()["job_id"] == first.id
+        assert client.get("/api/snapshot?job_id=missing&token=secret").status_code == 404
+        assert client.get(f"/api/snapshot?job_id={first.id}").status_code == 401
+        with client.websocket_connect(f"/api/events?token=secret&job_id={first.id}") as socket:
+            assert socket.receive_json()["job_id"] == first.id

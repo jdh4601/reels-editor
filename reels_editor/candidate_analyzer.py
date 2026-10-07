@@ -166,6 +166,7 @@ def generate_selected_candidates(
                 speed=speed,
                 min_duration_s=MIN_DURATION_S,
                 max_duration_s=MAX_DURATION_S,
+                fixed_title=candidate.title,
             )
             return StorylineResult(index, label, doc, title=candidate.title)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:

@@ -65,6 +65,7 @@ class StylePreset:
     episode_opacity: int = 255
     episode_gap: int = 18
     episode_y: int | None = None
+    episode_font: Path | None = None
 
     def video_area(self) -> tuple[int, int]:
         return self.canvas[0], self.canvas[1] - self.top_bar - self.bottom_bar
@@ -146,4 +147,5 @@ def load_style(path: Path) -> StylePreset:
         episode_opacity=int(w.get("episode_opacity", 255)),
         episode_gap=int(w.get("episode_gap", 18)),
         episode_y=int(w["episode_y"]) if "episode_y" in w else None,
+        episode_font=_font(font_dir, w["episode_font"]) if "episode_font" in w else None,
     )

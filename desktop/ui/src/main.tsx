@@ -77,6 +77,7 @@ type Storyline = {
   status: LaneStatus;
   progress: number;
   videoUrl: string | null;
+  thumbnailUrl?: string | null;
   title: string;
   titleUpper: string;
   titleLower: string;
@@ -183,6 +184,7 @@ type ApiArchiveItem = {
 };
 
 type ApiStoryline = {
+  thumbnail_url?: string | null;
   id?: string;
   storyline_id?: string;
   index?: number;
@@ -461,12 +463,12 @@ function normalizeArchiveItem(item: ApiArchiveItem, index: number): ArchiveItem 
     projectName: item.project_name ?? item.projectName ?? item.source_title ?? item.sourceTitle ?? "이름 없는 인터뷰",
     reelTitle: item.reel_title ?? item.reelTitle ?? item.storyline_title ?? item.storylineTitle ?? item.title ?? "제목 없는 릴스",
     sourceUrl,
-    thumbnailUrl:
-      item.source_thumbnail_url
-      ?? item.sourceThumbnailUrl
-      ?? item.thumbnail_url
+    thumbnailUrl: mediaUrl(
+      item.thumbnail_url
       ?? item.thumbnailUrl
-      ?? youtubeThumbnailUrl(sourceUrl),
+      ?? item.source_thumbnail_url
+      ?? item.sourceThumbnailUrl
+      ?? youtubeThumbnailUrl(sourceUrl)),
     videoUrl,
     completedAt: item.completed_at ?? item.completedAt ?? item.generated_at ?? item.generatedAt ?? null,
   };
@@ -732,6 +734,7 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
       status: storyline.status ?? "queued",
       progress: storyline.progress ?? 0,
       videoUrl: mediaUrl(storyline.video_url ?? storyline.videoUrl ?? null),
+      thumbnailUrl: mediaUrl(storyline.thumbnail_url ?? null),
       title,
       titleUpper: storyline.title_upper ?? storyline.titleUpper ?? fallbackLines.upper,
       titleLower: storyline.title_lower ?? storyline.titleLower ?? fallbackLines.lower,
@@ -2050,7 +2053,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                 <article className="archive-item" role="listitem" key={item.id}>
                   <div className="archive-preview">
                     {item.thumbnailUrl ? (
-                      <Thumbnail src={item.thumbnailUrl} alt={`${item.projectName} YouTube 썸네일`} className="archive-thumbnail" />
+                      <Thumbnail src={item.thumbnailUrl} alt={`${item.reelTitle} 썸네일`} className="archive-thumbnail" />
                     ) : item.videoUrl ? (
                       <video src={item.videoUrl} preload="metadata" muted aria-label={`${item.reelTitle} 영상 미리보기`} />
                     ) : (
@@ -2364,6 +2367,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                       playsInline
                       preload="auto"
                       src={storyline.videoUrl}
+                      poster={storyline.thumbnailUrl ?? undefined}
                       onClick={playSelected}
                       onPlay={() => onVideoPlay(storyline.id)}
                       aria-label={`${storyline.label} 대표 영상. 클릭하면 재생하거나 일시정지합니다.`}
@@ -2417,6 +2421,15 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
               {detailsOpen ? (
                 <div className="reel-details" id={`${tabId}-${storyline.id}-details`}>
+                  {storyline.thumbnailUrl ? (
+                    <section className="reel-cover" aria-label="자동 생성된 릴스 썸네일">
+                      <img src={storyline.thumbnailUrl} alt={`${storyline.title} 썸네일`} />
+                      <div>
+                        <strong>릴스 썸네일</strong>
+                        <p>영상 장면과 제목으로 자동 생성됩니다. 영상과 함께 JPG로 내보냅니다.</p>
+                      </div>
+                    </section>
+                  ) : null}
                   <section className="story-structure" aria-label={`${storyline.label} 시나리오`}>
                     <div className="story-structure-heading">
                       <strong>시나리오</strong>

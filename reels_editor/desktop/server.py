@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from reels_editor import candidate_analyzer, render
+from reels_editor import candidate_analyzer, render, thumbnail
 from reels_editor.drive_paths import episode_export_root
 from reels_editor.config import (
     AppConfig,
@@ -517,6 +517,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="artifact not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="artifact unavailable") from exc
+        if path.suffix.lower() == ".jpg":
+            return FileResponse(path, media_type="image/jpeg")
         return _range_response(path, request.headers.get("range"))
 
     assets_dir = static_dir / "assets"
@@ -620,6 +622,11 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
     variant = _active_variant(storyline)
     artifact_id = _artifact_for_variant(job, variant)
     content = _story_content_for_storyline(storyline)
+    cover_id = None
+    if variant and variant.path:
+        target = thumbnail.thumbnail_path(Path(variant.path)).resolve()
+        cover_id = next((item.id for item in job.artifacts.values()
+                         if Path(item.path).resolve() == target and target.is_file()), None)
     return {
         "id": storyline.id,
         "storyline_id": storyline.id,
@@ -631,6 +638,7 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
         "status": _ui_status(storyline.status),
         "progress": int(round(storyline.progress * 100)) if storyline.progress <= 1 else int(storyline.progress),
         "video_url": _media_url(job.id, artifact_id) if artifact_id else None,
+        "thumbnail_url": _media_url(job.id, cover_id),
         "title": storyline.title,
         "title_upper": storyline.title_upper,
         "title_lower": storyline.title_lower,
@@ -673,7 +681,7 @@ def _archive_items(jobs: list[Job]) -> list[dict[str, Any]]:
                     "source_title": job.project_name or "YouTube 인터뷰",
                     "source_url": job.source_url,
                     "source_thumbnail_url": _source_thumbnail_url(job),
-                    "thumbnail_url": _source_thumbnail_url(job),
+                    "thumbnail_url": snapshot["thumbnail_url"] or _source_thumbnail_url(job),
                     "reel_title": storyline.title or storyline.angle_name or "대표 영상",
                     "title": storyline.title or storyline.angle_name or "대표 영상",
                     "completed_at": storyline.completed_at or job.updated_at,

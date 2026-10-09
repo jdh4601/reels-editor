@@ -1,8 +1,8 @@
 # D.one 릴스 스타일 (examples/완성된릴스화면*.png에서 추출)
 # 게이트에서 바꾼 값은 ~/.config/reels-editor/config.yaml의 style 설정이 우선한다.
 canvas: [1080, 1920]
-top_bar: 560        # 목표 캡처 기준 상단 블랙바 높이 px
-bottom_bar: 570     # 영상 영역 1080x790을 제외한 하단 블랙바 높이 px
+top_bar: 570        # 영상 영역을 10px 아래로 이동
+bottom_bar: 560     # 영상 영역 1080x790 유지
 font_dir: assets/fonts
 video:
   aspect: [9, 16]
@@ -11,27 +11,27 @@ title:
   font: A2Z-7Bold.otf
   upper_font: A2Z-5Medium.otf
   speaker_font: A2Z-3Light.otf
-  size: 105             # 한 줄 제목의 최대 크기. 폭에 맞춰 자동 축소
-  y: 1120               # 제목+화자 그룹 중심, 캔버스 y=400px
+  size: 84              # 한 줄 제목의 최대 크기. 폭에 맞춰 자동 축소
+  y: 1100               # 제목+화자 그룹 중심, 캔버스 y=410px
   color: "#F06400"       # 상단 후킹 제목 전체 오렌지
   highlight: "#F06400"
   max_lines: 2
   line_gap: 24         # 흰색 첫째 줄과 주황색 둘째 줄 사이에 읽기 쉬운 여백
-  speaker_size: 46      # 제목 아래 화자 이름·직함을 더 크게 표시
+  speaker_size: 34      # 에피소드와 같은 크기·Light 글꼴로 창업자 이름·직함 표시
   speaker_color: "#FFFFFF"
   speaker_gap: 40       # 주황 제목은 고정하고 흰색 화자 정보만 아래로 이동
-  anchor_y: 1185        # 화자 정보가 있을 때 주황 제목 중심, 캔버스 y≈368px
-  upper_size: 70        # 2줄 제목의 첫 줄은 작은 흰색 전제 문구
+  anchor_y: 1165        # 화자 정보가 있을 때 주황 제목 중심, 캔버스 y≈378px
+  upper_size: 56        # 2줄 제목의 첫 줄은 작은 흰색 전제 문구
   upper_color: "#FFFFFF"
 subtitle:
   font: A2Z-3Light.otf
-  size: 40              # 편집기 표기 8 × 5
+  size: 34              # 작은 Light 자막
   opacity: 255          # 100%
   color: "#FFFFFF"
   highlight: "#FFFFFF"   # 자막은 강조색 없이 모두 흰색
   box_alpha: 200         # 가독성을 위한 반투명 검정 배경
   shadow_alpha: 0
-  y: -400                # 중앙 원점 편집 좌표(음수=아래), 캔버스 중심 y=1160px
+  y: -420                # 영상과 함께 10px 아래로 이동, 캔버스 중심 y=1170px
   y_frac: 0.85           # 영상 영역 높이 기준 자막 baseline 위치(0=상단, 1=하단)
 watermark:
   text: ""
@@ -42,7 +42,8 @@ watermark:
   opacity: 255          # 투명도 0%, 선명한 흰색 로고
   y: -1190              # 로고를 20px 아래로 이동, 캔버스 y=1555px
   episode_text: "에피소드 1 / 1000"
-  episode_size: 44      # 에피소드 문구를 약 8% 작게 표시
+  episode_font: A2Z-3Light.otf
+  episode_size: 34      # 창업자 정보와 같은 작은 Light 글꼴
   episode_color: "#FFFFFF"
   episode_opacity: 255
   episode_gap: 18

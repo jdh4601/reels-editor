@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, speaker_identity, source_cache, title_suggestion, youtube
+from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, speaker_identity, source_cache, thumbnail, title_suggestion, youtube
 from reels_editor.config import AppConfig, merged_style
 from reels_editor.drive_paths import episode_export_root
 from reels_editor.llm import build_runner
@@ -74,6 +74,7 @@ class JobServiceDeps:
     load_style: Callable[[Path], StylePreset] = load_style
     render_base_and_assets: Callable[..., render.RenderAssets] = render.render_base_and_assets
     render_overlay_variant: Callable[..., Path] = render.render_overlay_variant
+    render_thumbnail: Callable[..., Path] = thumbnail.render_thumbnail
     verify_render_output: Callable[..., None] = render.verify_render_output
     write_outputs: Callable[[Path, dict[str, Any], dict[str, Any]], None] = export.write_outputs
     write_srt: Callable[[list[list], Path], Path] = export.write_srt
@@ -399,6 +400,8 @@ class JobService:
             return
         self._assert_safe_export_output(destination)
         self._assert_safe_export_output(manifest)
+        cover = thumbnail.thumbnail_path(destination)
+        self._assert_safe_export_output(cover)
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -411,6 +414,7 @@ class JobService:
             return
         if destination.is_file():
             destination.unlink()
+        cover.unlink(missing_ok=True)
         if manifest.is_file():
             manifest.unlink()
         self._remove_empty_archive_directory(destination.parent, job.id)
@@ -790,6 +794,13 @@ class JobService:
                     finally:
                         if render_tmp.exists():
                             render_tmp.unlink()
+                if not thumbnail.thumbnail_path(out).is_file():
+                    self.deps.render_thumbnail(
+                        assets, title_text=normalized, style=style,
+                        out_path=thumbnail.thumbnail_path(out),
+                        title_upper=normalized_upper, title_lower=normalized_lower,
+                        speaker_text=speaker_text,
+                    )
                 candidate = Variant(
                     id="",
                     title_text=normalized,
@@ -813,6 +824,7 @@ class JobService:
                         else self.store.register_artifact(job_id, out, kind="video/mp4")
                     )
                     candidate.id = artifact.id
+                    self._register_thumbnail(job_id, out)
                 archive_path = self._durable_destination(current, story)
                 archive_path = self._copy_export_variant(
                     job_id,
@@ -1025,6 +1037,7 @@ class JobService:
                 variant,
                 destination,
                 write_manifest=write_manifest,
+                refresh_thumbnail=True,
             )
         except Exception as exc:
             self._record_export_failure(job_id, exc)
@@ -1110,6 +1123,7 @@ class JobService:
                     variant,
                     destination,
                     write_manifest=False,
+                    refresh_thumbnail=True,
                 )
                 with self._lock:
                     current = self.store.load(job_id)
@@ -1162,10 +1176,13 @@ class JobService:
         destination: Path,
         *,
         write_manifest: bool = True,
+        refresh_thumbnail: bool = False,
     ) -> Path:
         with self._archive_lock:
             if variant.path is None:
                 raise JobServiceError("selected variant has no output path")
+            if refresh_thumbnail:
+                self._refresh_export_thumbnail(job_id, story, variant)
             destination = destination.expanduser()
             if self._is_archive_namespace_path(destination):
                 self._assert_safe_archive_directory(destination.parent)
@@ -1191,13 +1208,23 @@ class JobService:
             )
             destination_existed = destination.is_file()
             manifest_existed = write_manifest and manifest.is_file()
+            cover_source = thumbnail.thumbnail_path(Path(variant.path))
+            cover = thumbnail.thumbnail_path(destination)
+            cover_tmp = cover.with_name(f".{cover.name}.{operation_id}.part")
+            cover_backup = cover.with_name(f".{cover.name}.{operation_id}.backup")
+            copy_cover = cover_source.is_file()
+            cover_existed = cover.is_file()
             outputs = [destination, tmp, destination_backup]
+            if copy_cover:
+                outputs.extend((cover, cover_tmp, cover_backup))
             if write_manifest:
                 outputs.extend((manifest, manifest_tmp, manifest_backup))
             for output in outputs:
                 self._assert_safe_export_output(output)
             try:
                 self._copy_file_exclusive(Path(variant.path), tmp)
+                if copy_cover:
+                    self._copy_file_exclusive(cover_source, cover_tmp)
                 if write_manifest:
                     with manifest_tmp.open("x", encoding="utf-8") as file:
                         file.write(json.dumps(
@@ -1216,10 +1243,16 @@ class JobService:
                     self._backup_export_file(destination, destination_backup)
                 if write_manifest and manifest_existed:
                     self._backup_export_file(manifest, manifest_backup)
+                if copy_cover and cover_existed:
+                    self._backup_export_file(cover, cover_backup)
                 os.replace(tmp, destination)
+                if copy_cover:
+                    os.replace(cover_tmp, cover)
                 if write_manifest:
                     os.replace(manifest_tmp, manifest)
             except Exception:
+                if copy_cover:
+                    self._restore_export_file(cover, cover_backup, existed=cover_existed)
                 self._restore_export_file(
                     destination,
                     destination_backup,
@@ -1234,12 +1267,34 @@ class JobService:
                 raise
             finally:
                 temporary_paths = [tmp, destination_backup]
+                if copy_cover:
+                    temporary_paths.extend((cover_tmp, cover_backup))
                 if write_manifest:
                     temporary_paths.extend((manifest_tmp, manifest_backup))
                 for temporary in temporary_paths:
                     if temporary.exists() or temporary.is_symlink():
                         temporary.unlink()
             return destination
+
+    def _refresh_export_thumbnail(self, job_id: str, story: Storyline, variant: Variant) -> None:
+        """Apply the current cover template even to previously rendered videos."""
+        if not story.assets_path:
+            raise JobServiceError("썸네일 생성에 필요한 영상 소스가 없습니다.")
+        job = self.store.load(job_id)
+        style = self._style_for_episode(
+            merged_style(self.deps.load_style(self.style_path), self.config.style),
+            story.episode_number or job.episode_number,
+        )
+        assets = render.RenderAssets.read_manifest(Path(story.assets_path))
+        doc = self._harmonized_storyline_doc(job, story)
+        cover = thumbnail.thumbnail_path(Path(variant.path or ""))
+        self.deps.render_thumbnail(
+            assets, title_text=variant.title_text, style=style, out_path=cover,
+            title_upper=variant.title_upper, title_lower=variant.title_lower,
+            speaker_text=self._speaker_text(story, doc),
+        )
+        if not cover.is_file():
+            raise JobServiceError("썸네일 생성기가 JPG를 생성하지 못했습니다.")
 
     @staticmethod
     def _copy_file_exclusive(source: Path, destination: Path) -> None:
@@ -1425,7 +1480,7 @@ class JobService:
         reuse_owned: bool = True,
     ) -> Path:
         self._assert_safe_export_output(destination)
-        if not destination.exists() or (
+        if (not destination.exists() and not thumbnail.thumbnail_path(destination).exists()) or (
             reuse_owned
             and self._destination_belongs_to_story(destination, job_id, storyline_id)
         ):
@@ -1435,7 +1490,7 @@ class JobService:
                 f"{destination.stem} ({collision_index}){destination.suffix}"
             )
             self._assert_safe_export_output(candidate)
-            if not candidate.exists() or (
+            if (not candidate.exists() and not thumbnail.thumbnail_path(candidate).exists()) or (
                 reuse_owned
                 and self._destination_belongs_to_story(candidate, job_id, storyline_id)
             ):
@@ -1469,6 +1524,9 @@ class JobService:
     ) -> bool:
         self._assert_safe_export_output(destination)
         if not destination.is_file():
+            return False
+        if (thumbnail.thumbnail_path(Path(variant.path or "")).is_file()
+                and not thumbnail.thumbnail_path(destination).is_file()):
             return False
         manifest = destination.with_suffix(destination.suffix + ".manifest.json")
         self._assert_safe_export_output(manifest)
@@ -2137,6 +2195,12 @@ class JobService:
                 detail="최종 영상의 해상도·길이·오디오를 검수하는 중입니다.",
             )
             self.deps.verify_render_output(out, style.canvas, assets.total_s)
+            self.deps.render_thumbnail(
+                assets, title_text=title_text, style=style,
+                out_path=thumbnail.thumbnail_path(out),
+                title_upper=title_upper, title_lower=title_lower,
+                speaker_text=speaker_text,
+            )
             with self._lock:
                 job = self.store.load(job_id)
                 if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
@@ -2144,6 +2208,7 @@ class JobService:
                 storyline = self._find_storyline(job, story_id)
                 artifact_id = self._artifact_id_for_path(job, out)
                 artifact = job.artifacts[artifact_id] if artifact_id else self.store.register_artifact(job_id, out, kind="video/mp4")
+                self._register_thumbnail(job_id, out)
                 job = self.store.load(job_id)
                 storyline = self._find_storyline(job, story_id)
                 storyline.status = Status.READY
@@ -2314,6 +2379,13 @@ class JobService:
                 title_upper=title_upper,
                 title_lower=title_lower,
             )
+        if not thumbnail.thumbnail_path(out).is_file():
+            self.deps.render_thumbnail(
+                assets, title_text=title_text, style=style,
+                out_path=thumbnail.thumbnail_path(out),
+                title_upper=title_upper, title_lower=title_lower,
+                speaker_text=speaker_text,
+            )
         with self._lock:
             job = self.store.load(job_id)
             story = self._find_storyline(job, storyline_id)
@@ -2321,6 +2393,7 @@ class JobService:
                 return
             artifact_id = self._artifact_id_for_path(job, out)
             artifact = job.artifacts[artifact_id] if artifact_id else self.store.register_artifact(job_id, out, kind="video/mp4")
+            self._register_thumbnail(job_id, out)
             job = self.store.load(job_id)
             story = self._find_storyline(job, storyline_id)
             variant = Variant(
@@ -2456,6 +2529,7 @@ class JobService:
         job_root = self.store.job_dir(job.id).resolve()
         stale_paths = {variant.path for variant in storyline.variants if variant.path}
         stale_paths.add(storyline.active_variant_path)
+        stale_paths.update(str(thumbnail.thumbnail_path(Path(path))) for path in list(stale_paths) if path)
         for raw_path in stale_paths:
             if not raw_path:
                 continue
@@ -2485,6 +2559,11 @@ class JobService:
         job.export.status = Status.IDLE
         job.export.error = None
         return self._save(job)
+
+    def _register_thumbnail(self, job_id: str, video: Path) -> None:
+        path = thumbnail.thumbnail_path(video)
+        if path.is_file() and self._artifact_id_for_path(self.store.load(job_id), path) is None:
+            self.store.register_artifact(job_id, path, kind="image/jpeg")
 
     def _artifact_id_for_path(self, job: Job, path: Path) -> str | None:
         resolved = str(path.resolve())

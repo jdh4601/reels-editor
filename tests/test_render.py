@@ -603,6 +603,8 @@ def test_overlay_variant_subtitle_off_reuses_base_without_sub_inputs(
     assert isinstance(args, list)
     assert str(base) in args
     assert str(sub) not in args
+    assert "[0:a]loudnorm=I=-14:TP=-1.5:LRA=11" in args[args.index("-filter_complex") + 1]
+    assert args[args.index("-c:a") + 1] == "aac"
     assert args[-1].endswith(".part.mp4")
     assert not (tmp_path / ".variant.part.mp4").exists()
 
@@ -657,8 +659,79 @@ def test_overlay_variant_single_pass_uses_source_crop_audio_and_hardware_encoder
     assert args.count(str(source)) == 1
     assert "[0:v]null[v];[0:a]anull[a]" in args[args.index("-filter_complex") + 1]
     assert args[args.index("-map") + 1] == "[vout]"
-    assert "[a]" in args
+    assert "[aout]" in args
+    assert "[a]loudnorm=I=-14:TP=-1.5:LRA=11" in args[args.index("-filter_complex") + 1]
     assert "h264_videotoolbox" in args
+
+
+def test_overlay_regenerates_episode_image_without_mutating_original(
+        tmp_path: Path, style_preset, monkeypatch: pytest.MonkeyPatch) -> None:
+    from PIL import Image, ImageChops
+
+    original = render.render_watermark_png(style_preset.for_episode(15), tmp_path / "wm.png")
+    original_bytes = original.read_bytes()
+    assets = render.RenderAssets(tmp_path / "base.mp4", original, [], [], tmp_path, [])
+    captured = []
+
+    def fake_ffmpeg(args: list[str]) -> None:
+        inputs = [args[i + 1] for i, arg in enumerate(args) if arg == "-i"]
+        captured.append(Image.open(inputs[2]).copy())
+        Path(args[-1]).write_bytes(b"variant")
+
+    monkeypatch.setattr(render, "_ffmpeg", fake_ffmpeg)
+    for episode in (14, 16):
+        render.render_overlay_variant(
+            assets, title_text="현재 제목", keyword="", style=style_preset.for_episode(episode),
+            out_path=tmp_path / f"episode-{episode}.mp4", subtitles_enabled=False,
+        )
+        expected = render.render_watermark_png(style_preset.for_episode(episode), tmp_path / "expected.png")
+        assert ImageChops.difference(captured[-1], Image.open(expected)).getbbox() is None
+        assert ImageChops.difference(captured[-1], Image.open(original)).getbbox() is not None
+    assert original.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("single_pass", [True, False])
+def test_render_increases_quiet_audio_in_actual_mp4(
+        tmp_path: Path, style_preset, monkeypatch: pytest.MonkeyPatch, single_pass: bool) -> None:
+    import json
+    import shutil
+    from PIL import Image
+
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg and ffprobe required")
+    source = tmp_path / "quiet.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=s=160x240:r=10:d=4",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-af", "volume=0.03",
+        "-c:v", "libx264", "-c:a", "aac", "-shortest", str(source),
+    ], check=True)
+    image = tmp_path / "transparent.png"
+    Image.new("RGBA", (160, 240)).save(image)
+    monkeypatch.setattr(render, "render_title_png", lambda *_a, **_kw: image)
+    monkeypatch.setattr(render, "render_watermark_png", lambda *_a, **_kw: image)
+    base_filter = tmp_path / "filter.txt"
+    base_filter.write_text("[0:v]null[v];[0:a]anull[a]")
+    assets = render.RenderAssets(
+        source, image, [], [], tmp_path, [], source=source if single_pass else None,
+        base_filter=base_filter if single_pass else None, total_s=4,
+    )
+    out = render.render_overlay_variant(
+        assets, title_text="제목", keyword="", style=style_preset,
+        out_path=tmp_path / "reel.mp4", subtitles_enabled=False,
+    )
+
+    def loudness(path: Path) -> dict:
+        result = subprocess.run([
+            "ffmpeg", "-hide_banner", "-i", str(path), "-af",
+            "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-",
+        ], capture_output=True, text=True, check=True)
+        return json.JSONDecoder().raw_decode(result.stderr[result.stderr.rfind("{"):])[0]
+
+    before, after = loudness(source), loudness(out)
+    assert float(after["input_i"]) - float(before["input_i"]) > 15
+    assert abs(float(after["input_i"]) - (-14)) < 1
+    assert float(after["input_tp"]) <= -1
+    render.verify_render_output(out, (160, 240), 4)
 
 
 def test_variant_cache_key_changes_by_title_subtitle_and_style() -> None:
@@ -743,3 +816,35 @@ def test_speaker_label_formats_name_and_role() -> None:
         "speaker": {"name": "이서준", "role": "visionary"},
     }) == "이서준"
     assert render.speaker_label({}) == ""
+
+
+def test_overlay_applies_current_layout_to_cached_assets(tmp_path, style_preset, monkeypatch):
+    from dataclasses import replace
+    from PIL import Image
+    old_style = replace(style_preset, top_bar=560, bottom_bar=570, sub_y=-400, sub_size=40)
+    groups = [[0.0, 1.0, "이전 자막 캐시"]]
+    old_subs = render.render_subtitle_pngs(groups, [], old_style, tmp_path / 'old-subs')
+    old_bytes = old_subs[0].read_bytes()
+    source = tmp_path / 'source.mp4'
+    fpath = tmp_path / 'base_filter.txt'
+    fpath.write_text('[0:v]scale=1080:790,pad=1080:1920:0:560:black[v];[0:a]anull[a]')
+    assets = render.RenderAssets(source, tmp_path / 'wm.png', old_subs, groups, tmp_path, [],
+                                source=source, base_filter=fpath)
+    captured = {}
+    def fake_ffmpeg(args):
+        captured['args'] = args
+        Path(args[-1]).write_bytes(b'video')
+    monkeypatch.setattr(render, '_ffmpeg', fake_ffmpeg)
+    render.render_overlay_variant(assets, title_text='현재 제목', keyword='', style=style_preset,
+                                  out_path=tmp_path / 'reel.mp4', subtitles_enabled=True)
+    args = captured['args']
+    graph = args[args.index('-filter_complex') + 1]
+    assert 'pad=1080:1920:0:570:black' in graph
+    assert 'pad=1080:1920:0:560:black' not in graph
+    assert str(old_subs[0]) not in args
+    subtitle = Path([args[i + 1] for i, arg in enumerate(args) if arg == '-i'][-1])
+    with Image.open(subtitle) as image:
+        bbox = image.getbbox()
+        assert abs((bbox[1] + bbox[3]) / 2 - 1170) <= 2
+    assert old_subs[0].read_bytes() == old_bytes
+    assert ':0:560:black' in fpath.read_text()

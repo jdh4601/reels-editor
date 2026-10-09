@@ -48,11 +48,11 @@ def test_two_line_title_keeps_large_orange_second_line_anchored(tmp_path: Path) 
     orange.putdata([255 if pixel[:3] == (240, 100, 0) else 0 for pixel in pixels])
     white.putdata([255 if pixel[:3] == (255, 255, 255) else 0 for pixel in pixels])
     orange_bbox = orange.getbbox()
-    upper_white_bbox = white.crop((0, 0, style.canvas[0], 368)).getbbox()
-    speaker_white_bbox = white.crop((0, 368, style.canvas[0], style.canvas[1])).getbbox()
+    upper_white_bbox = white.crop((0, 0, style.canvas[0], 378)).getbbox()
+    speaker_white_bbox = white.crop((0, 378, style.canvas[0], style.canvas[1])).getbbox()
 
     assert orange_bbox is not None and upper_white_bbox is not None and speaker_white_bbox is not None
-    assert abs((orange_bbox[1] + orange_bbox[3]) / 2 - 368) <= 2
+    assert abs((orange_bbox[1] + orange_bbox[3]) / 2 - 378) <= 2
     assert upper_white_bbox[3] < orange_bbox[1]
     assert orange_bbox[1] - upper_white_bbox[3] >= 20
     assert upper_white_bbox[3] - upper_white_bbox[1] < orange_bbox[3] - orange_bbox[1]
@@ -103,7 +103,7 @@ def test_title_png_uses_one_safe_line_and_white_speaker_label(tmp_path: Path) ->
     assert orange_bbox is not None and white_bbox is not None
     assert orange_bbox[0] >= 60
     assert orange_bbox[2] <= style.canvas[0] - 60
-    assert abs((orange_bbox[1] + orange_bbox[3]) / 2 - 368) <= 2
+    assert abs((orange_bbox[1] + orange_bbox[3]) / 2 - 378) <= 2
     assert white_bbox[1] > orange_bbox[3]
     assert white_bbox[1] - orange_bbox[3] >= 38
     assert white_bbox[2] - white_bbox[0] < orange_bbox[2] - orange_bbox[0]
@@ -174,7 +174,7 @@ def test_subtitle_position_mid_canvas(tmp_path: Path) -> None:
     _l, top, _r, bottom = bbox
     assert top >= style.top_bar
     assert bottom <= style.canvas[1] - style.bottom_bar
-    assert abs((top + bottom) / 2 - 1160) <= 2
+    assert abs((top + bottom) / 2 - 1170) <= 2
     assert img.getchannel("A").getextrema()[1] == 255
 
 

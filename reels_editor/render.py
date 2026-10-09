@@ -37,6 +37,9 @@ _SUBTITLE_PUNCTUATION_TO_HIDE = str.maketrans("", "", ",.")
 _VIDEOTOOLBOX_ENCODER = "h264_videotoolbox"
 _SOFTWARE_ENCODER = "libx264"
 _VIDEOTOOLBOX_SLOTS = threading.BoundedSemaphore(1)
+_OVERLAY_RENDER_VERSION = 3
+# Normalize the assembled reel once, with headroom for AAC encoding.
+_REEL_AUDIO_FILTER = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
 
 
 @dataclass(frozen=True)
@@ -304,6 +307,16 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
     return "".join(parts) + concat + vid
 
 
+def reposition_video_filter(filter_text: str, style: StylePreset) -> str:
+    """Reuse crop analysis while applying the current video area's vertical position."""
+    width, height = style.canvas
+    return re.sub(
+        rf"pad={width}:{height}:0:\d+:black",
+        f"pad={width}:{height}:0:{style.top_bar}:black",
+        filter_text,
+    )
+
+
 def build_overlay_filter(
     n_static: int,
     groups: list[list],
@@ -547,7 +560,7 @@ def render_watermark_png(
         _wl, watermark_top, _wr, _wb = _ink_bbox(d, style.watermark_text, font)
         watermark_ink_top = watermark_origin[1] + watermark_top
     if style.episode_text:
-        episode_font = ImageFont.truetype(str(style.watermark_font), style.episode_size)
+        episode_font = ImageFont.truetype(str(style.episode_font or style.watermark_font), style.episode_size)
         _el, episode_top, _er, episode_bottom = _ink_bbox(
             d,
             style.episode_text,
@@ -750,6 +763,7 @@ def variant_cache_key(
     title_text = normalize_title(title_text)
     payload = json.dumps(
         {
+            "render_version": _OVERLAY_RENDER_VERSION,
             "storyline_id": storyline_id,
             "title_text": title_text,
             "title_upper": normalize_title(title_upper) if title_upper is not None else None,
@@ -898,7 +912,7 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
              for a, b, t in timeline_items(ordered, speed)]
     groups = group_captions(items)
     keywords = edl_doc.get("subtitle_keywords", [])
-    sub_paths = render_subtitle_pngs(groups, keywords, style, work_dir / "subs")
+    sub_paths = render_subtitle_pngs(groups, keywords, style, work_dir / f"subs-{style_hash(style)}")
     if progress_cb is not None:
         progress_cb(1.0)
     # Keep ``base`` populated for manifests created by older releases. New
@@ -947,8 +961,16 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
         title_upper=title_upper,
         title_lower=title_lower,
     )
+    # The manifest's watermark belongs to the original episode. Generate a
+    # variant-specific image so edits and concurrent renders use current style.
+    wm_png = render_watermark_png(style, assets.work / f"wm-{out_path.stem}.png")
     groups = assets.groups if subtitles_enabled else []
-    sub_pngs = assets.sub_pngs if subtitles_enabled else []
+    sub_pngs = []
+    if groups:
+        sub_dir = assets.work / f"subs-{style_hash(style)}"
+        sub_pngs = [sub_dir / f"s{i:03d}.png" for i in range(len(groups))]
+        if not all(path.is_file() for path in sub_pngs):
+            sub_pngs = render_subtitle_pngs(groups, assets.keywords, style, sub_dir)
     single_pass = (
         assets.source is not None
         and assets.base_filter is not None
@@ -960,22 +982,27 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
         base_label="[v]" if single_pass else "[0:v]",
     )
     video_input = assets.source if single_pass else assets.base
-    args = ["-i", str(video_input), "-i", str(title_png), "-i", str(assets.wm_png)]
+    args = ["-i", str(video_input), "-i", str(title_png), "-i", str(wm_png)]
     for p in sub_pngs:
         args += ["-i", str(p)]
     tmp = out_path.with_name(f".{out_path.stem}.part{out_path.suffix}")
     if single_pass:
-        base_filter = assets.base_filter.read_text(encoding="utf-8").rstrip(";\n ")
-        full_filter = f"{base_filter};{filt2};{last}format=yuv420p[vout]"
+        base_filter = reposition_video_filter(
+            assets.base_filter.read_text(encoding="utf-8").rstrip(";\n "), style,
+        )
+        full_filter = (
+            f"{base_filter};{filt2};{last}format=yuv420p[vout];"
+            f"[a]{_REEL_AUDIO_FILTER}[aout]"
+        )
         args += [
             "-filter_complex", full_filter,
             "-map", "[vout]",
-            "-map", "[a]",
+            "-map", "[aout]",
         ]
-        audio_args = ["-c:a", "aac", "-b:a", "192k", str(tmp)]
     else:
-        args += ["-filter_complex", filt2, "-map", last, "-map", "0:a"]
-        audio_args = ["-c:a", "copy", str(tmp)]
+        full_filter = f"{filt2};[0:a]{_REEL_AUDIO_FILTER}[aout]"
+        args += ["-filter_complex", full_filter, "-map", last, "-map", "[aout]"]
+    audio_args = ["-c:a", "aac", "-b:a", "192k", str(tmp)]
     try:
         _encode_video(
             args,

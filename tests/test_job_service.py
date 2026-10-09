@@ -44,6 +44,7 @@ class Calls:
     base_episode_numbers: list[int | None] = field(default_factory=list)
     overlay_title_lines: list[tuple[str, str]] = field(default_factory=list)
     speaker_texts: list[str] = field(default_factory=list)
+    thumbnail_labels: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -187,6 +188,12 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         calls.caption_requests.append(kwargs)
         return f"Ep {kwargs['episode_number']}. 첫 고객을 만든 방법\n\n맥락\n\n전략\n\n교훈\n\n여러분은 무엇을 먼저 검증하고 있나요?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
 
+    def render_thumbnail(_assets, *, out_path, title_text, style, speaker_text="", **_kwargs):
+        from reels_editor.thumbnail import metadata_label
+        calls.thumbnail_labels.append(metadata_label(style, speaker_text))
+        out_path.write_bytes(title_text.encode())
+        return out_path
+
     return JobServiceDeps(
         enrich_speakers=lambda *_args, **_kwargs: None,
         analyze_candidates=lambda _segments, _types, **_kwargs: _candidates(),
@@ -202,6 +209,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         load_style=lambda _path: style,
         render_base_and_assets=render_base,
         render_overlay_variant=render_overlay,
+        render_thumbnail=render_thumbnail,
         verify_render_output=lambda *_args, **_kwargs: None,
         write_outputs=write_outputs,
         write_srt=lambda _groups, path: path.write_text("srt", encoding="utf-8") or path,
@@ -536,6 +544,7 @@ def test_delete_archive_item_removes_story_files_and_last_job(tmp_path: Path) ->
     remaining = service.store.load(ready.id)
     assert [story.id for story in remaining.storylines] == [second.id]
     assert not first_archive.exists()
+    assert not first_archive.with_suffix(".jpg").exists()
     assert not first_archive.with_suffix(".mp4.manifest.json").exists()
     assert not (service.store.job_dir(ready.id) / first.id).exists()
     assert second_archive.is_file()
@@ -689,6 +698,8 @@ def test_title_edit_rerenders_overlay_only_and_invalidates_caption(tmp_path: Pat
     assert calls.overlay == before[2] + 1
     assert "새로운 제목이다" in Path(story.active_variant_path or "").read_text(encoding="utf-8")
     assert Path(story.archive_path or "").read_bytes() == Path(story.active_variant_path or "").read_bytes()
+    assert Path(story.active_variant_path).with_suffix(".jpg").read_text() == story.title
+    assert Path(story.archive_path).with_suffix(".jpg").read_text() == story.title
 
 
 def test_title_suggestion_uses_job_model_without_rerendering(tmp_path: Path) -> None:
@@ -820,6 +831,7 @@ def test_failed_title_archive_install_restores_previous_mp4_and_manifest(
     manifest_path = archive_path.with_suffix(archive_path.suffix + ".manifest.json")
     archive_bytes = archive_path.read_bytes()
     manifest_bytes = manifest_path.read_bytes()
+    cover_bytes = archive_path.with_suffix(".jpg").read_bytes()
     original_replace = job_service_module.os.replace
 
     def fail_manifest_install(source: Path | str, destination: Path | str) -> None:
@@ -839,6 +851,7 @@ def test_failed_title_archive_install_restores_previous_mp4_and_manifest(
     assert failed.active_variant_path == before_story.active_variant_path
     assert archive_path.read_bytes() == archive_bytes
     assert manifest_path.read_bytes() == manifest_bytes
+    assert archive_path.with_suffix(".jpg").read_bytes() == cover_bytes
 
 
 def test_job_service_validates_storyline_length_with_configured_playback_speed(tmp_path: Path) -> None:
@@ -1189,7 +1202,9 @@ def test_google_drive_export_reuses_existing_folder_and_keeps_file_collisions_sa
 
     service.export_many(job.id, repeated_destination, storyline_ids=["s1"])
     assert sorted(path.name for path in episode_folder.iterdir()) == [
+        "에피소드 11 - https youtu.be A 제목 1 (2).jpg",
         "에피소드 11 - https youtu.be A 제목 1 (2).mp4",
+        "에피소드 11 - https youtu.be A 제목 1.jpg",
         "에피소드 11 - https youtu.be A 제목 1.mp4",
     ]
     assert service.google_drive_export_directory(job.id, episode_folder) == episode_folder
@@ -1876,12 +1891,14 @@ def test_metadata_edit_persists_and_survives_title_and_subtitle_changes(tmp_path
     assert calls.overlay == before[2] + 1
     assert calls.speaker_texts[-1] == "새 이름 (회사 CEO)"
     assert calls.episode_texts[-1] == "에피소드 15 / 1000"
+    assert calls.thumbnail_labels[-1] == "Episode 15"
     assert Path(story.archive_path).read_bytes() == Path(story.active_variant_path).read_bytes()
     assert service.store.load(ready.id).storylines[0].speaker_override == story.speaker_override
     service.update_storyline_title(ready.id, "s1", "새로운 제목입니다")
     service.select_variant(ready.id, "s1", subtitles_on=False)
     assert calls.speaker_texts[-1] == "새 이름 (회사 CEO)"
     assert calls.episode_texts[-1] == "에피소드 15 / 1000"
+    assert calls.thumbnail_labels[-1] == "Episode 15"
     service.generate_instagram_caption(ready.id, "s1")
     assert calls.caption_requests[-1]["episode_number"] == 15
 
@@ -1914,3 +1931,77 @@ def test_metadata_edit_rejects_invalid_values(tmp_path: Path, name: str, episode
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, Calls()))
     with pytest.raises(JobServiceError):
         service.update_storyline_metadata("missing", "s1", name=name, role="", episode_number=episode)
+
+
+def test_export_preserves_orphan_cover_and_uses_matching_pair_names(tmp_path: Path) -> None:
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, Calls()))
+    job = _run_ready(service, candidate_count=1)
+    destination = tmp_path / "exports"
+    destination.mkdir()
+    filename = service.suggested_export_filename(job.id, "s1")
+    orphan = (destination / filename).with_suffix(".jpg")
+    orphan.write_bytes(b"existing unrelated cover")
+    service.export_many(job.id, destination, storyline_ids=["s1"])
+    assert orphan.read_bytes() == b"existing unrelated cover"
+    videos = list(destination.glob("*.mp4"))
+    assert len(videos) == 1 and videos[0].stem.endswith(" (2)")
+    assert videos[0].with_suffix(".jpg").read_text() == job.storylines[0].title
+
+
+def test_failed_title_cover_generation_preserves_video_and_archive(tmp_path: Path) -> None:
+    deps = _deps(tmp_path, Calls())
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps, archive_root=tmp_path / "archive")
+    job = _run_ready(service, candidate_count=1)
+    previous = job.storylines[0]
+    cover = Path(previous.archive_path).with_suffix(".jpg")
+    before = cover.read_bytes()
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("cover generation failed")
+    service.deps = replace(deps, render_thumbnail=fail)
+    with pytest.raises(JobServiceError, match="cover generation failed"):
+        service.update_storyline_title(job.id, "s1", "새로운 제목이다")
+    story = service.store.load(job.id).storylines[0]
+    assert story.title == previous.title and story.active_variant_path == previous.active_variant_path
+    assert cover.read_bytes() == before
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("existing_cover", [False, True])
+def test_export_regenerates_current_thumbnail_for_existing_video(tmp_path: Path, batch: bool, existing_cover: bool) -> None:
+    calls = Calls()
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
+    job = _run_ready(service, candidate_count=1, episode_number=14)
+    story = job.storylines[0]
+    cover = Path(story.active_variant_path).with_suffix(".jpg")
+    if existing_cover:
+        cover.write_bytes(b"old template")
+    else:
+        cover.unlink()
+    before = len(calls.thumbnail_labels)
+    destination = tmp_path / "exports"
+    if batch:
+        exported = service.export_many(job.id, destination, storyline_ids=[story.id])
+        video = next(destination.glob("*.mp4"))
+    else:
+        exported = service.export_selected(job.id, destination / "reel.mp4", storyline_id=story.id)
+        video = Path(exported.export.output_path)
+    assert exported.export.status is Status.READY
+    assert len(calls.thumbnail_labels) == before + 1
+    assert calls.thumbnail_labels[-1] == "Episode 14"
+    assert video.with_suffix(".jpg").read_text() == story.title
+    assert video.read_bytes() == Path(story.active_variant_path).read_bytes()
+
+
+def test_export_thumbnail_failure_does_not_export_video_alone(tmp_path: Path) -> None:
+    deps = _deps(tmp_path, Calls())
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
+    job = _run_ready(service, candidate_count=1)
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("cover generation failed")
+    service.deps = replace(deps, render_thumbnail=fail)
+    destination = tmp_path / "exports" / "reel.mp4"
+    with pytest.raises(RuntimeError, match="cover generation failed"):
+        service.export_selected(job.id, destination, storyline_id="s1")
+    assert not destination.exists()
+    assert not destination.with_suffix(".jpg").exists()
+    assert service.store.load(job.id).export.status is Status.FAILED

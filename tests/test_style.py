@@ -21,31 +21,32 @@ def test_load_done_preset() -> None:
     assert s.sub_box_alpha == 200
     assert s.sub_shadow_alpha == 0
     assert s.watermark_font.name == "A2Z-5Medium.otf"
-    assert s.title_size == 105
+    assert s.title_size == 84
     assert s.title_emphasis_size is None
     assert s.title_line_gap == 24
     assert s.title_max_lines == 2
-    assert s.title_speaker_size == 46
+    assert s.title_speaker_size == 34
     assert s.title_speaker_color == "#FFFFFF"
     assert s.title_speaker_gap == 40
-    assert s.title_anchor_y == 1185
-    assert s.title_upper_size == 70
+    assert s.title_anchor_y == 1165
+    assert s.title_upper_size == 56
     assert s.title_upper_color == "#FFFFFF"
-    assert s.sub_size == 40
+    assert s.sub_size == 34
     assert s.sub_opacity == 255
-    assert s.sub_y == -400
+    assert s.sub_y == -420
     assert s.watermark_size == 75
     assert s.watermark_opacity == 255
     assert s.watermark_y == -1190
     assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
     assert s.watermark_width == 192
     assert s.episode_text == "에피소드 1 / 1000"
-    assert s.episode_size == 44
+    assert s.episode_size == 34
+    assert s.episode_font.name == "A2Z-3Light.otf"
     assert s.episode_color == "#FFFFFF"
     assert s.episode_opacity == 255
     assert s.episode_gap == 18
     assert s.episode_y == -1000
-    assert s.title_y == 1120
+    assert s.title_y == 1100
     assert s.video_aspect == (9, 16)
     assert s.video_zoom == 1.3
     assert s.speed == 1.2

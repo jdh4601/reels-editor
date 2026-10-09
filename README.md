@@ -23,6 +23,14 @@ Korean subtitles and a hook title across the top. A focused review workspace
 then lets you preview each reel, revise or regenerate its title, create its
 Instagram caption, and choose exactly which finished videos to export.
 
+Each reel also gets an automatic 1080×1920 JPG cover: a portrait crop of an
+interview scene, a white two-line headline, and a D.one logo. An orange
+Bold-font label above the headline shows the actual episode as `Episode 14`,
+and a black gradient fades up from the bottom. The editor
+shows the cover alongside the editing controls. Title edits update the cover,
+and exports regenerate the cover with the current template and include a matching
+JPG alongside each MP4, including previously rendered videos.
+
 Everything runs locally. The video, the transcript, and the render all stay on
 your machine; the only thing that leaves is the transcript text you send to
 whichever model provider you configure.

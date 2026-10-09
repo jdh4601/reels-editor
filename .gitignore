@@ -3,6 +3,7 @@
 *.mp4
 *.MOV
 out/
+output/
 .reels/
 build/
 dist/

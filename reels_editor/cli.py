@@ -11,7 +11,7 @@ import typer
 from rich.console import Console
 from rich.progress import Progress
 
-from reels_editor import edl, export, render
+from reels_editor import edl, export, render, thumbnail
 from reels_editor.config import AppConfig, load_config, merged_style
 from reels_editor.storyteller import StorylineResult
 from reels_editor.style import StylePreset, load_style
@@ -133,11 +133,17 @@ def render_combos(video: Path, segments: dict,
                     output,
                     speaker_text=render.speaker_label(doc),
                 )
+                thumbnail.render_thumbnail(
+                    assets, title_text=title["text"], style=style,
+                    out_path=thumbnail.thumbnail_path(output),
+                    speaker_text=render.speaker_label(doc),
+                )
                 rows.append({
                     "storyline": storyline_index + 1,
                     "title_index": title_index + 1,
                     "title": title["text"],
                     "file": str(output.relative_to(work)),
+                    "thumbnail": str(thumbnail.thumbnail_path(output).relative_to(work)),
                     "error": None,
                 })
             except RuntimeError as exc:
@@ -192,7 +198,12 @@ def render_cmd(workdir: Path,
         output,
         speaker_text=render.speaker_label(edl_doc),
     )
-    console.print(f"[green]✅ 완료:[/] {output}")
+    cover = thumbnail.render_thumbnail(
+        assets, title_text=selected_title["text"], style=preset,
+        out_path=thumbnail.thumbnail_path(output),
+        speaker_text=render.speaker_label(edl_doc),
+    )
+    console.print(f"[green]✅ 완료:[/] {output}\n썸네일: {cover}")
 
 
 if __name__ == "__main__":

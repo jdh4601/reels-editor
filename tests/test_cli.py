@@ -44,6 +44,7 @@ def test_render_command_rerenders_workdir(
 
     monkeypatch.setattr(cli.render, "render_base_and_assets", fake_base)
     monkeypatch.setattr(cli.render, "render_with_title", fake_with_title)
+    monkeypatch.setattr(cli.thumbnail, "render_thumbnail", lambda *_a, **kw: kw["out_path"].write_bytes(b"cover") or kw["out_path"])
 
     result = runner.invoke(cli.app, ["render", str(tmp_path)])
 
@@ -74,6 +75,7 @@ def test_render_command_respects_title_option(
         return out_path
 
     monkeypatch.setattr(cli.render, "render_with_title", fake_with_title)
+    monkeypatch.setattr(cli.thumbnail, "render_thumbnail", lambda *_a, **kw: kw["out_path"].write_bytes(b"cover") or kw["out_path"])
 
     result = runner.invoke(cli.app, ["render", str(tmp_path), "--title", "2"])
 

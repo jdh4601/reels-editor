@@ -1015,3 +1015,34 @@ def test_metadata_patch_returns_saved_overlay_fields(tmp_path: Path) -> None:
     for episode in (0, True, 1.5, "15"):
         assert client.patch(url, json={"name": "새 이름", "role": "", "episode_number": episode}).status_code == 422
     assert client.patch(url, json={"name": "", "role": "", "episode_number": 15}).status_code == 422
+
+
+def test_generated_cover_in_snapshot_archive_and_authenticated_media(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    job = store.create_job(source_url="https://youtu.be/cover123")
+    video = store.job_dir(job.id) / "s1" / "reel.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"video")
+    cover = video.with_suffix(".jpg")
+    cover.write_bytes(b"generated cover")
+    video_artifact = store.register_artifact(job.id, video, kind="video/mp4")
+    cover_artifact = store.register_artifact(job.id, cover, kind="image/jpeg")
+    job = store.load(job.id)
+    job.status = Status.READY
+    job.storylines = [Storyline(id="s1", index=0, title="첫 고객을 만든 방법", status=Status.READY,
+                               active_variant_path=str(video),
+                               variants=[Variant(id=video_artifact.id, title_text="첫 고객을 만든 방법",
+                                                 subtitles_enabled=True, status=Status.READY, path=str(video))])]
+    job = store.save(job)
+    client = TestClient(create_app(static_dir=_static(tmp_path), media_dir=tmp_path,
+                                  job_service=FakeService(store, job), session_token="secret"))
+    url = f"/media/{job.id}/{cover_artifact.id}"
+    assert client.get(url).status_code == 401
+    response = client.get(url + "?token=secret")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.content == b"generated cover"
+    snapshot = client.get("/api/snapshot?token=secret").json()
+    assert snapshot["storylines"][0]["thumbnail_url"] == url
+    archive = client.get("/api/archive?token=secret").json()
+    assert archive["items"][0]["thumbnail_url"] == url

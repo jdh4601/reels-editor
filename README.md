@@ -31,9 +31,9 @@ shows the cover alongside the editing controls. Title edits update the cover,
 and exports regenerate the cover with the current template and include a matching
 JPG alongside each MP4, including previously rendered videos.
 
-Everything runs locally. The video, the transcript, and the render all stay on
-your machine; the only thing that leaves is the transcript text you send to
-whichever model provider you configure.
+Video processing runs locally. Transcript text is sent to the model provider
+you configure for analysis, titles, and captions. Google Drive exports and
+iCloud Notes saves use the sync services you explicitly select.
 
 ## Why this exists
 
@@ -50,8 +50,7 @@ you make the call about which ones are worth making. Then it does the cutting.
 
 **Nothing is paraphrased.** Subtitles are the source transcript, verbatim. The
 model may delete and reorder segments; it may not rewrite a single ending or
-particle. If a quote opens, the cut runs through the segment that closes it. The
-only text the model writes is the title.
+particle. If a quote opens, the cut runs through the segment that closes it. Titles and Instagram captions are generated separately from the source dialogue.
 
 **Candidates carry their evidence.** Each of the ten proposals names the
 transcript segments it is built from, so a claim can be checked before you spend
@@ -78,7 +77,15 @@ portrait player with keyboard navigation. You can inspect the story structure,
 edit both title lines, ask the configured model for a fresh title, regenerate
 the Instagram caption, and select only approved reels for export.
 
-**Your model, your choice.** Codex CLI, Claude Code CLI, the OpenAI API, Kimi,
+**Matching covers on every export.** Single and batch exports regenerate the
+cover with the current template, including for previously rendered reels. Each
+MP4 is accompanied by a JPG with the same filename stem.
+
+**Editable founder and episode details.** Change a reel’s name, role, and episode
+number without rerunning candidate analysis. The video overlay and cover update
+together; the cover shows the episode number above its headline.
+
+**Your model, your choice.** Codex CLI, Claude Code CLI, Gemini CLI, the OpenAI API, Kimi,
 or any OpenAI-compatible server.
 
 ## Requirements
@@ -89,6 +96,7 @@ macOS, plus:
 | --- | --- | --- |
 | Python 3.11+ | Runs the app | [python.org](https://www.python.org/downloads/) |
 | ffmpeg, ffprobe | Cuts and renders the video | `brew install ffmpeg` |
+| Node.js and npm | Builds the desktop UI | Required when installing from source |
 | A model provider | Reads the transcript, writes the plan | see [Model providers](#model-providers) |
 
 The D.one title, subtitle, and logo assets used by the default style are bundled
@@ -137,9 +145,10 @@ Use **New tab** (`새 탭`) to process up to three different YouTube URLs in par
    (Generate selected reels). After the script is finalized, only its required video/audio sections are
    downloaded and your picks are rendered at 20–40 seconds each.
 5. Review the finished reels with the arrow buttons or keyboard. Expand
-   **제목·캡션·시나리오 수정하기** to edit the two-line on-screen title, request
+   **제목·이름·에피소드·캡션 수정하기** to edit the two-line on-screen title, request
    four AI title candidates ranked with the recommended title first, inspect the story beats, or generate an Instagram caption
-   grounded in that reel's actual script. Captions include a 270–300 character
+   grounded in that reel's actual script. You can also edit the founder’s name,
+   role, and episode number for that reel. Captions include a 270–300 character
    summary followed by a topic-specific comment keyword and resource CTA, with the
    video source credit on the final line. Configure
    that keyword and resource for the post in ManyChat. Click **아이폰 메모장에 복사** to save
@@ -149,15 +158,26 @@ Use **New tab** (`새 탭`) to process up to three different YouTube URLs in par
    stored. Press **Space** or use the selection control to mark approved reels,
    then click **선택 영상 내보내기** (Export selected).
 
-Exported MP4 files are saved directly in Google Drive’s existing `릴스(에피소드)` folder.
+Exported MP4 files and matching JPG covers are saved directly in Google Drive’s existing `릴스(에피소드)` folder.
 Selecting either My Drive or `릴스(에피소드)` reuses the existing folder.
-Filename collisions add `(2)`, `(3)`, and so on, preserving existing videos.
+Filename collisions add `(2)`, `(3)`, and so on to both files, preserving
+existing videos and covers. If cover generation fails, the export fails instead
+of saving a video without its cover.
 App-managed render archives and Google Drive export directories are kept
 separate. Completed reels remain available from the archive for seven days, so
 they can be reopened, revised, and exported again without starting over.
 
 On the first caption save, allow Reels Editor to automate Notes. Both the Mac
 and iPhone must use the same Apple Account with iCloud Notes sync enabled.
+
+The default D.one style uses smaller video titles and subtitles. Founder and
+episode details share the same 34 px A2Z Light font; subtitles are also 34 px.
+These defaults live in [`styles/done.yaml`](styles/done.yaml), and settings
+overrides take precedence. Covers use a separate portrait layout with a bold
+orange episode label above white title lines and a fixed logo position.
+
+Final reels normalize audio to −14 LUFS with a −1.5 dBTP target and encode
+48 kHz AAC audio at 192 kbps. This also applies when rerendering an overlay.
 
 The first render crops, composites the title, subtitles, and logo, and encodes
 the final MP4 in one FFmpeg pass. Title and subtitle edits reuse the downloaded
@@ -227,7 +247,9 @@ refuse; Control-click the app in Finder and choose **Open**.
 | --- | --- |
 | Jobs, downloaded video, transcripts, render assets and local face-analysis cache | `~/Library/Application Support/reels-editor/jobs/` |
 | Configuration | `~/.config/reels-editor/config.yaml` |
-| Exported MP4 | A per-run folder under `~/Movies/Reels Editor Exports/` |
+| Desktop exports: MP4 + JPG | The selected local Google Drive `릴스(에피소드)` folder |
+| Completed reel archive | `~/Movies/Reels Editor/` (reopened in the app for seven days) |
+| Service batch exports without a destination | A per-run folder under `~/Movies/Reels Editor Exports/` |
 
 Transcripts, downloaded sections and candidate analyses are shared in
 `jobs/.source-cache/`, keyed by video ID across URL variants and concurrent tabs.
@@ -244,6 +266,8 @@ Re-render an existing EDL work directory after editing `edl.json` by hand:
 ```bash
 .venv/bin/reels-editor render out/<project-date>/s1
 ```
+
+The command also generates a matching JPG cover alongside the rendered MP4.
 
 ## Troubleshooting
 

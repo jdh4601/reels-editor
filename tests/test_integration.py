@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from reels_editor import edl, export, render
+from reels_editor import edl, export, render, thumbnail
 from reels_editor.cli import render_combos, write_manifest
 from reels_editor.config import AppConfig
 from reels_editor.storyteller import StorylineResult
@@ -100,6 +100,8 @@ def test_multi_combo_render_reuses_storyline_analysis_assets(
         return real_render_base(*args, **kwargs)
 
     monkeypatch.setattr(render, "render_base_and_assets", tracked_render_base)
+    real_thumbnail = thumbnail.render_thumbnail
+    monkeypatch.setattr(thumbnail, "render_thumbnail", lambda *args, **kwargs: real_thumbnail(*args, require_open_eyes=False, **kwargs))
     work = tmp_path / "work"
     work.mkdir()
 

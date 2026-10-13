@@ -17,7 +17,7 @@ CTA_PATTERN = re.compile(
     r"'(?P<keyword>[가-힣A-Za-z0-9]{2,10})'[을를] 남겨주세요\.\s*"
     r".+?에 대해 정리한 .+?[을를] 보내드립니다\.$"
 )
-SOURCE_CREDIT_PREFIX = "원본 출처:"
+SOURCE_CREDIT_PREFIX = "🎥"
 UNKNOWN_CHANNEL = "채널 정보 없음"
 
 
@@ -129,7 +129,7 @@ def validate_caption(caption: str, episode_number: int, *, max_chars: int = MAX_
             errors.append(f"댓글 키워드는 '{comment_keyword}' 그대로 써야 함")
     if "창업자 창업자" in caption:
         errors.append("창업자 직책을 중복해서 쓰면 안 됨")
-    if "원본 출처:" in caption:
+    if "원본 출처:" in caption or re.search(r"(?m)^🎥\s", caption):
         errors.append("출처는 앱이 붙이므로 직접 출력하면 안 됨")
     if "```" in caption or re.search(r"(?m)^\s*#{1,6}\s", caption):
         errors.append("Markdown 또는 해시태그를 포함함")
@@ -151,11 +151,11 @@ def append_source_credit(
 
     # Keep the trusted video source as the last line, including on regeneration.
     normalized_caption = re.sub(
-        rf"(?m)^{re.escape(SOURCE_CREDIT_PREFIX)}[^\n]*(?:\n|$)",
+        rf"(?m)^(?:{re.escape(SOURCE_CREDIT_PREFIX)}|원본 출처:)[^\n]*(?:\n|$)",
         "", normalized_caption,
     )
     normalized_caption = _normalize(normalized_caption)
-    credit = f"{SOURCE_CREDIT_PREFIX} {normalized_channel} {normalized_url}"
+    credit = f"{SOURCE_CREDIT_PREFIX} {normalized_channel}"
     result = f"{normalized_caption}\n\n{credit}"
     if len(result) > MAX_CAPTION_CHARS:
         raise ValueError(f"출처 포함 캡션이 {MAX_CAPTION_CHARS}자를 초과합니다 (현재 {len(result)}자).")

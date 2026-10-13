@@ -365,3 +365,16 @@ def test_small_single_face_also_stays_centered_while_any_part_is_visible():
 def test_two_faces_do_not_override_visible_target_center_lock():
     frames = [[FaceSignal(.12, .06, .1), FaceSignal(.8, .06, .9)]] * 60
     assert all(point.x == .5 for point in speaker_focus.frame_focus_points(frames, center_visible_width=.59))
+
+
+def test_eye_openness_is_invariant_to_head_tilt():
+    import pytest
+    from types import SimpleNamespace
+    import math
+    def region(angle):
+        points = [(0, 0), (.5, .025), (1, 0), (.5, -.025)]
+        rotated = [SimpleNamespace(x=x*math.cos(angle)-y*math.sin(angle),
+                                   y=x*math.sin(angle)+y*math.cos(angle)) for x, y in points]
+        return SimpleNamespace(pointCount=lambda: len(rotated), normalizedPoints=lambda: rotated)
+    for angle in (0, .5, -.7):
+        assert speaker_focus._eye_region_openness(region(angle), 1) == pytest.approx(.05)

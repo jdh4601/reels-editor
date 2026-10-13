@@ -40,6 +40,7 @@ class FaceSignal:
     # 탐지 시점에 좌상단 원점의 얼굴 중심으로 변환해 보관한다.
     y: float = 0.5
     height: float = 0.0
+    eye_open: float | None = None
 
 
 @dataclass(frozen=True)
@@ -444,8 +445,32 @@ def _detect_faces(path: Path) -> list[FaceSignal]:
             mouth_open=mouth_open,
             y=float(1.0 - (box.origin.y + box.size.height / 2)),
             height=float(box.size.height),
+            eye_open=_eye_openness(landmarks, float(box.size.height / box.size.width)),
         ))
     return faces
+
+
+def _eye_openness(landmarks: Any, face_aspect: float = 1.0) -> float | None:
+    if landmarks is None:
+        return None
+    eyes = [landmarks.leftEye(), landmarks.rightEye()]
+    if any(eye is None or eye.pointCount() < 4 for eye in eyes):
+        return None
+    # Landmarks are normalized to the face box; restore its aspect ratio.
+    return min(_eye_region_openness(eye, face_aspect) for eye in eyes)
+
+
+def _eye_region_openness(region: Any, face_aspect: float) -> float:
+    points = region.normalizedPoints()
+    xy = [(float(points[i].x), float(points[i].y) * face_aspect) for i in range(region.pointCount())]
+    # Measure perpendicular to the eye's long axis so a tilted closed eye is not "open".
+    a, b = max(((a, b) for a in xy for b in xy), key=lambda pair: math.dist(*pair))
+    width = math.dist(a, b)
+    if width <= 0:
+        return 0.0
+    dx, dy = (b[0] - a[0]) / width, (b[1] - a[1]) / width
+    heights = [(x - a[0]) * -dy + (y - a[1]) * dx for x, y in xy]
+    return (max(heights) - min(heights)) / width
 
 
 def _mouth_openness(region: Any) -> float:

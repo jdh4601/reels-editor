@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import re
+import unicodedata
 import socket
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
@@ -71,20 +73,39 @@ def fetch_source_text(url: str) -> str:
         return " ".join(parser.parts)
 
 
+def _identity_key(value: str) -> str:
+    return re.sub(r"[^\w]", "", unicodedata.normalize("NFKC", value).casefold())
+
+
+def _source_matches_person(source_name: str, page: str, context: dict, speaker: dict) -> bool:
+    """A biography heading may identify a person separately from its role paragraph."""
+    name = _identity_key(source_name)
+    if not name or name not in _identity_key(page):
+        return False
+    identities = [speaker.get("name", ""), speaker.get("source_name", ""), *context.values()]
+    return any(name in _identity_key(value) for value in identities)
+
+
 def enrich_speakers(
     results: list[StorylineResult], segments: dict, *, cache_path: Path,
     runner: Callable[[str], str] | None = None,
     fetch: Callable[[str], str] = fetch_source_text,
+    required: bool = False,
 ) -> None:
-    """Batch missing roles, cache grounded results, and keep failures nonfatal."""
+    """Ground missing roles; required mode refuses name-only final renders."""
     missing = {}
+    unidentified = []
     for result in results:
         if result.doc is None:
             continue
         speaker = normalize_speaker_data(result.doc.get("speaker"))
         name = speaker["name"]
-        if name and name != "인터뷰 화자" and format_speaker_label(speaker) == name:
+        if not name or name == "인터뷰 화자":
+            unidentified.append(name or "이름 없음")
+        elif format_speaker_label(speaker) == name:
             missing[name] = speaker
+    if required and unidentified:
+        raise ValueError("화자 이름을 확인하지 못해 직책을 검색할 수 없습니다. 이름을 수정한 뒤 다시 시도하세요.")
     if not missing:
         return
     context = {key: str(segments.get(key) or "") for key in
@@ -104,7 +125,7 @@ def enrich_speakers(
     except (ValueError, TypeError):
         pass
     pending = [name for name in missing if name not in cache["speakers"]
-               and not (recent_failure and name in cache["errors"])]
+               and not (not required and recent_failure and name in cache["errors"])]
     pages = {}
     if pending:
         prompt = (
@@ -115,9 +136,13 @@ def enrich_speakers(
             "창업 사실은 창업자 직책으로 쓸 수 있다. 검색·페이지 열람 없이 기억으로 답하지 마라. "
             "각 요청 이름을 그대로 name에 쓰고, 한국어 전체 이름은 display_name에 쓴다. "
             "source_name은 출처에 나온 인물의 전체 이름, evidence는 그 이름·회사·직책을 "
-            "함께 포함하는 페이지 원문 그대로다. source_url은 실제 열람한 HTTPS HTML URL이다. "
+            "뒷받침하는 페이지 원문 그대로다. 인물 이름이 제목에 있고 본문이 She/He로 시작하면 "
+            "직책 본문만 정확히 인용해도 된다. 제목과 문장을 합쳐 가짜 인용을 만들지 마라. "
+            "source_url은 실제 열람한 HTTPS HTML URL이다. "
             "company에는 출처에서 확인되는 짧은 브랜드명(예: Social Capital)을 쓰고 긴 법인명은 피하라. "
             "브랜드명과 법인명이 다르면 둘의 관계가 나오는 원문을 evidence에 함께 넣어라. "
+            "각 이름에 최대 3개 서로 다른 출처 후보를 반환해 페이지 접근 실패에도 대체 출처를 검증할 수 있게 하라. "
+            "회사명은 가능한 출처의 표기 그대로 쓴다. CEO 확인이 어렵다면 근거 있는 창업자 역할을 우선한다. "
             "role은 창업자 또는 CEO, alternate_role은 투자자 또는 연쇄 창업가다. "
             "확인하지 못하면 company/role/alternate_role/source_url/evidence를 빈 문자열로 둔다. "
             'JSON만 출력: {"speakers":[{"name":"요청 이름","display_name":"한국어 전체 이름",'
@@ -134,6 +159,8 @@ def enrich_speakers(
                 if not isinstance(entry, dict) or entry.get("name") not in pending:
                     continue
                 name = entry["name"]
+                if name in cache["speakers"]:
+                    continue
                 try:
                     url = str(entry.get("source_url") or "")
                     source_name = str(entry.get("source_name") or "")
@@ -144,7 +171,7 @@ def enrich_speakers(
                     if url not in pages:
                         pages[url] = fetch(url)
                     if (_text(evidence) not in _text(pages[url])
-                            or _text(source_name) not in _text(evidence)
+                            or not _source_matches_person(source_name, pages[url], context, missing[name])
                             or not _speaker_evidence_supports_identity(speaker, evidence)
                             or format_speaker_label(speaker) == name):
                         raise ValueError("출처 원문이 인물·회사·직책을 뒷받침하지 않습니다.")
@@ -172,3 +199,9 @@ def enrich_speakers(
         name = normalize_speaker_data(result.doc.get("speaker"))["name"]
         if name in missing and name in cache["speakers"]:
             result.doc["speaker"] = dict(cache["speakers"][name])
+
+    if required:
+        unresolved = [name for name in missing if name not in cache["speakers"]]
+        if unresolved:
+            reasons = "; ".join(f"{name}: {cache['errors'].get(name, '근거 없음')}" for name in unresolved)
+            raise ValueError("웹 검색으로 직책·역할을 확인하지 못했습니다. 이름과 회사 정보를 확인한 뒤 다시 시도하세요. " + reasons)

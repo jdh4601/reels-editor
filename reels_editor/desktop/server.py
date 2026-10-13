@@ -77,6 +77,10 @@ class InstagramCaptionRequest(BaseModel):
     model: str | None = Field(default=None, max_length=100)
 
 
+class ThumbnailSelectionRequest(BaseModel):
+    artifact_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class StorylineTitleRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     title_upper: str | None = Field(default=None, max_length=200)
@@ -418,6 +422,21 @@ def create_app(
         except (JobServiceError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"suggestions": suggestions}
+
+    @app.post("/api/jobs/{job_id}/storylines/{storyline_id}/thumbnail/candidates")
+    def thumbnail_candidates(job_id: str, storyline_id: str, _auth: None = Depends(require_token)) -> dict:
+        try:
+            return service.generate_thumbnail_candidates(job_id, storyline_id)
+        except (JobServiceError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/storylines/{storyline_id}/thumbnail/select")
+    def select_thumbnail(job_id: str, storyline_id: str, request: ThumbnailSelectionRequest,
+                         _auth: None = Depends(require_token)) -> dict:
+        try:
+            return _snapshot_from_job(service.select_thumbnail_candidate(job_id, storyline_id, request.artifact_id))
+        except (JobServiceError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/jobs/{job_id}/export")
     def export_job(job_id: str, request: ExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:

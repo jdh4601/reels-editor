@@ -195,6 +195,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         return out_path
 
     return JobServiceDeps(
+        trim_topic_edges=lambda doc, *_args, **_kwargs: doc,
         enrich_speakers=lambda *_args, **_kwargs: None,
         analyze_candidates=lambda _segments, _types, **_kwargs: _candidates(),
         generate_selected_candidates=lambda _segments, candidates, **_kwargs: _count_generate(
@@ -378,7 +379,7 @@ def test_job_service_generates_and_persists_caption_for_selected_reel(tmp_path: 
 
     caption = updated.storylines[1].instagram_caption
     assert caption.startswith("Ep 37. ")
-    assert caption.splitlines()[-1] == f"원본 출처: 테스트 창업가 채널 {TEST_URL}"
+    assert caption.splitlines()[-1] == "🎥 테스트 창업가 채널"
     assert service.store.load(ready.id).storylines[1].instagram_caption == caption
     assert len(calls.caption_requests) == 1
     request = calls.caption_requests[0]
@@ -1191,26 +1192,26 @@ def test_google_drive_export_reuses_existing_folder_and_keeps_file_collisions_sa
     exported = service.export_many(job.id, destination, storyline_ids=["s1"])
     repeated_destination = service.google_drive_export_directory(job.id, my_drive)
 
-    assert destination == episode_folder
+    assert destination == episode_folder / "에피소드 11"
     assert destination.is_dir()
     assert [path.name for path in destination.glob("*.mp4")] == [
         "에피소드 11 - https youtu.be A 제목 1.mp4"
     ]
     assert exported.export.output_path == str(destination)
-    assert repeated_destination == episode_folder
+    assert repeated_destination == destination
     assert repeated_destination.is_dir()
 
     service.export_many(job.id, repeated_destination, storyline_ids=["s1"])
-    assert sorted(path.name for path in episode_folder.iterdir()) == [
+    assert sorted(path.name for path in destination.iterdir()) == [
         "에피소드 11 - https youtu.be A 제목 1 (2).jpg",
         "에피소드 11 - https youtu.be A 제목 1 (2).mp4",
         "에피소드 11 - https youtu.be A 제목 1.jpg",
         "에피소드 11 - https youtu.be A 제목 1.mp4",
     ]
-    assert service.google_drive_export_directory(job.id, episode_folder) == episode_folder
+    assert service.google_drive_export_directory(job.id, episode_folder) == destination
 
 
-def test_default_batch_export_creates_isolated_selection_folder(tmp_path: Path) -> None:
+def test_default_batch_export_groups_selection_in_episode_folder(tmp_path: Path) -> None:
     service = JobService(
         store=JobStore(tmp_path / "jobs"),
         deps=_deps(tmp_path, Calls()),
@@ -1226,7 +1227,7 @@ def test_default_batch_export_creates_isolated_selection_folder(tmp_path: Path) 
         "에피소드 1 - https youtu.be B 제목 1.mp4"
     ]
     assert list(destination.glob("*.json")) == []
-    assert destination.is_relative_to(tmp_path / "exports")
+    assert destination == tmp_path / "exports" / "에피소드 1"
 
 
 def test_export_filename_uses_episode_number_and_sanitized_reel_title(tmp_path: Path) -> None:
@@ -2005,3 +2006,129 @@ def test_export_thumbnail_failure_does_not_export_video_alone(tmp_path: Path) ->
     assert not destination.exists()
     assert not destination.with_suffix(".jpg").exists()
     assert service.store.load(job.id).export.status is Status.FAILED
+
+
+def test_thumbnail_candidates_selection_and_export_preserve_chosen_photo(tmp_path):
+    calls = Calls()
+    deps = replace(_deps(tmp_path, calls), find_founder_photos=lambda *_args, **_kwargs: ([], ['사진 검색 결과 없음']))
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=deps)
+    job = _run_ready(service)
+    story = job.storylines[0]
+    result = service.generate_thumbnail_candidates(job.id, story.id)
+    assert [c['kind'] for c in result['candidates']] == ['interview', 'interview']
+    assert result['warnings'] == ['사진 검색 결과 없음']
+    selected = result['candidates'][1]
+    job = service.select_thumbnail_candidate(job.id, story.id, selected['artifact_id'])
+    variant = service._active_variant(job.storylines[0])
+    cover = Path(variant.path).with_suffix('.jpg')
+    cover.write_bytes(b'chosen search photo')
+    before = len(calls.thumbnail_labels)
+    destination = tmp_path / 'export.mp4'
+    service.export_selected(job.id, destination, storyline_id=story.id)
+    assert destination.with_suffix('.jpg').read_bytes() == b'chosen search photo'
+    assert len(calls.thumbnail_labels) == before
+    with pytest.raises(JobServiceError, match='이 릴스'):
+        service.select_thumbnail_candidate(job.id, job.storylines[1].id, selected['artifact_id'])
+    current = service.store.load(job.id)
+    current.storylines[0].revision += 1
+    service.store.save(current)
+    with pytest.raises(JobServiceError, match='수정 전'):
+        service.select_thumbnail_candidate(job.id, story.id, selected['artifact_id'])
+
+
+def test_render_persists_topic_review_before_assets(tmp_path):
+    from reels_editor.topic_edges import trim_topic_edges
+    calls = Calls()
+    deps = replace(_deps(tmp_path, calls), trim_topic_edges=trim_topic_edges,
+        build_runner=lambda _cfg: lambda _prompt: json.dumps({'core_topic': '대표 인터뷰', 'segments': [
+            {'id': 'seg1', 'verdict': 'relevant', 'reason': '대표 인터뷰의 본문'}]}))
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=deps)
+    job = _run_ready(service)
+    assert job.status is Status.READY
+    for story in job.storylines:
+        doc = json.loads(Path(story.edl_path).read_text())
+        assert doc['topic_edge_review']['core_topic'] == '대표 인터뷰'
+        assert doc['topic_edge_review']['removed_seg_ids'] == []
+
+
+def test_google_drive_batch_export_places_all_videos_and_jpgs_in_episode_folder(tmp_path):
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=_deps(tmp_path, Calls()))
+    job = _run_ready(service, episode_number=20)
+    my_drive = tmp_path / 'My Drive'
+    my_drive.mkdir()
+    destination = service.google_drive_export_directory(job.id, my_drive)
+    exported = service.export_many(job.id, destination, storyline_ids=['s1', 's2', 's3'])
+    assert destination == my_drive / '릴스(에피소드)' / '에피소드 20'
+    assert exported.export.output_path == str(destination)
+    videos = list(destination.glob('*.mp4'))
+    assert len(videos) == 3
+    assert len(list(destination.glob('*.jpg'))) == 3
+    assert all(video.with_suffix('.jpg').is_file() for video in videos)
+    assert list(destination.glob('*/')) == []
+
+
+def test_google_drive_episode_folder_cannot_escape_through_symlink(tmp_path):
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=_deps(tmp_path, Calls()))
+    job = _run_ready(service, candidate_count=1, episode_number=20)
+    root = tmp_path / '릴스(에피소드)'
+    root.mkdir()
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (root / '에피소드 20').symlink_to(outside, target_is_directory=True)
+    with pytest.raises(JobServiceError):
+        service.google_drive_export_directory(job.id, root)
+    assert list(outside.iterdir()) == []
+
+
+def test_export_repairs_missing_role_and_rerenders_existing_overlay(tmp_path):
+    calls = Calls()
+    def enrich(results, _segments, **kwargs):
+        assert kwargs.get('required') is True
+        results[0].doc['speaker'] = {'name': '김현지', 'company': 'Example', 'role': '창업자',
+                                   'evidence': 'Kim is the founder of Example.'}
+    deps = _deps(tmp_path, calls)
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=deps)
+    job = _run_ready(service)
+    service.deps = replace(deps, enrich_speakers=enrich)
+    before = calls.overlay
+    output = tmp_path / 'export.mp4'
+    updated = service.export_selected(job.id, output, storyline_id='s1')
+    assert updated.storylines[0].speaker_override == {'name': '김현지', 'role': 'Example 창업자'}
+    assert calls.overlay == before + 1
+    assert calls.speaker_texts[-1] == '김현지 (Example 창업자)'
+    assert output.is_file() and output.with_suffix('.jpg').is_file()
+    assert json.loads(Path(updated.storylines[0].edl_path).read_text())['speaker']['company'] == 'Example'
+
+
+def test_export_does_not_complete_without_verified_role(tmp_path):
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=deps)
+    job = _run_ready(service)
+    def fail(*_args, **kwargs):
+        assert kwargs['required'] is True
+        raise ValueError('웹 검색으로 직책·역할을 확인하지 못했습니다.')
+    service.deps = replace(deps, enrich_speakers=fail)
+    output = tmp_path / 'export.mp4'
+    with pytest.raises(JobServiceError, match='직책·역할'):
+        service.export_selected(job.id, output, storyline_id='s1')
+    assert not output.exists()
+
+
+def test_thumbnail_partial_failure_still_returns_successful_interview_candidate(tmp_path):
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=deps)
+    job = _run_ready(service)
+    render_thumb = deps.render_thumbnail
+    def partial(assets, **kwargs):
+        if kwargs['frame_time_s'] is None:
+            raise RuntimeError('no open eye frame')
+        return render_thumb(assets, **kwargs)
+    def search_fail(*_args, **_kwargs):
+        raise RuntimeError('search unavailable')
+    service.deps = replace(deps, render_thumbnail=partial, find_founder_photos=search_fail)
+    result = service.generate_thumbnail_candidates(job.id, 's1')
+    assert len(result['candidates']) == 1
+    assert result['candidates'][0]['kind'] == 'interview'
+    assert len(result['warnings']) == 2

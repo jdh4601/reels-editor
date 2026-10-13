@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, speaker_identity, source_cache, thumbnail, title_suggestion, youtube
+from reels_editor import founder_photos, speaker_focus
+from PIL import Image
+from reels_editor.topic_edges import trim_topic_edges
 from reels_editor.config import AppConfig, merged_style
 from reels_editor.drive_paths import episode_export_root
 from reels_editor.llm import build_runner
@@ -64,6 +67,8 @@ class JobServiceError(RuntimeError):
 
 @dataclass(frozen=True)
 class JobServiceDeps:
+    find_founder_photos: Callable[..., tuple] = founder_photos.find_photos
+    trim_topic_edges: Callable[..., dict] = trim_topic_edges
     enrich_speakers: Callable[..., None] = speaker_identity.enrich_speakers
     analyze_candidates: Callable[..., list[ContentCandidate]] = candidate_analyzer.generate_candidates
     generate_selected_candidates: Callable[..., list[StorylineResult]] = candidate_analyzer.generate_selected_candidates
@@ -995,6 +1000,52 @@ class JobService:
                 current.message = current.error
             self._save(current)
 
+    def ensure_storyline_role(self, job_id: str, storyline_id: str) -> Job:
+        """Repair existing name-only reels before export using their saved source context."""
+        job = self.store.load(job_id)
+        story = self._find_storyline(job, storyline_id)
+        if story.speaker_override and story.speaker_override.get("role", "").strip():
+            return job
+        if not story.edl_path:
+            raise JobServiceError("화자 직책 확인에 필요한 대본이 없습니다.")
+        persisted = json.loads(Path(story.edl_path).read_text())
+        old_label = self._speaker_text(story, persisted)
+        if " (" in old_label:
+            return job
+        doc = self._harmonized_storyline_doc(job, story)
+        segments = json.loads((Path(story.edl_path).parent / "segments.json").read_text())
+        segments.setdefault("source_title", job.project_name or "")
+        if story.speaker_override:
+            doc["speaker"] = {"name": story.speaker_override["name"]}
+        result = StorylineResult(story.index, story.angle_name, doc)
+        try:
+            with self._job_operation(job_id):
+                self.deps.enrich_speakers([result], segments,
+                    cache_path=self.store.job_dir(job_id) / "speaker_lookup.json", required=True)
+                label = render.speaker_label(result.doc)
+                if label == old_label:
+                    return self.store.load(job_id)
+                path = Path(story.edl_path)
+                temp = path.with_suffix(".json.tmp")
+                temp.write_text(json.dumps(result.doc, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(temp, path)
+                name, _, role = label.partition(" (")
+                previous_cover = thumbnail.thumbnail_path(Path(self._active_variant(story).path))
+                previous_selection = previous_cover.with_suffix(".cover.json")
+                updated = self.update_storyline_metadata(job_id, storyline_id,
+                    name=name, role=role.removesuffix(")"),
+                    episode_number=story.episode_number or job.episode_number)
+                if previous_selection.is_file() and previous_cover.is_file():
+                    updated_story = self._find_storyline(updated, storyline_id)
+                    cover = thumbnail.thumbnail_path(Path(self._active_variant(updated_story).path))
+                    shutil.copyfile(previous_cover, cover)
+                    chosen = json.loads(previous_selection.read_text())
+                    chosen["revision"] = updated_story.revision
+                    cover.with_suffix(".cover.json").write_text(json.dumps(chosen), encoding="utf-8")
+                return updated
+        except (OSError, ValueError) as exc:
+            raise JobServiceError(str(exc)) from exc
+
     def export_selected(
         self,
         job_id: str,
@@ -1007,6 +1058,7 @@ class JobService:
         selected_storyline_id = storyline_id or initial.selected_storyline_id or initial.export.selected_storyline_id
         if not selected_storyline_id:
             raise JobServiceError("storyline_id is required")
+        initial = self.ensure_storyline_role(job_id, selected_storyline_id)
         story_for_request = self._find_storyline(initial, selected_storyline_id)
         if subtitles_on is not None and story_for_request.subtitles_on != subtitles_on:
             self.select_variant(
@@ -1083,6 +1135,7 @@ class JobService:
 
         initial = self.store.load(job_id)
         for storyline_id in selected_ids:
+            initial = self.ensure_storyline_role(job_id, storyline_id)
             story = self._find_storyline(initial, storyline_id)
             if subtitles_on is not None and story.subtitles_on != subtitles_on:
                 self.select_variant(
@@ -1145,28 +1198,24 @@ class JobService:
             return self._save(job)
 
     def _new_selection_export_directory(self, job: Job) -> Path:
-        safe_title = _safe_filename_component(
-            job.project_name or "YouTube 인터뷰",
-            max_bytes=EXPORT_TITLE_MAX_BYTES,
-        )
-        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        destination = self.export_root / f"Ep-{job.episode_number}_{safe_title}" / f"{stamp}-{uuid.uuid4().hex[:6]}"
-        destination.mkdir(parents=True, exist_ok=False)
+        destination = self.export_root / f"에피소드 {job.episode_number}"
+        destination.mkdir(parents=True, exist_ok=True)
         return destination
 
     def google_drive_export_directory(self, job_id: str, export_root: Path) -> Path:
-        """Reuse Google Drive's 릴스(에피소드) folder for MP4 exports."""
+        """Group all selected MP4/JPG pairs in the job's episode folder."""
+        job = self.store.load(job_id)
         try:
             root = episode_export_root(export_root)
             root.mkdir(exist_ok=True)
             root = root.resolve(strict=True)
+            destination = root / f"에피소드 {job.episode_number}"
+            if not destination.resolve().is_relative_to(root):
+                raise ValueError("에피소드 저장 폴더가 Google Drive 경로 밖에 있습니다.")
+            destination.mkdir(exist_ok=True)
         except (OSError, ValueError) as exc:
             raise JobServiceError("선택한 Google Drive 저장 폴더를 찾을 수 없습니다.") from exc
-        if not root.is_dir():
-            raise JobServiceError("선택한 Google Drive 저장 경로가 폴더가 아닙니다.")
-
-        self.store.load(job_id)
-        return root
+        return destination
 
     def _copy_export_variant(
         self,
@@ -1276,8 +1325,125 @@ class JobService:
                         temporary.unlink()
             return destination
 
+    def generate_thumbnail_candidates(self, job_id: str, storyline_id: str) -> dict:
+        with self._job_operation(job_id):
+            with self._lock:
+                job = self.store.load(job_id)
+                story = self._find_storyline(job, storyline_id)
+                if story.status is not Status.READY or not story.assets_path:
+                    raise JobServiceError("완성된 릴스에서 썸네일을 생성하세요.")
+                variant = self._active_variant(story)
+                revision = story.revision
+                style = self._style_for_episode(
+                    merged_style(self.deps.load_style(self.style_path), self.config.style),
+                    story.episode_number or job.episode_number,
+                )
+                doc = self._harmonized_storyline_doc(job, story)
+            directory = self.store.job_dir(job_id) / storyline_id / "thumbnail-candidates" / uuid.uuid4().hex
+            directory.mkdir(parents=True)
+            assets = render.RenderAssets.read_manifest(Path(story.assets_path))
+            options = dict(title_text=story.title, title_upper=story.title_upper,
+                           title_lower=story.title_lower, style=style,
+                           speaker_text=self._speaker_text(story, doc))
+            candidates, warnings = [], []
+            for i, time_s in enumerate((None, max(0, assets.total_s * 0.55))):
+                path = directory / f"interview-{i + 1}.jpg"
+                try:
+                    self.deps.render_thumbnail(assets, out_path=path, frame_time_s=time_s,
+                                               require_open_eyes=True, **options)
+                except (OSError, RuntimeError, ValueError):
+                    warnings.append(f"인터뷰 장면 {i + 1}에서 적절한 사진을 찾지 못해 제외했습니다.")
+                    continue
+                candidates.append({"path": str(path), "kind": "interview", "label": f"인터뷰 장면 {i + 1}"})
+            speaker = {**doc.get("speaker", {}), **(story.speaker_override or {})}
+            try:
+                photos, search_warnings = self.deps.find_founder_photos(speaker,
+                    {"source_title": job.project_name, "source_url": job.source_url}, directory, max_photos=4)
+                warnings.extend(search_warnings)
+            except (OSError, RuntimeError, ValueError):
+                photos = []
+                warnings.append("검색 사진을 가져오지 못했습니다. 인터뷰 장면 후보를 사용할 수 있습니다.")
+            for photo in photos:
+                try:
+                    if not speaker_focus.vision_available():
+                        raise ValueError("눈 개폐 확인 기능을 사용할 수 없습니다.")
+                    face = thumbnail.open_eye_face(Path(photo["path"]))
+                    if face is None:
+                        warnings.append("눈 개폐를 확인할 수 없거나 눈 감은 검색 사진은 제외했습니다.")
+                        continue
+                    with Image.open(photo["path"]) as frame:
+                        image = thumbnail.compose_thumbnail(frame, story.title, style,
+                            title_upper=story.title_upper, title_lower=story.title_lower, face=face)
+                    path = directory / f"search-{len(candidates)}.jpg"
+                    image.save(path, "JPEG", quality=95, subsampling=0)
+                    if thumbnail.open_eye_face(path) is None:
+                        path.unlink(missing_ok=True)
+                        warnings.append("최종 검색 썸네일에서 눈을 뜬 얼굴을 확인하지 못해 제외했습니다.")
+                        continue
+                    candidates.append({"path": str(path), "kind": "search", "label": f"창업자 검색 사진 {sum(c['kind'] == 'search' for c in candidates) + 1}",
+                                       "source_url": photo["source_url"], "image_url": photo["image_url"]})
+                    if sum(c['kind'] == 'search' for c in candidates) == 2:
+                        break
+                except (ImportError, KeyError, OSError, RuntimeError, ValueError):
+                    warnings.append("검색 사진을 검사하거나 합성하지 못해 해당 사진을 제외했습니다.")
+            if not candidates:
+                raise JobServiceError("사용할 수 있는 썸네일 후보를 찾지 못했습니다. 다른 장면으로 다시 생성하세요.")
+            warnings = list(dict.fromkeys(warnings))
+            with self._lock:
+                current = self.store.load(job_id)
+                current_story = self._find_storyline(current, storyline_id)
+                if current_story.revision != revision or self._active_variant(current_story).path != variant.path:
+                    raise JobServiceError("생성 중 릴스가 변경되었습니다. 썸네일을 다시 생성하세요.")
+                for candidate in candidates:
+                    artifact = self.store.register_artifact(job_id, Path(candidate.pop("path")), kind="image/jpeg")
+                    candidate.update(id=artifact.id, artifact_id=artifact.id, url=f"/media/{job_id}/{artifact.id}")
+                manifest = {"revision": revision, "variant_path": variant.path, "candidates": candidates, "warnings": warnings}
+                (directory / "candidates.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            return {"candidates": candidates, "warnings": warnings}
+
+    def select_thumbnail_candidate(self, job_id: str, storyline_id: str, artifact_id: str) -> Job:
+        with self._job_operation(job_id), self._lock:
+            job = self.store.load(job_id)
+            story = self._find_storyline(job, storyline_id)
+            if story.status is not Status.READY:
+                raise JobServiceError("완성된 릴스에서 썸네일을 선택하세요.")
+            artifact = job.artifacts.get(artifact_id)
+            if artifact is None:
+                raise JobServiceError("썸네일 후보를 찾지 못했습니다.")
+            path = self.store.resolve_artifact(job_id, artifact_id)
+            root = self.store.job_dir(job_id) / storyline_id / "thumbnail-candidates"
+            if not self._is_relative_to(path, root.resolve()):
+                raise JobServiceError("이 릴스의 썸네일 후보만 선택할 수 있습니다.")
+            manifest = json.loads((path.parent / "candidates.json").read_text())
+            variant = self._active_variant(story)
+            if (manifest['revision'] != story.revision or manifest['variant_path'] != variant.path
+                    or not any(c['artifact_id'] == artifact_id for c in manifest['candidates'])):
+                raise JobServiceError("릴스 수정 전 후보입니다. 썸네일을 다시 생성하세요.")
+            cover = thumbnail.thumbnail_path(Path(variant.path))
+            temp = cover.with_name(f".{uuid.uuid4().hex}.jpg")
+            try:
+                shutil.copyfile(path, temp)
+                os.replace(temp, cover)
+            finally:
+                temp.unlink(missing_ok=True)
+            # Persist the chosen original so exporting does not replace it with an interview frame.
+            (cover.with_suffix(".cover.json")).write_text(json.dumps({"candidate_path": str(path), "revision": story.revision}), encoding="utf-8")
+            self._register_thumbnail(job_id, Path(variant.path))
+            if story.archive_path and Path(story.archive_path).is_file():
+                shutil.copyfile(cover, thumbnail.thumbnail_path(Path(story.archive_path)))
+            return self._save(self.store.load(job_id))
+
     def _refresh_export_thumbnail(self, job_id: str, story: Storyline, variant: Variant) -> None:
         """Apply the current cover template even to previously rendered videos."""
+        cover = thumbnail.thumbnail_path(Path(variant.path or ""))
+        selection = cover.with_suffix(".cover.json")
+        if selection.is_file() and cover.is_file():
+            try:
+                chosen = json.loads(selection.read_text())
+                if chosen.get("revision") == story.revision:
+                    return
+            except (OSError, ValueError):
+                pass
         if not story.assets_path:
             raise JobServiceError("썸네일 생성에 필요한 영상 소스가 없습니다.")
         job = self.store.load(job_id)
@@ -2120,7 +2286,19 @@ class JobService:
             self.deps.enrich_speakers(
                 [result], segments,
                 cache_path=self.store.job_dir(job_id) / "speaker_lookup.json",
+                required=True,
             )
+            self._raise_if_cancelled(job_id)
+            review_job = self.store.load(job_id)
+            review_provider = review_job.provider or self.config.provider
+            reviewed_doc = self.deps.trim_topic_edges(
+                result.doc, segments, title=result.title or _fallback_doc_title(result.doc),
+                runner=lambda prompt: self.deps.build_runner(AppConfig(
+                    provider=review_provider, model=review_job.model or "",
+                    base_url=self.config.base_url if review_provider == self.config.provider else "",
+                ))(prompt),
+            )
+            result = replace(result, doc=reviewed_doc)
             self._raise_if_cancelled(job_id)
             sdir = self.store.job_dir(job_id) / story_id
             if not video.is_file():
@@ -2467,7 +2645,10 @@ class JobService:
             self.deps.write_outputs(sdir, doc, segments)
         else:
             persisted = json.loads(edl_path.read_text(encoding="utf-8"))
-            if persisted.get("speaker") != doc.get("speaker"):
+            if persisted.get("cuts") != doc.get("cuts") or persisted.get("topic_edge_review") != doc.get("topic_edge_review"):
+                self.deps.write_outputs(sdir, doc, segments)
+                (sdir / "reel.srt").unlink(missing_ok=True)
+            elif persisted.get("speaker") != doc.get("speaker"):
                 persisted["speaker"] = doc.get("speaker")
                 tmp = edl_path.with_suffix(".json.tmp")
                 tmp.write_text(json.dumps(persisted, ensure_ascii=False, indent=2), encoding="utf-8")

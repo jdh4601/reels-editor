@@ -1046,3 +1046,20 @@ def test_generated_cover_in_snapshot_archive_and_authenticated_media(tmp_path: P
     assert snapshot["storylines"][0]["thumbnail_url"] == url
     archive = client.get("/api/archive?token=secret").json()
     assert archive["items"][0]["thumbnail_url"] == url
+
+
+def test_thumbnail_candidate_post_route_returns_candidates_instead_of_405(tmp_path):
+    store = JobStore(tmp_path / 'jobs')
+    job = store.create_job()
+    service = FakeService(store, job)
+    service.generate_thumbnail_candidates = lambda job_id, storyline_id: {
+        'candidates': [{'id': 'a1', 'artifact_id': 'a1', 'kind': 'interview', 'url': f'/media/{job_id}/a1'}],
+        'warnings': [],
+    }
+    app = create_app(static_dir=_static(tmp_path), media_dir=tmp_path, job_service=service, session_token='secret')
+    client = TestClient(app)
+    path = f'/api/jobs/{job.id}/storylines/s1/thumbnail/candidates'
+    assert client.post(path).status_code == 401
+    response = client.post(path, headers={'Authorization': 'Bearer secret'})
+    assert response.status_code == 200
+    assert response.json()['candidates'][0]['kind'] == 'interview'

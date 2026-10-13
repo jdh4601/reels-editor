@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageDraw as PILImageDraw
 import pytest
 
 from reels_editor import render, thumbnail, speaker_focus
@@ -26,7 +26,8 @@ def test_cover_keeps_title_inside_center_grid_crop(style_preset):
 
 
 @pytest.mark.parametrize("single_pass", [True, False])
-def test_real_thumbnail_uses_clean_frame_without_black_bars(tmp_path, style_preset, single_pass):
+@pytest.mark.parametrize("frame_time_s", [None, 0.1])
+def test_real_thumbnail_uses_clean_frame_without_black_bars(tmp_path, style_preset, single_pass, frame_time_s):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg required")
     style = replace(style_preset, canvas=(360, 640), top_bar=180, bottom_bar=190)
@@ -49,7 +50,7 @@ def test_real_thumbnail_uses_clean_frame_without_black_bars(tmp_path, style_pres
                                 source=source if single_pass else None,
                                 base_filter=fpath if single_pass else None, total_s=0.4)
     path = thumbnail.render_thumbnail(assets, title_text="고객이 떠난 진짜 이유", style=style,
-                                      out_path=tmp_path / "reel.jpg")
+                                      out_path=tmp_path / "reel.jpg", frame_time_s=frame_time_s, require_open_eyes=False)
     with Image.open(path) as image:
         assert image.format == "JPEG" and image.size == style.canvas
         # Clean footage reaches the top edge; the reel's title bar is absent.
@@ -93,7 +94,7 @@ def test_cover_prefers_single_person_edl_window(tmp_path):
     ]}))
     assets = render.RenderAssets(tmp_path / "base.mp4", tmp_path / "wm.png", [], [], tmp_path, [],
                                 base_filter=fpath)
-    assert thumbnail._closeup_window(assets) == (3, 0.6)
+    assert thumbnail._closeup_window(assets) == (3, 1.0)
     plan.write_text("invalid json")
     assert thumbnail._closeup_window(assets) is None
 
@@ -113,7 +114,7 @@ def test_thumbnail_orange_episode_sits_above_lowered_title_and_bottom_fades_to_b
     orange.putdata([255 if pixel == (240, 100, 0) else 0 for pixel in cover.get_flattened_data()])
     bbox = orange.getbbox()
     assert bbox is not None
-    assert h * 0.65 < bbox[1] < bbox[3] < h * 0.73
+    assert h * 0.64 < bbox[1] < bbox[3] < h * 0.73
     white = Image.new("L", cover.size)
     white.putdata([255 if pixel == (255, 255, 255) else 0 for pixel in cover.get_flattened_data()])
     title_bbox = white.crop((0, 0, w, round(h * 0.82))).getbbox()
@@ -123,3 +124,44 @@ def test_thumbnail_orange_episode_sits_above_lowered_title_and_bottom_fades_to_b
     assert cover.getpixel((0, round(h * 0.70))) == (200, 200, 200)
     assert cover.getpixel((0, h - 1))[0] < 3
     assert cover.getpixel((0, round(h * 0.85)))[0] < 120
+
+
+def test_cover_headline_has_no_outline_and_episode_is_larger(style_preset, monkeypatch):
+    calls = []
+    original = PILImageDraw.ImageDraw.text
+    def record(self, xy, text, **kwargs):
+        calls.append((text, kwargs))
+        return original(self, xy, text, **kwargs)
+    monkeypatch.setattr(PILImageDraw.ImageDraw, 'text', record)
+    thumbnail.compose_thumbnail(Image.new('RGB', style_preset.canvas, 'gray'), '', style_preset.for_episode(20),
+                                title_upper='아이디어는 좋은데', title_lower='투자받지 못하는 이유')
+    label = next(kw for text, kw in calls if text == 'Episode 20')
+    assert label['font'].size == 52
+    for text, kwargs in calls:
+        if text in {'아이디어는 좋은데', '투자받지 못하는 이유'}:
+            assert kwargs.get('stroke_width', 0) == 0
+            assert kwargs['font'].size > 81
+
+
+def test_eye_check_rejects_blinks_and_unknown_landmarks(tmp_path, monkeypatch):
+    frame = tmp_path / 'frame.png'
+    Image.new('RGB', (100, 100), 'gray').save(frame)
+    for openness in (0.03, None):
+        face = speaker_focus.FaceSignal(.5, .3, .1, eye_open=openness)
+        monkeypatch.setattr(speaker_focus, '_detect_faces', lambda _: [face])
+        assert thumbnail.open_eye_face(frame) is None
+    face = speaker_focus.FaceSignal(.5, .3, .1, eye_open=.25)
+    monkeypatch.setattr(speaker_focus, '_detect_faces', lambda _: [face])
+    assert thumbnail.open_eye_face(frame) == face
+
+
+def test_best_frame_uses_open_eyes_instead_of_first_frame(tmp_path, monkeypatch):
+    closed, opened = tmp_path / 'closed.png', tmp_path / 'open.png'
+    for path in (closed, opened):
+        Image.new('RGB', (100, 100), 'gray').save(path)
+    monkeypatch.setattr(speaker_focus, 'vision_available', lambda: True)
+    monkeypatch.setattr(speaker_focus, '_detect_faces', lambda path: [
+        speaker_focus.FaceSignal(.5, .3, .1, y=.5, height=.3, eye_open=.03 if path == closed else .25)])
+    assert thumbnail.choose_cover_frame([closed, opened])[0] == opened
+    with pytest.raises(RuntimeError, match='눈을 뜬'):
+        thumbnail.choose_cover_frame([closed])

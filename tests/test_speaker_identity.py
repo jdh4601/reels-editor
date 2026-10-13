@@ -56,7 +56,7 @@ def test_verified_cache_avoids_repeated_searches(tmp_path):
         return json.dumps(_response())
     for _ in range(2):
         speaker_identity.enrich_speakers(
-            [_result()], {}, cache_path=tmp_path / "lookup.json", runner=runner,
+            [_result()], {"source_title": "Chamath Palihapitiya interview"}, cache_path=tmp_path / "lookup.json", runner=runner,
             fetch=lambda _: _response()["speakers"][0]["evidence"])
     assert len(calls) == 1
 
@@ -73,3 +73,41 @@ def test_private_source_url_is_rejected():
     import pytest
     with pytest.raises(ValueError):
         speaker_identity.fetch_source_text("https://127.0.0.1/private")
+
+
+def test_name_in_heading_and_pronoun_role_paragraph_are_grounded(tmp_path):
+    result = _result()
+    response = _response()
+    entry = response['speakers'][0]
+    entry['evidence'] = 'He is the founder of Social Capital.'
+    speaker_identity.enrich_speakers([result], {'source_title': 'Chamath Palihapitiya interview'},
+        cache_path=tmp_path / 'lookup.json', required=True,
+        runner=lambda _: json.dumps(response),
+        fetch=lambda _: 'Chamath Palihapitiya\nHe is the founder of Social Capital.')
+    assert format_speaker_label(result.doc['speaker']) == '차마스 팔리하피티야 (Social Capital 창업자)'
+
+
+def test_required_role_retries_recent_failure_and_raises_if_still_unverified(tmp_path):
+    import pytest
+    calls = []
+    def fail(_):
+        calls.append(1)
+        raise RuntimeError('search unavailable')
+    for required in [False, True]:
+        if required:
+            with pytest.raises(ValueError, match='직책·역할을 확인하지 못했습니다'):
+                speaker_identity.enrich_speakers([_result()], {}, cache_path=tmp_path / 'lookup.json', runner=fail, required=True)
+        else:
+            speaker_identity.enrich_speakers([_result()], {}, cache_path=tmp_path / 'lookup.json', runner=fail)
+    assert len(calls) == 2
+
+
+def test_alternative_source_is_verified_after_first_quote_fails(tmp_path):
+    result = _result()
+    response = _response()
+    valid = response['speakers'][0]
+    response['speakers'].insert(0, {**valid, 'source_url': 'https://example.com/broken'})
+    speaker_identity.enrich_speakers([result], {'source_title': 'Chamath Palihapitiya interview'},
+        cache_path=tmp_path / 'lookup.json', required=True, runner=lambda _: json.dumps(response),
+        fetch=lambda url: 'no supporting quote' if 'broken' in url else valid['evidence'])
+    assert format_speaker_label(result.doc['speaker']) == '차마스 팔리하피티야 (Social Capital 창업자)'

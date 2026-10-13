@@ -54,8 +54,9 @@ def test_generation_retries_invalid_structure_and_wrong_trigger():
 def test_source_credit_is_last_after_cta_and_is_idempotent():
     full = instagram_caption.append_source_credit(_valid_caption(), channel_name="  Y   Combinator ",
                                                   source_url=" https://youtu.be/abc123 ")
-    assert full.endswith("원본 출처: Y Combinator https://youtu.be/abc123")
-    assert CTA + "\n\n원본 출처:" in full
+    assert full.endswith("🎥 Y Combinator")
+    assert "https://" not in full
+    assert CTA + "\n\n🎥" in full
     assert instagram_caption.append_source_credit(full, channel_name="Y Combinator",
                                                   source_url="https://youtu.be/abc123") == full
 
@@ -80,7 +81,7 @@ def test_rejects_old_follow_cta_missing_resource_and_polite_summary():
 
 def test_source_credit_still_enforces_total_guardrail():
     with pytest.raises(ValueError, match="출처 포함"):
-        instagram_caption.append_source_credit("가"*990, channel_name="채널", source_url="https://youtu.be/abc123")
+        instagram_caption.append_source_credit("가"*998, channel_name="채널", source_url="https://youtu.be/abc123")
 
 
 def test_generation_requires_verified_company_and_speaker_in_cta():

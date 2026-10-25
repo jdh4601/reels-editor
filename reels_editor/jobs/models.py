@@ -148,10 +148,13 @@ class Storyline:
     archive_path: str | None = None
     completed_at: str | None = None
     error: str | None = None
+    thumbnail_error: str | None = None
     title_upper: str = ""
     title_lower: str = ""
     speaker_override: dict[str, str] | None = None
     episode_number: int | None = None
+    review_message: str | None = None
+    quality_review_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         base_path = self.base_video_path or self.base_path
@@ -186,6 +189,9 @@ class Storyline:
             "archive_path": self.archive_path,
             "completed_at": self.completed_at,
             "error": self.error,
+            "thumbnail_error": self.thumbnail_error,
+            "review_message": self.review_message,
+            "quality_review_path": self.quality_review_path,
         }
 
     @classmethod
@@ -218,6 +224,9 @@ class Storyline:
             archive_path=data.get("archive_path"),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
+            thumbnail_error=data.get("thumbnail_error"),
+            review_message=data.get("review_message"),
+            quality_review_path=data.get("quality_review_path"),
             speaker_override=data.get("speaker_override"),
             episode_number=data.get("episode_number"),
             title_upper=title_upper,

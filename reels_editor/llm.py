@@ -6,7 +6,10 @@ gemini-cli: Google Gemini CLI. openai/kimi/custom: OpenAI-호환 chat/completion
 from __future__ import annotations
 
 import subprocess
+import base64
+import json
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -15,10 +18,51 @@ from reels_editor import processes
 from reels_editor.config import PROVIDERS, AppConfig, resolve_api_key
 
 TIMEOUT_S = 600
+# Candidate scripts, topic reviews and speaker lookups share the same Codex
+# account. Hold the slot through backoff so queued work cannot amplify a 429.
+_CODEX_SLOT = threading.BoundedSemaphore(1)
+_REVIEW_SLOT = threading.BoundedSemaphore(1)
 PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "openai": ("https://api.openai.com/v1", "gpt-4o"),
     "kimi": ("https://api.moonshot.ai/v1", "kimi-k2-0905-preview"),
 }
+
+
+class _CodexFailure(RuntimeError):
+    def __init__(self, output: str):
+        # Ignore echoed prompt content when deciding whether an error is retryable.
+        errors = [line.strip() for line in output.splitlines()
+                  if line.strip().lower().startswith(("error:", "error "))]
+        diagnostics = "\n".join(dict.fromkeys(errors)) if errors else output.strip()[-500:]
+        lowered = diagnostics.lower()
+        quota = any(marker in lowered for marker in (
+            "insufficient_quota", "usage_limit_reached", "usage limit",
+            "quota exceeded", "exceeded your current quota", "billing hard limit",
+        ))
+        self.rate_limited = not quota and any(marker in lowered for marker in (
+            "429", "too many requests", "rate_limit_exceeded", "rate limit",
+        ))
+        self.at_capacity = "selected model is at capacity" in lowered
+        self.retryable = not quota and (self.rate_limited or self.at_capacity)
+        if quota:
+            detail = "Codex 사용 한도에 도달했습니다. 계정의 사용량·한도 초기화 시점을 확인한 뒤 다시 시도하세요."
+        elif self.rate_limited:
+            detail = "Codex 요청이 제한되었습니다(429 Too Many Requests). 잠시 후 다시 시도하세요."
+        elif self.at_capacity:
+            detail = "AI 모델의 처리 용량이 부족합니다. 잠시 후 이 클립만 다시 시도하세요."
+        else:
+            # Human CLI output echoes the entire input transcript before ERROR.
+            # Surface diagnostics, never thousands of characters of source text.
+            detail = "codex exec 실패:\n" + (diagnostics[-1000:] or "오류 출력 없음")
+        super().__init__(detail)
+
+
+def summarize_codex_error(error: str) -> str:
+    """Also format failures persisted by older engines, without changing history."""
+    prefix, marker, _ = error.partition("codex exec 실패:")
+    if marker:
+        return (prefix if len(prefix) < 150 else "") + str(_CodexFailure(error))
+    return error
 
 
 def claude_cli_args(model: str) -> list[str]:
@@ -26,6 +70,55 @@ def claude_cli_args(model: str) -> list[str]:
     if model:
         args += ["--model", model]
     return args
+
+
+def run_opus_review(prompt: str, images: list[Path]) -> str:
+    """Send actual images to Opus; no file/code tools or inherited project setup."""
+    content = [{"type": "text", "text": prompt}]
+    for path in images:
+        content.extend([
+            {"type": "text", "text": f"SCREENSHOT SHEET: {path.name}"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+             "data": base64.b64encode(path.read_bytes()).decode('ascii')}},
+        ])
+    message = json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + '\n'
+    registry = processes.current_registry()
+    while not _REVIEW_SLOT.acquire(timeout=0.1):
+        if registry and registry.cancelled:
+            raise RuntimeError('job was cancelled')
+    try:
+        for attempt in range(3):
+            with tempfile.TemporaryDirectory(prefix='reels-opus-review-') as tmp:
+                response = processes.run([
+                    *claude_cli_args('opus'), '--input-format', 'stream-json',
+                    '--output-format', 'stream-json', '--verbose', '--tools', '',
+                    '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+                    '--setting-sources', '', '--no-session-persistence',
+                ], input=message, cwd=tmp, capture_output=True, text=True, timeout=TIMEOUT_S)
+            events = []
+            for line in response.stdout.splitlines():
+                try:
+                    event=json.loads(line)
+                    if isinstance(event,dict):events.append(event)
+                except ValueError:
+                    continue
+            result = next((event for event in reversed(events) if event.get('type') == 'result'), None)
+            if not response.returncode and result and not result.get('is_error') and str(result.get('result','')).strip():
+                return result['result']
+            detail=(response.stderr or (result or {}).get('result') or '유효한 최종 응답 없음')[-500:]
+            lowered=detail.lower()
+            transient=any(marker in lowered for marker in ('429','rate_limit_error','overloaded','503','529'))
+            quota=any(marker in lowered for marker in ('usage limit','quota','credit balance','billing'))
+            if attempt==2 or not transient or quota:
+                raise RuntimeError('Opus 영상 검수 호출 실패: '+detail)
+            for _ in range(50 * (attempt+1)):
+                if registry and registry.cancelled:raise RuntimeError('job was cancelled')
+                time.sleep(.1)
+        raise AssertionError('unreachable')
+    except FileNotFoundError as exc:
+        raise RuntimeError('Opus 검수에 필요한 Claude CLI를 찾을 수 없습니다.') from exc
+    finally:
+        _REVIEW_SLOT.release()
 
 
 def codex_cli_args(model: str) -> list[str]:
@@ -102,8 +195,7 @@ def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str]
                     "Codex CLI를 찾을 수 없습니다 — OpenAI Codex CLI가 설치되어 있고 "
                     f"PATH에 등록되어 있는지 확인하세요: {e}") from e
             if result.returncode != 0:
-                detail = (result.stderr or result.stdout).strip()[-2000:]
-                raise RuntimeError(f"codex exec 실패:\n{detail}")
+                raise _CodexFailure("\n".join((result.stderr or "", result.stdout or "")))
             output = (
                 output_path.read_text(encoding="utf-8")
                 if output_path.is_file()
@@ -124,21 +216,31 @@ def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str]
             raise RuntimeError(f"codex exec가 최종 응답을 생성하지 않았습니다.\n{detail}")
 
     def run(prompt: str) -> str:
-        for retry in range(3):
-            try:
-                return attempt(prompt)
-            except RuntimeError as exc:
-                if "Selected model is at capacity" not in str(exc):
-                    raise
-                if retry == 2:
-                    raise RuntimeError("AI 모델의 처리 용량이 부족합니다. 잠시 후 이 클립만 다시 시도하세요.") from exc
-                registry = processes.current_registry()
-                # Short, cancellable backoff. Keep the selected model and prompt.
-                for _ in range((5 * 2**retry) * 10):
-                    if registry is not None and registry.cancelled:
-                        raise RuntimeError("job was cancelled") from exc
-                    time.sleep(0.1)
-        raise AssertionError("unreachable")
+        registry = processes.current_registry()
+
+        def check_cancelled() -> None:
+            if registry is not None and registry.cancelled:
+                raise RuntimeError("job was cancelled")
+
+        while not _CODEX_SLOT.acquire(timeout=0.1):
+            check_cancelled()
+        try:
+            for retry in range(3):
+                check_cancelled()
+                try:
+                    return attempt(prompt)
+                except _CodexFailure as exc:
+                    if not exc.retryable or retry == 2:
+                        raise
+                    # A CLI retry limit can exhaust before an upstream rate
+                    # window resets. Wait longer for 429s, keeping the slot.
+                    delay_s = (30 if exc.rate_limited else 5) * 2**retry
+                    for _ in range(delay_s * 10):
+                        check_cancelled()
+                        time.sleep(0.1)
+            raise AssertionError("unreachable")
+        finally:
+            _CODEX_SLOT.release()
     return run
 
 

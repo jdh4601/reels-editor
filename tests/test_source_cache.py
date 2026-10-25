@@ -28,8 +28,14 @@ def test_ranges_merge_and_clamp_at_source_end():
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg required")
-def test_exact_sections_pack_remap_and_reuse_with_real_ffmpeg(tmp_path: Path):
+@pytest.mark.parametrize('trimmed', [False, True])
+def test_exact_sections_pack_remap_and_reuse_with_real_ffmpeg(tmp_path: Path, trimmed):
     doc, segments = sample()
+    if trimmed:
+        # A repair trimming more than the 250ms download handle used to leave
+        # the full cue outside every manifest range and raise StopIteration.
+        doc['source_trim_us'] = {'a': {'start': 300_000, 'end': 0},
+                                 'b': {'start': 0, 'end': 300_000}}
     downloads = []
     def downloader(url, directory, start, end, **kwargs):
         downloads.append((start, end))
@@ -50,6 +56,11 @@ def test_exact_sections_pack_remap_and_reuse_with_real_ffmpeg(tmp_path: Path):
     assert mapped["segments"][1]["source_start_us"] < 1.3 * US
     assert mapped["segments"][1]["original_source_start_us"] == 4_500_000
     assert segments["segments"][1]["source_start_us"] == 4_500_000
+    if trimmed:
+        from reels_editor.edl import ordered_segments
+        ordered = ordered_segments(doc, mapped)
+        assert ordered[0]['source_start_us'] == 550_000
+        assert ordered[1]['source_end_us'] == mapped['segments'][1]['source_end_us'] - 300_000
     for item, dominant in zip(mapped["segments"], (0, 2)):
         frame = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(item["source_start_us"]/US),
                                 "-i", str(video), "-frames:v", "1", "-vf", "scale=1:1",

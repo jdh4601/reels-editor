@@ -1276,6 +1276,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         if (!snapshot) throw new Error("현재 작업을 찾을 수 없습니다.");
         await apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/caption/note`, {
           method: "POST",
+          body: JSON.stringify({ caption: storyline.instagramCaption }),
         });
       }
       setNoteStates((current) => ({ ...current, [storyline.id]: "saved" }));

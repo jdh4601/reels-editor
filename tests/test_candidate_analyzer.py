@@ -1,5 +1,44 @@
 from __future__ import annotations
 
+
+def test_selected_candidate_keeps_all_evidence_windows_and_context_without_mutating_source(monkeypatch):
+    from reels_editor import candidate_analyzer
+    from reels_editor.jobs import ContentCandidate
+    source = {'source_title': 'interview', 'video_path': '/video.mp4', 'transcript_language': 'en',
+              'segments': [{'id': f's{i}', 'text': f'line {i}',
+                            'source_start_us': i * 10_000_000, 'source_end_us': (i + 1) * 10_000_000}
+                           for i in range(200)]}
+    candidate = ContentCandidate(id='c1', content_type='story', title='title', summary='summary',
+                                 takeaway='lesson', segment_ids=['s50', 's150'])
+    narrowed = candidate_analyzer.candidate_segments(source, candidate)
+    ids = {row['id'] for row in narrowed['segments']}
+    assert {'s47', 's50', 's53', 's147', 's150', 's153'} <= ids
+    assert not {'s1', 's100', 's199'} & ids
+    assert narrowed['source_title'] == source['source_title']
+    assert narrowed['video_path'] == source['video_path']
+    assert narrowed['transcript_language'] == 'en'
+    assert len(narrowed['segments']) < 20
+    assert len(source['segments']) == 200
+    assert next(row for row in narrowed['segments'] if row['id'] == 's50')['source_start_us'] == 500_000_000
+    seen = []
+    def generate_script(selected, *args, **kwargs):
+        seen.append(selected)
+        return {}
+    monkeypatch.setattr(candidate_analyzer, 'generate_script', generate_script)
+    result = candidate_analyzer.generate_selected_candidates(source, [candidate], runner=lambda _: '')
+    assert seen == [narrowed]
+    assert result[0].doc is not None
+
+
+def test_selected_candidate_with_missing_evidence_is_rejected():
+    import pytest
+    from reels_editor import candidate_analyzer
+    from reels_editor.jobs import ContentCandidate
+    candidate = ContentCandidate(id='c1', content_type='story', title='title', summary='summary',
+                                 takeaway='lesson', segment_ids=['missing'])
+    with pytest.raises(ValueError, match='근거 자막'):
+        candidate_analyzer.candidate_segments({'segments': []}, candidate)
+
 import json
 
 from reels_editor import candidate_analyzer
@@ -191,3 +230,56 @@ def test_selected_candidate_result_carries_candidate_title(segments: dict) -> No
     )
 
     assert results[0].title == "광고비 0원, 첫 고객"
+
+
+def test_selected_candidates_accept_18_second_clip_without_retry(segments, edl_doc):
+    from reels_editor.jobs.models import ContentCandidate
+    from reels_editor import edl
+    candidate = ContentCandidate(id="c1", content_type="strategy", title=TOPICS[0],
+                                 summary="요약", takeaway="교훈", segment_ids=["t1", "t2"])
+    calls = []
+    def runner(prompt):
+        calls.append(prompt)
+        return json.dumps(edl_doc, ensure_ascii=False)
+    results = candidate_analyzer.generate_selected_candidates(segments, [candidate], runner=runner, speed=1.0)
+    assert results[0].doc is not None, results[0].error
+    assert edl.estimate_duration_s(results[0].doc, segments, 1.0) == 18
+    assert len(calls) == 1
+    assert "15" in calls[0] and "50" in calls[0]
+
+
+import pytest
+
+
+@pytest.mark.parametrize("duration", [15, 18, 49, 50])
+def test_selected_candidate_duration_boundaries(segments, edl_doc, duration):
+    from copy import deepcopy
+    from reels_editor.jobs.models import ContentCandidate
+    from reels_editor import edl
+    source = deepcopy(segments)
+    source["segments"][1]["source_end_us"] = (5 + duration / 2) * 1_000_000
+    source["segments"][2]["source_start_us"] = (5 + duration / 2) * 1_000_000
+    source["segments"][2]["source_end_us"] = (5 + duration) * 1_000_000
+    candidate = ContentCandidate(id="c1", content_type="strategy", title=TOPICS[0],
+                                 summary="요약", takeaway="교훈", segment_ids=["t1", "t2"])
+    result = candidate_analyzer.generate_selected_candidates(source, [candidate],
+        runner=lambda _p: json.dumps(edl_doc, ensure_ascii=False), speed=1.0)[0]
+    assert result.doc is not None, result.error
+    assert edl.estimate_duration_s(result.doc, source, 1.0) == duration
+
+
+@pytest.mark.parametrize("duration", [14, 51])
+def test_selected_candidate_outside_duration_window_is_rejected(segments, edl_doc, duration):
+    from copy import deepcopy
+    from reels_editor.jobs.models import ContentCandidate
+    source = deepcopy(segments)
+    source["segments"][1]["source_start_us"] = 0
+    source["segments"][1]["source_end_us"] = duration * 1_000_000
+    doc = deepcopy(edl_doc)
+    doc["cuts"] = [{"beat": "완결된 답", "seg_ids": ["t1"]}]
+    candidate = ContentCandidate(id="c1", content_type="strategy", title=TOPICS[0],
+                                 summary="요약", takeaway="교훈", segment_ids=["t1"])
+    result = candidate_analyzer.generate_selected_candidates(source, [candidate],
+        runner=lambda _p: json.dumps(doc, ensure_ascii=False), speed=1.0)[0]
+    assert result.doc is None
+    assert ("최소 15초" if duration < 15 else "최대 50초") in result.error

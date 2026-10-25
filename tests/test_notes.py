@@ -7,14 +7,14 @@ import pytest
 from reels_editor.desktop.notes import MacNotesProvider, NotesError, caption_body_for_notes
 
 
-def test_caption_body_for_notes_removes_heading_and_blank_line() -> None:
+def test_caption_body_for_notes_preserves_title_body_and_source() -> None:
     caption = "Ep 12. 문제가 희귀할수록 테스트는 더 극단적이어야 한다\n\n첫 문단\n\n두 번째 문단"
 
-    assert caption_body_for_notes(caption) == "첫 문단\n\n두 번째 문단"
+    assert caption_body_for_notes(caption) == caption
 
 
-def test_caption_body_for_notes_rejects_heading_only_caption() -> None:
-    assert caption_body_for_notes("Ep 12. 제목") == ""
+def test_caption_body_for_notes_preserves_short_caption() -> None:
+    assert caption_body_for_notes("제목") == "제목"
 
 
 def test_mac_notes_provider_passes_escaped_caption_to_icloud_notes() -> None:

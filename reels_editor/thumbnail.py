@@ -34,22 +34,34 @@ def compose_thumbnail(frame: Image.Image, title: str, style: StylePreset, *,
     """Keep the headline inside both the vertical cover and center grid crop."""
     width, height = style.canvas
     crop_width = min(frame.width, round(frame.height * width / height))
-    crop_height = min(frame.height, round(frame.width * height / width))
+    if face is not None:
+        # Expand the viewing area instead of scaling a face to fill a vertical cover.
+        crop_width = max(crop_width, round(face.width * frame.width / 0.38),
+                         round(face.height * frame.height / 0.24 * width / height))
+    crop_height = round(crop_width * height / width)
     left = round((face.x if face else 0.5) * frame.width - crop_width / 2)
-    top = round(face.y * frame.height - crop_height * 0.3) if face else (frame.height - crop_height) // 2
-    left = max(0, min(frame.width - crop_width, left))
-    top = max(0, min(frame.height - crop_height, top))
-    image = frame.crop((left, top, left + crop_width, top + crop_height))
-    image = image.convert("RGBA").resize(style.canvas, Image.Resampling.LANCZOS)
+    top = round(face.y * frame.height - crop_height * 0.32) if face else (frame.height - crop_height) // 2
+    if crop_width <= frame.width:
+        left = max(0, min(frame.width - crop_width, left))
+    if crop_height <= frame.height:
+        top = max(0, min(frame.height - crop_height, top))
+    # Use quiet neutral space when the source has no additional surroundings to reveal.
+    image = Image.new("RGBA", (crop_width, crop_height), (24, 23, 24, 255))
+    image.paste(frame.convert("RGBA"), (-left, -top))
+    image = image.resize(style.canvas, Image.Resampling.LANCZOS)
     offset_y = round(10 * height / 1920)
     shifted = Image.new("RGBA", style.canvas)
     if offset_y:
         shifted.paste(image.crop((0, 0, width, 1)).resize((width, offset_y)), (0, 0))
     shifted.paste(image, (0, offset_y))
     image = shifted
+    # Finish fading at the actual photo edge, even when wider framing adds bottom space.
+    photo_bottom = min(height, round((frame.height - top) * height / crop_height) + offset_y)
+    fade_end = max(0.41, photo_bottom / height)
+    fade_start = min(0.56, max(0.40, fade_end - 0.30))
     gradient = Image.new("RGBA", (1, height))
     gradient.putdata([
-        (0, 0, 0, round(255 * max(0, min(1, (y / height - 0.73) / 0.27)) ** 0.65))
+        (0, 0, 0, round(255 * max(0, min(1, (y / height - fade_start) / (fade_end - fade_start))) ** 0.65))
         for y in range(height)
     ])
     image = Image.alpha_composite(image, gradient.resize(style.canvas))
@@ -130,19 +142,48 @@ def open_eye_face(path: Path) -> speaker_focus.FaceSignal | None:
     return face if face.eye_open is not None and face.eye_open >= MIN_EYE_OPENNESS else None
 
 
-def choose_cover_frame(paths: list[Path], *, require_open_eyes: bool = True) -> tuple[Path, speaker_focus.FaceSignal | None]:
+def shot_descriptor(path: Path, face: speaker_focus.FaceSignal) -> dict:
+    with Image.open(path) as image:
+        pixels = list(image.convert('RGB').resize((8, 8)).getdata())
+    return {'x': face.x, 'y': face.y, 'width': face.width, 'height': face.height,
+            'background': [channel for pixel in pixels for channel in pixel]}
+
+
+def same_shot(a: dict, b: dict) -> bool:
+    geometry = all(abs(a[key] - b[key]) < limit for key, limit in
+                   [('x', .10), ('y', .10), ('width', .06), ('height', .12)])
+    colors = sum(abs(x - y) for x, y in zip(a['background'], b['background'])) / (255 * len(a['background']))
+    return geometry and colors < .12
+
+
+def _raw_interview_filter(assets: render.RenderAssets) -> str | None:
+    if assets.source is None or assets.base_filter is None or not assets.base_filter.is_file():
+        return None
+    ranges = re.findall(r"\[0:v\]trim=([\d.]+):([\d.]+)", assets.base_filter.read_text())
+    if not ranges:
+        return None
+    selections = '+'.join(f'between(t,{start},{end})' for start, end in ranges)
+    return f"select='{selections}',setpts=N/FRAME_RATE/TB,setsar=1"
+
+
+def choose_cover_frame(paths: list[Path], *, require_open_eyes: bool = True, exclude_shots: list[dict] | None = None, face_cache: dict | None = None) -> tuple[Path, speaker_focus.FaceSignal | None]:
     available = speaker_focus.vision_available()
     if require_open_eyes and not available:
         raise RuntimeError("눈 개폐 확인 기능을 사용할 수 없습니다. macOS Vision 설치를 확인하세요.")
     candidates = []
+    face_cache = {} if face_cache is None else face_cache
     for path in paths:
         face = None
         if available:
             try:
-                face = open_eye_face(path)
+                if path not in face_cache:
+                    face_cache[path] = open_eye_face(path)
+                face = face_cache[path]
             except (ImportError, OSError, RuntimeError, ValueError):
                 continue
             if face is None and require_open_eyes:
+                continue
+            if face is not None and any(same_shot(shot_descriptor(path, face), shot) for shot in exclude_shots or []):
                 continue
         with Image.open(path) as frame:
             gray = frame.convert('L')
@@ -167,7 +208,8 @@ def render_thumbnail(assets: render.RenderAssets, *, title_text: str,
                      title_upper: str | None = None,
                      title_lower: str | None = None,
                      frame_time_s: float | None = None,
-                     require_open_eyes: bool = True) -> Path:
+                     require_open_eyes: bool = True,
+                     exclude_shots: list[dict] | None = None) -> Path:
     """Prefer an analyzed close-up and center its face in a clean portrait crop."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     frame_key = hashlib.sha256(str(out_path.resolve()).encode()).hexdigest()[:12]
@@ -182,10 +224,15 @@ def render_thumbnail(assets: render.RenderAssets, *, title_text: str,
     frame_filter = f"crop={vw}:{vh}:0:{style.top_bar},setsar=1,fps={sample_fps}"
     try:
         window = _closeup_window(assets) if assets.source is not None else None
+        raw_filter = _raw_interview_filter(assets)
         if window is not None and frame_time_s is None:
+            # Prefer the single-person shot already identified by speaker analysis.
             start, duration = window
             args = ["-ss", str(start), "-i", str(assets.source), "-t", str(duration),
                     "-vf", f"trim=duration={duration},setsar=1,fps=8"]
+        elif raw_filter is not None:
+            trim_filter = f",trim=start={frame_time_s},setpts=PTS-STARTPTS" if frame_time_s is not None else ""
+            args = ["-i", str(assets.source), "-vf", f"{raw_filter}{trim_filter},fps={sample_fps}"]
         elif assets.source is not None and assets.base_filter is not None and assets.base_filter.is_file():
             base_filter = render.reposition_video_filter(
                 assets.base_filter.read_text(encoding="utf-8").rstrip(";\n "), style,
@@ -200,18 +247,24 @@ def render_thumbnail(assets: render.RenderAssets, *, title_text: str,
         render._ffmpeg([*args, "-frames:v", "32", "-an", str(frame_pattern)])
         def write_checked_cover(paths):
             remaining = list(paths)
+            face_cache = {}
             while remaining:
-                frame_path, face = choose_cover_frame(remaining, require_open_eyes=require_open_eyes)
+                frame_path, face = choose_cover_frame(remaining, require_open_eyes=require_open_eyes, exclude_shots=exclude_shots, face_cache=face_cache)
                 with Image.open(frame_path) as frame:
                     image = compose_thumbnail(frame, title_text, style,
                         title_upper=title_upper, title_lower=title_lower,
                         speaker_text=speaker_text, face=face)
                 image.save(tmp, "JPEG", quality=95, subsampling=0)
-                if not require_open_eyes or open_eye_face(tmp) is not None:
+                # Eye openness is measured on the original frame. Resizing and
+                # cover text can change Vision landmarks and falsely reject it.
+                # Only verify that the composed crop still contains one face.
+                if not require_open_eyes or len(speaker_focus._detect_faces(tmp)) == 1:
                     os.replace(tmp, out_path)
+                    if face is not None:
+                        out_path.with_suffix('.shot.json').write_text(json.dumps(shot_descriptor(frame_path, face)), encoding='utf-8')
                     return
                 remaining.remove(frame_path)
-            raise RuntimeError("최종 썸네일에서 눈을 뜬 얼굴을 확인하지 못했습니다.")
+            raise RuntimeError("최종 썸네일에서 단독 얼굴을 확인하지 못했습니다.")
 
         paths = sorted(sample_dir.glob("frame-*.png"))
         try:
@@ -225,7 +278,9 @@ def render_thumbnail(assets: render.RenderAssets, *, title_text: str,
             later_s = max(0, assets.total_s * 0.55)
             later_fps = min(4.0, 32 / max(1.0, assets.total_s - later_s))
             later_filter = f"crop={vw}:{vh}:0:{style.top_bar},setsar=1,fps={later_fps}"
-            if assets.source is not None and assets.base_filter is not None and assets.base_filter.is_file():
+            if raw_filter is not None:
+                retry_args = ["-i", str(assets.source), "-vf", f"{raw_filter},trim=start={later_s},setpts=PTS-STARTPTS,fps={later_fps}"]
+            elif assets.source is not None and assets.base_filter is not None and assets.base_filter.is_file():
                 base_filter = render.reposition_video_filter(assets.base_filter.read_text().rstrip(";\n "), style)
                 retry_args = ["-i", str(assets.source), "-filter_complex",
                     f"{base_filter};[a]anullsink;[v]trim=start={later_s},setpts=PTS-STARTPTS,{later_filter}[cover]",

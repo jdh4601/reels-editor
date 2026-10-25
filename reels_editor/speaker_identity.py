@@ -7,6 +7,8 @@ import json
 import re
 import unicodedata
 import socket
+import threading
+from functools import wraps
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -86,6 +88,22 @@ def _source_matches_person(source_name: str, page: str, context: dict, speaker: 
     return any(name in _identity_key(value) for value in identities)
 
 
+_LOOKUP_LOCK = threading.Lock()
+_LOOKUP_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _serialize_lookup(fn):
+    @wraps(fn)
+    def locked(*args, cache_path: Path, **kwargs):
+        key = str(cache_path.resolve())
+        with _LOOKUP_LOCK:
+            lock = _LOOKUP_LOCKS.setdefault(key, threading.RLock())
+        with lock:
+            return fn(*args, cache_path=cache_path, **kwargs)
+    return locked
+
+
+@_serialize_lookup
 def enrich_speakers(
     results: list[StorylineResult], segments: dict, *, cache_path: Path,
     runner: Callable[[str], str] | None = None,
@@ -150,42 +168,50 @@ def enrich_speakers(
             '"alternate_role":"","evidence":"직접 인용","source_url":"https://..."}]}.\n'
             + json.dumps({"names": pending, "video": context}, ensure_ascii=False)
         )
-        try:
-            payload = extract_json((runner or build_speaker_search_runner())(prompt))
-            entries = payload.get("speakers", [])
-            if not isinstance(entries, list):
-                raise ValueError("직책 검색 결과 형식이 올바르지 않습니다.")
-            for entry in entries:
-                if not isinstance(entry, dict) or entry.get("name") not in pending:
-                    continue
-                name = entry["name"]
-                if name in cache["speakers"]:
-                    continue
-                try:
-                    url = str(entry.get("source_url") or "")
-                    source_name = str(entry.get("source_name") or "")
-                    speaker = normalize_speaker_data(entry)
-                    evidence = speaker.get("evidence", "")
-                    if not url or not source_name or not evidence:
-                        raise ValueError("직책 출처를 확인하지 못했습니다.")
-                    if url not in pages:
-                        pages[url] = fetch(url)
-                    if (_text(evidence) not in _text(pages[url])
-                            or not _source_matches_person(source_name, pages[url], context, missing[name])
-                            or not _speaker_evidence_supports_identity(speaker, evidence)
-                            or format_speaker_label(speaker) == name):
-                        raise ValueError("출처 원문이 인물·회사·직책을 뒷받침하지 않습니다.")
-                    speaker["name"] = str(entry.get("display_name") or name).strip()
-                    speaker["source_name"] = source_name
-                    speaker["source_url"] = url
-                    speaker["checked_at"] = datetime.now(UTC).isoformat()
-                    cache["speakers"][name] = speaker
-                    cache["errors"].pop(name, None)
-                except (OSError, ValueError) as exc:
+        feedback = ""
+        for attempt in range(2):
+            unresolved = [name for name in pending if name not in cache["speakers"]]
+            if not unresolved:
+                break
+            try:
+                payload = extract_json((runner or build_speaker_search_runner())(prompt + feedback))
+                entries = payload.get("speakers", [])
+                if not isinstance(entries, list):
+                    raise ValueError("직책 검색 결과 형식이 올바르지 않습니다.")
+                for entry in entries:
+                    if not isinstance(entry, dict) or entry.get("name") not in unresolved:
+                        continue
+                    name = entry["name"]
+                    if name in cache["speakers"]:
+                        continue
+                    try:
+                        url = str(entry.get("source_url") or "")
+                        source_name = str(entry.get("source_name") or "")
+                        speaker = normalize_speaker_data(entry)
+                        evidence = speaker.get("evidence", "")
+                        if not url or not source_name or not evidence:
+                            raise ValueError("직책 출처를 확인하지 못했습니다.")
+                        if url not in pages:
+                            pages[url] = fetch(url)
+                        if (_text(evidence) not in _text(pages[url])
+                                or not _source_matches_person(source_name, pages[url], context, missing[name])
+                                or not _speaker_evidence_supports_identity(speaker, evidence)
+                                or format_speaker_label(speaker) == name):
+                            raise ValueError("출처 원문이 인물·회사·직책을 뒷받침하지 않습니다.")
+                        speaker["name"] = str(entry.get("display_name") or name).strip()
+                        speaker["source_name"] = source_name
+                        speaker["source_url"] = url
+                        speaker["checked_at"] = datetime.now(UTC).isoformat()
+                        cache["speakers"][name] = speaker
+                        cache["errors"].pop(name, None)
+                    except (OSError, ValueError) as exc:
+                        cache["errors"][name] = str(exc)
+            except (OSError, RuntimeError, ValueError) as exc:
+                for name in unresolved:
                     cache["errors"][name] = str(exc)
-        except (OSError, RuntimeError, ValueError) as exc:
-            for name in pending:
-                cache["errors"][name] = str(exc)
+            feedback = "\n이전 원문 검증 실패: " + json.dumps(
+                {name: cache["errors"].get(name, "근거 없음") for name in unresolved}, ensure_ascii=False
+            ) + "\n실패한 인물은 다른 공식 출처를 열어 실제 원문을 다시 확인하라. 인용은 페이지에 연속해서 나오는 문장 그대로 써라."
     for name in pending:
         if name not in cache["speakers"]:
             cache["errors"].setdefault(name, "웹 검색으로 직책을 확인하지 못했습니다.")

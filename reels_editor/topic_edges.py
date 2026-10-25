@@ -6,7 +6,7 @@ import json
 from copy import deepcopy
 from typing import Callable
 
-from reels_editor import edl
+from reels_editor import captions, edl
 from reels_editor.storyteller import extract_json, validate_caption_completeness, validate_caption_continuity
 
 
@@ -14,7 +14,7 @@ def trim_topic_edges(doc: dict, segments: dict, *, title: str, runner: Callable[
     ids = [sid for cut in doc['cuts'] for sid in cut['seg_ids']]
     index = {s['id']: s for s in segments['segments']}
     rows = [{**index[sid], 'caption': doc.get('subtitle_translations', {}).get(sid, index[sid]['text'])} for sid in ids]
-    fingerprint = hashlib.sha256(json.dumps([title, rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    fingerprint = hashlib.sha256(json.dumps([2, title, rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     if doc.get('topic_edge_review', {}).get('fingerprint') == fingerprint:
         return doc
     prompt = (
@@ -46,9 +46,28 @@ def trim_topic_edges(doc: dict, segments: dict, *, title: str, runner: Callable[
         last -= 1
     if first == last:
         raise ValueError('핵심 주제에 해당하는 자막이 없습니다. 다시 생성하세요.')
+    # A transcript cue is not a sentence. Never remove only the last cue of a
+    # translated sentence/quotation, even if the topic classifier mislabels it.
+    units, begin, text = [], 0, ''
+    for position, row in enumerate(rows):
+        text = f'{text} {row["caption"]}'.strip()
+        if captions.is_complete_sentence(text):
+            units.append((begin, position + 1))
+            begin, text = position + 1, ''
+    if begin < len(ids):
+        units.append((begin, len(ids)))
+    requested_first, requested_last = first, last
+    for a, b in units:
+        if a <= first < b:
+            first = a
+        if a < last <= b:
+            last = b
+    protected = ids[first:requested_first] + ids[requested_last:last]
     removed = ids[:first] + ids[last:]
     result = deepcopy(doc)
-    if removed:
+    def retain_range():
+        nonlocal result
+        result = deepcopy(doc)
         retained = set(ids[first:last])
         cuts = []
         for cut in result['cuts']:
@@ -60,12 +79,26 @@ def trim_topic_edges(doc: dict, segments: dict, *, title: str, runner: Callable[
         result['cuts'] = cuts
         if 'subtitle_translations' in result:
             result['subtitle_translations'] = {sid: text for sid, text in result['subtitle_translations'].items() if sid in retained}
+        for key in ('source_trim_us', 'focus_overrides'):
+            if key in result:
+                result[key] = {sid:value for sid,value in result[key].items() if sid in retained}
+    if removed:
+        retain_range()
+        # Restore preceding complete sentences if trimming removed a required
+        # antecedent. An already-invalid original is sent to the repair layer.
+        while first > 0 and validate_caption_continuity(result, segments):
+            previous = next((a for a, b in reversed(units) if b <= first), 0)
+            protected = ids[previous:first] + protected
+            first = previous
+            retain_range()
+        removed = ids[:first] + ids[last:]
         errors = edl.validate_edl(result, segments) + validate_caption_completeness(result, segments) + validate_caption_continuity(result, segments)
         if errors:
             raise ValueError('주제 이탈 구간 제거 후 문장 검증 실패: ' + '; '.join(errors))
     remaining_rows = [row for row in rows if row['id'] in set(ids[first:last])]
-    review['fingerprint'] = hashlib.sha256(json.dumps([title, remaining_rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    review['fingerprint'] = hashlib.sha256(json.dumps([2, title, remaining_rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     review['removed_seg_ids'] = removed
+    review['sentence_protected_seg_ids'] = protected
     review['removed_source_us'] = sum(index[sid]['source_end_us'] - index[sid]['source_start_us'] for sid in removed)
     result['topic_edge_review'] = review
     return result

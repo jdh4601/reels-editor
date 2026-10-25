@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+
+def test_legacy_codex_429_is_readable_in_job_and_storyline_snapshots():
+    from reels_editor.desktop.server import _snapshot_from_job
+    from reels_editor.jobs import Job, Storyline, Status
+    error = 'codex exec 실패:\n' + 'private transcript\n' * 100 + 'ERROR: exceeded retry limit, last status: 429 Too Many Requests'
+    job = Job(id='legacy-rate-limit', status=Status.FAILED, error=error,
+              storylines=[Storyline(id='s1', index=0, status=Status.FAILED, error=error)])
+    snapshot = _snapshot_from_job(job)
+    assert '429' in snapshot['error']
+    assert '429' in snapshot['storylines'][0]['error']
+    assert 'private transcript' not in snapshot['error']
+    assert 'private transcript' not in snapshot['storylines'][0]['error']
+    assert len(snapshot['error']) < 200
+    assert job.error == error
+
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -744,7 +759,7 @@ def test_caption_request_generates_and_returns_reel_caption(tmp_path: Path) -> N
     assert notes.saved_notes == []
 
 
-def test_caption_note_request_saves_body_without_heading(tmp_path: Path) -> None:
+def test_caption_note_request_saves_visible_caption_instead_of_stale_server_copy(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
     job = store.create_job()
     job.episode_number = 12
@@ -769,11 +784,12 @@ def test_caption_note_request_saves_body_without_heading(tmp_path: Path) -> None
 
     response = TestClient(app).post(
         f"/api/jobs/{job.id}/storylines/s1/caption/note?token=secret",
+        json={"caption": "화면의 새 제목\n\n새 첫 문단\n\n새 두 번째 문단\n\n🎥 채널"},
     )
 
     assert response.status_code == 200
     assert response.json() == {"saved": True, "folder": "릴스 캡션"}
-    assert notes.saved_notes == [("에피소드12_검증한 문제", "첫 문단\n\n두 번째 문단")]
+    assert notes.saved_notes == [("화면의 새 제목", "화면의 새 제목\n\n새 첫 문단\n\n새 두 번째 문단\n\n🎥 채널")]
 
 
 def test_caption_note_request_reports_notes_failure(tmp_path: Path) -> None:

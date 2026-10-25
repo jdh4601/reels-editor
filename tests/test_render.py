@@ -409,7 +409,8 @@ def test_build_overlay_filter_static_then_timed() -> None:
     groups = [[0.0, 2.0, "안녕"], [2.0, 4.0, "하세요"]]
     filt, last = render.build_overlay_filter(n_static=2, groups=groups)
     # 입력 1,2 = 타이틀·워터마크(상시), 3,4 = 자막(시간창)
-    assert "between(t,0.000,2.000)" in filt
+    assert "gte(t,0.000)*lt(t,2.000)" in filt
+    assert "between(t" not in filt  # Adjacent captions must not overlap on a boundary frame.
     assert filt.count("overlay") == 4
     assert last == "[o3]"
 

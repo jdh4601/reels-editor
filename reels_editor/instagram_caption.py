@@ -12,11 +12,6 @@ MAX_RETRIES = 2
 MAX_CAPTION_CHARS = 1000
 MIN_SUMMARY_CHARS = 270
 MAX_SUMMARY_CHARS = 300
-CTA_PATTERN = re.compile(
-    r"^영상에서 .+?[이가] 알려주는 .+?에 대해 궁금하다면 댓글로 "
-    r"'(?P<keyword>[가-힣A-Za-z0-9]{2,10})'[을를] 남겨주세요\.\s*"
-    r".+?에 대해 정리한 .+?[을를] 보내드립니다\.$"
-)
 SOURCE_CREDIT_PREFIX = "🎥"
 UNKNOWN_CHANNEL = "채널 정보 없음"
 
@@ -30,16 +25,13 @@ def build_prompt(
     segments: dict[str, Any],
     feedback: str | None = None,
     output_budget: int = MAX_CAPTION_CHARS,
-    comment_keyword: str | None = None,
 ) -> str:
     context = _reel_context(selected_title, candidate, doc, segments)
     feedback_block = f"# 수정 피드백\n\n{feedback}\n" if feedback else ""
     return (
         PROMPT_PATH.read_text(encoding="utf-8")
-        .replace("{episode_number}", str(max(1, episode_number)))
         .replace("{reel_context}", context)
         .replace("{output_budget}", str(output_budget))
-        .replace("{comment_keyword}", comment_keyword or _comment_keyword(selected_title))
         .replace("{feedback_block}", feedback_block)
     )
 
@@ -59,7 +51,6 @@ def generate_caption(
     output_budget = MAX_CAPTION_CHARS
     if source_url:
         output_budget -= len(append_source_credit("", channel_name=channel_name, source_url=source_url))
-    comment_keyword = _comment_keyword(selected_title)
     feedback: str | None = None
     last_raw = ""
     last_errors: list[str] = ["알 수 없는 캡션 생성 오류"]
@@ -72,17 +63,15 @@ def generate_caption(
             segments=segments,
             feedback=feedback,
             output_budget=output_budget,
-            comment_keyword=comment_keyword,
         ))
         caption = _normalize(last_raw)
-        errors = validate_caption(caption, episode_number, max_chars=output_budget, comment_keyword=comment_keyword)
+        errors = validate_caption(caption, episode_number, max_chars=output_budget, selected_title=selected_title,
+                                  thumbnail_title=" ".join(str(doc.get(k) or "") for k in ("title_upper", "title_lower")))
         speaker = normalize_speaker_data(doc.get("speaker"))
         paragraphs = caption.split("\n\n")
         if speaker["name"] and speaker["name"] not in {"창업자", "화자"}:
             if speaker["name"] not in (paragraphs[1] if len(paragraphs) > 1 else ""):
                 errors.append("첫 문단에 확인된 화자 이름이 빠짐")
-            if speaker["name"] not in (paragraphs[-1] if paragraphs else ""):
-                errors.append("댓글 안내에 확인된 화자 이름이 빠짐")
         if format_speaker_label(speaker) != speaker["name"]:
             paragraphs = caption.split("\n\n")
             introduction = paragraphs[1] if len(paragraphs) > 1 else ""
@@ -104,29 +93,30 @@ def generate_caption(
 
 
 def validate_caption(caption: str, episode_number: int, *, max_chars: int = MAX_CAPTION_CHARS,
-                     comment_keyword: str | None = None) -> list[str]:
+                     selected_title: str = "",
+                     thumbnail_title: str = "") -> list[str]:
     errors: list[str] = []
-    if not caption.startswith(f"Ep {max(1, episode_number)}. "):
-        errors.append(f"첫 줄은 'Ep {max(1, episode_number)}. '로 시작해야 함")
+    if re.search(r"(?i)(?:\bep(?:isode)?\.?\s*\d+|에피소드\s*\d+|제\s*\d+\s*화)", caption.split("\n", 1)[0]):
+        errors.append("제목에 에피소드 번호를 넣으면 안 됨")
     if len(caption) > max_chars:
         errors.append(f"캡션이 {max_chars}자를 초과함 (현재 {len(caption)}자)")
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", caption) if part.strip()]
-    if len(paragraphs) != 4:
-        errors.append("제목 뒤 빈 줄 하나와 정확히 3개의 본문 문단이 필요함")
+    if len(paragraphs) != 3:
+        errors.append("제목 한 줄과 인사이트 정확히 2문단이 필요함")
     else:
         if "\n" in paragraphs[0]:
             errors.append("제목은 첫 줄에만 쓰고 본문과 빈 줄로 구분해야 함")
-        for paragraph in paragraphs[1:3]:
+        title_key = lambda value: re.sub(r"[^\w]", "", value).casefold()
+        if any(title_key(paragraphs[0]) == title_key(title) for title in (selected_title, thumbnail_title) if title_key(title)):
+            errors.append("캡션 제목은 썸네일·화면 제목과 다른 문장이어야 함")
+        for paragraph in paragraphs[1:]:
             if not paragraph.endswith("다.") or re.search(r"(?:[습합입]니다|해요|네요|세요)[.!?]", paragraph):
                 errors.append("설명 문장은 '~한다.', '~이다.'의 평서체로 써야 함")
-        summary = "\n\n".join(paragraphs[1:3])
+        summary = "\n\n".join(paragraphs[1:])
         if not MIN_SUMMARY_CHARS <= len(summary) <= MAX_SUMMARY_CHARS:
             errors.append(f"요약 본문은 {MIN_SUMMARY_CHARS}~{MAX_SUMMARY_CHARS}자여야 함 (현재 {len(summary)}자)")
-        cta = CTA_PATTERN.fullmatch(paragraphs[3])
-        if cta is None:
-            errors.append("마지막 문단은 화자·주제·댓글 키워드·정리 자료를 포함한 댓글 안내 두 문장이어야 함")
-        elif comment_keyword is not None and cta["keyword"] != comment_keyword:
-            errors.append(f"댓글 키워드는 '{comment_keyword}' 그대로 써야 함")
+    if re.search(r"댓글|팔로우|구독|(?:보내|제공해|드|드리|드립|받아|받으|받을|증정)[가-힣]*(?:니다|세요|게요)|DM|디엠", caption, re.I):
+        errors.append("댓글·팔로우 유도나 자료·보상 제공 약속을 넣으면 안 됨")
     if "창업자 창업자" in caption:
         errors.append("창업자 직책을 중복해서 쓰면 안 됨")
     if "원본 출처:" in caption or re.search(r"(?m)^🎥\s", caption):
@@ -162,14 +152,6 @@ def append_source_credit(
     return result
 
 
-def _comment_keyword(selected_title: str) -> str:
-    """Keep a predictable trigger across regenerations of the same reel title."""
-    for keyword in ("고객", "마케팅", "콘텐츠", "제품", "채용", "투자", "출시", "판매", "성장", "실패"):
-        if keyword in selected_title:
-            return keyword
-    return "정리"
-
-
 def _normalize(raw: str) -> str:
     value = raw.strip()
     if value.startswith("```") and value.endswith("```"):
@@ -188,7 +170,8 @@ def _reel_context(
     doc: dict[str, Any],
     segments: dict[str, Any],
 ) -> str:
-    lines = [f"- 선택된 릴스 제목: {selected_title}"]
+    lines = [f"- 선택된 릴스 제목: {selected_title}",
+             f"- 썸네일·화면 제목 (캡션 제목과 다르게 쓸 것): {doc.get('title_upper', '')} {doc.get('title_lower', '')}"]
     if candidate:
         lines.extend([
             f"- 콘텐츠 유형: {candidate.get('content_type', '')}",

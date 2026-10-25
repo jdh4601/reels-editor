@@ -28,9 +28,9 @@ PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "candidate-analysis.md"
 CANDIDATE_COUNT = 10
 TARGET_DURATION_S = 35
 # Keep short but usable clips: the target remains 35s, while completed
-# storylines from 20s through 40s are valid.
-MIN_DURATION_S = 20
-MAX_DURATION_S = 40
+# storylines from 15s through 50s are valid.
+MIN_DURATION_S = 15
+MAX_DURATION_S = 50
 MAX_RETRIES = 2
 CONTENT_TYPES: dict[str, dict[str, str]] = {
     "story": {
@@ -140,6 +140,24 @@ def candidate_brief(candidate: ContentCandidate) -> str:
     )
 
 
+def candidate_segments(segments: dict[str, Any], candidate: ContentCandidate) -> dict[str, Any]:
+    """Keep evidence and 30s context on either side, with original IDs/times.
+
+    Candidate discovery needs the whole interview; drafting an already selected
+    topic does not. Include every evidence window even for noncontiguous cuts.
+    """
+    rows = segments.get("segments", [])
+    by_id = {row["id"]: row for row in rows}
+    if not candidate.segment_ids or any(sid not in by_id for sid in candidate.segment_ids):
+        raise ValueError("선택한 후보의 근거 자막을 찾지 못했습니다. 다시 분석하세요.")
+    padding_us = 30_000_000
+    windows = [(by_id[sid]["source_start_us"] - padding_us,
+                by_id[sid]["source_end_us"] + padding_us) for sid in candidate.segment_ids]
+    return {**segments, "segments": [row for row in rows if any(
+        row["source_end_us"] >= start and row["source_start_us"] <= end
+        for start, end in windows)]}
+
+
 def generate_selected_candidates(
     segments: dict[str, Any],
     candidates: list[ContentCandidate],
@@ -158,7 +176,7 @@ def generate_selected_candidates(
         raw_dump = raw_dump_dir / f"llm_raw_s{index + 1}.txt" if raw_dump_dir else None
         try:
             doc = generate_script(
-                segments,
+                candidate_segments(segments, candidate),
                 TARGET_DURATION_S,
                 runner=runner,
                 raw_dump=raw_dump,
@@ -171,7 +189,7 @@ def generate_selected_candidates(
             return StorylineResult(index, label, doc, title=candidate.title)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             return StorylineResult(
-                index, label, None, f"{type(exc).__name__}: {exc}", title=candidate.title
+                index, label, None, f"대본 생성 실패: {exc}", title=candidate.title
             )
 
     with ThreadPoolExecutor(max_workers=len(candidates)) as executor:

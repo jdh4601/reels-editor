@@ -195,6 +195,9 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         return out_path
 
     return JobServiceDeps(
+        prepare_caption_timing=lambda _video, doc, *_args, **_kwargs: doc,
+        review_render_output=lambda video, *_args, **_kwargs: {
+            'passed': True, 'video_sha256': __import__('hashlib').sha256(video.read_bytes()).hexdigest()},
         trim_topic_edges=lambda doc, *_args, **_kwargs: doc,
         enrich_speakers=lambda *_args, **_kwargs: None,
         analyze_candidates=lambda _segments, _types, **_kwargs: _candidates(),
@@ -274,7 +277,7 @@ def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism
 
     assert job.status is Status.FAILED
     assert job.phase == "partial-failure"
-    assert job.error == "선택한 릴스 2/3개만 준비되었습니다."
+    assert job.error == "선택한 릴스 2/3개만 준비되었습니다. 원인: LLM failed"
     assert [story.status for story in job.storylines] == [Status.READY, Status.FAILED, Status.READY]
     assert calls.generate == 1
     assert calls.base == 2
@@ -282,6 +285,33 @@ def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism
     assert calls.max_active_base <= 2
     assert job.selected_storyline_id == "s1"
     assert not (Path(job.work_dir or "") / "s1" / "cuts").exists()
+
+
+def test_topic_review_429_reports_stage_and_cause_before_render(tmp_path: Path) -> None:
+    calls = Calls()
+    def fail_review(*args, **kwargs):
+        raise RuntimeError('Codex 요청이 제한되었습니다(429 Too Many Requests).')
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=replace(
+        _deps(tmp_path, calls), trim_topic_edges=fail_review))
+    job = _run_ready(service)
+    assert job.status is Status.FAILED
+    assert '렌더 전 주제 검수 실패' in job.error
+    assert '429' in job.error
+    assert all('렌더 전 주제 검수 실패' in story.error for story in job.storylines)
+    assert calls.base == calls.overlay == 0
+
+
+def test_candidate_analysis_failure_reports_stage(tmp_path: Path) -> None:
+    def fail_analysis(*args, **kwargs):
+        raise RuntimeError('Codex 요청이 제한되었습니다(429 Too Many Requests).')
+    store = JobStore(tmp_path / 'jobs')
+    service = JobService(store=store, deps=replace(
+        _deps(tmp_path, Calls()), analyze_candidates=fail_analysis))
+    job = service.run_youtube_job_sync('https://youtu.be/dQw4w9WgXcQ')
+    assert job.status is Status.FAILED
+    assert job.error.startswith('후보 분석 실패:')
+    assert '429' in job.error
+    assert job.candidates == []
 
 
 def test_job_service_harmonizes_grounded_speaker_role_before_render(tmp_path: Path) -> None:
@@ -1378,6 +1408,10 @@ def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_pat
     fresh_prompts = []
     doc = _doc("복구 성공")
     def fresh_runner(prompt: str) -> str:
+        in_progress = store.load('recover-fresh')
+        assert in_progress.status is Status.GENERATING
+        assert in_progress.phase == 'generating'
+        assert in_progress.error is None
         fresh_prompts.append(prompt)
         return json.dumps(doc)
     service = JobService(store=store, deps=replace(
@@ -1393,7 +1427,7 @@ def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_pat
     if cached:
         (work / "llm_raw_s1.txt").write_text("invalid cached JSON")
     job = Job(id="recover-fresh", input_path=str(video), duration_s=35,
-              n_storylines=1, status=Status.FAILED, selected_candidate_ids=["c1"],
+              n_storylines=1, status=Status.FAILED, error='previous failure', selected_candidate_ids=["c1"],
               storylines=[Storyline(id="s1", index=0, angle_name="원칙형",
                           title="투자 손실보다 더 위험한 남 탓", status=Status.FAILED)])
     store.save(job)
@@ -1403,6 +1437,32 @@ def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_pat
         assert "JSON 파싱" in fresh_prompts[0]
     assert recovered.status is Status.READY
     assert recovered.storylines[0].title == job.storylines[0].title
+
+
+def test_retry_missing_source_does_not_leave_job_generating(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / 'jobs')
+    service = JobService(store=store, deps=_deps(tmp_path, Calls()))
+    job = Job(id='missing-retry-source', status=Status.FAILED,
+              storylines=[Storyline(id='s1', index=0, status=Status.FAILED)])
+    store.save(job)
+    with pytest.raises(JobServiceError, match='원본 자막'):
+        service.retry_storyline(job.id, 's1')
+    failed = store.load(job.id)
+    assert failed.status is Status.FAILED
+    assert failed.storylines[0].status is Status.FAILED
+    assert '대본 생성 실패' in failed.error
+
+
+def test_retry_same_clip_while_generating_is_rejected_without_mutation(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / 'jobs')
+    service = JobService(store=store, deps=_deps(tmp_path, Calls()))
+    job = Job(id='busy-retry', status=Status.GENERATING,
+              storylines=[Storyline(id='s1', index=0, status=Status.GENERATING, progress=0.4)])
+    store.save(job)
+    before = store.load(job.id)
+    with pytest.raises(JobServiceError, match='이미 생성 중'):
+        service.retry_storyline(job.id, 's1')
+    assert store.load(job.id) == before
 
 def test_cancel_marks_only_target_job_while_another_job_runs(tmp_path: Path) -> None:
     calls = Calls()
@@ -1993,19 +2053,22 @@ def test_export_regenerates_current_thumbnail_for_existing_video(tmp_path: Path,
     assert video.read_bytes() == Path(story.active_variant_path).read_bytes()
 
 
-def test_export_thumbnail_failure_does_not_export_video_alone(tmp_path: Path) -> None:
+@pytest.mark.parametrize("existing_cover", [True, False])
+def test_export_thumbnail_failure_preserves_completed_video(tmp_path: Path, existing_cover: bool) -> None:
     deps = _deps(tmp_path, Calls())
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=deps)
     job = _run_ready(service, candidate_count=1)
+    if not existing_cover:
+        Path(job.storylines[0].active_variant_path).with_suffix(".jpg").unlink()
     def fail(*_args, **_kwargs):
         raise RuntimeError("cover generation failed")
     service.deps = replace(deps, render_thumbnail=fail)
     destination = tmp_path / "exports" / "reel.mp4"
-    with pytest.raises(RuntimeError, match="cover generation failed"):
-        service.export_selected(job.id, destination, storyline_id="s1")
-    assert not destination.exists()
-    assert not destination.with_suffix(".jpg").exists()
-    assert service.store.load(job.id).export.status is Status.FAILED
+    exported = service.export_selected(job.id, destination, storyline_id="s1")
+    assert destination.read_bytes() == Path(job.storylines[0].active_variant_path).read_bytes()
+    assert destination.with_suffix(".jpg").exists() is existing_cover
+    assert exported.export.status is Status.READY
+    assert service.store.load(job.id).storylines[0].thumbnail_error == "cover generation failed"
 
 
 def test_thumbnail_candidates_selection_and_export_preserve_chosen_photo(tmp_path):
@@ -2015,8 +2078,8 @@ def test_thumbnail_candidates_selection_and_export_preserve_chosen_photo(tmp_pat
     job = _run_ready(service)
     story = job.storylines[0]
     result = service.generate_thumbnail_candidates(job.id, story.id)
-    assert [c['kind'] for c in result['candidates']] == ['interview', 'interview']
-    assert result['warnings'] == ['사진 검색 결과 없음']
+    assert [c['kind'] for c in result['candidates']] == ['interview'] * 4
+    assert result['warnings'] == []
     selected = result['candidates'][1]
     job = service.select_thumbnail_candidate(job.id, story.id, selected['artifact_id'])
     variant = service._active_variant(job.storylines[0])
@@ -2049,6 +2112,176 @@ def test_render_persists_topic_review_before_assets(tmp_path):
         doc = json.loads(Path(story.edl_path).read_text())
         assert doc['topic_edge_review']['core_topic'] == '대표 인터뷰'
         assert doc['topic_edge_review']['removed_seg_ids'] == []
+
+
+def test_opus_failure_triggers_codex_repair_and_new_render_before_ready(tmp_path):
+    from hashlib import sha256
+    calls = Calls()
+    attempts, repairs, states = [], [], []
+    base_deps = _deps(tmp_path, calls)
+    def review(video, doc, *_args, **_kwargs):
+        attempts.append(doc.copy())
+        states.append(service.store.list_recent()[0].storylines[0].status)
+        if len(attempts) == 1:
+            return {'passed': False, 'issues': [{'kind':'hook', 'start_s':0, 'end_s':1,
+                'evidence':'첫 훅에 주어가 없음', 'correction':'독립적인 첫 문장 선택'}]}
+        return {'passed':True,'video_sha256':sha256(video.read_bytes()).hexdigest(), 'report_path':'review.json'}
+    def repair(doc, *_args, **kwargs):
+        repairs.append(kwargs['feedback'])
+        return {**doc,'subtitle_translations':{'seg1':'훅의 맥락을 복구했습니다.'}}
+    deps = replace(base_deps, review_render_output=review, repair_document=repair)
+    service = JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
+    job = _run_ready(service,candidate_count=1)
+    assert job.status is Status.READY
+    assert calls.base == 2 and calls.overlay == 2
+    assert len(repairs) == 1 and repairs[0]['issues'][0]['kind'] == 'hook'
+    assert all(state is not Status.READY for state in states)
+    story=job.storylines[0]
+    assert story.review_message is None and story.quality_review_path == 'review.json'
+    saved=json.loads(Path(story.edl_path).read_text())
+    assert saved['subtitle_translations']['seg1']=='훅의 맥락을 복구했습니다.'
+    assert saved['quality_review']['video_sha256']==sha256(Path(story.active_variant_path).read_bytes()).hexdigest()
+
+
+def test_persistent_quality_failure_stops_after_two_repairs_without_publishing(tmp_path):
+    calls = Calls()
+    repairs=[]
+    def repair(doc,*_a,**_k):
+        repairs.append(doc)
+        return doc
+    deps=replace(_deps(tmp_path,calls), repair_document=repair,
+        review_render_output=lambda *_a,**_k: {'passed':False,'issues':[
+            {'kind':'timing','start_s':0,'end_s':1,'evidence':'훅 자막 1초 지연','correction':'재정렬'}]})
+    service=JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
+    job=_run_ready(service,candidate_count=1)
+    assert job.status is Status.FAILED
+    assert len(repairs)==2 and calls.overlay==3
+    assert job.storylines[0].variants==[]
+    assert job.storylines[0].active_variant_path is None
+    assert not job.artifacts
+    assert '자동 수정 2회' in job.storylines[0].error
+    assert Path(job.storylines[0].edl_path).is_file()
+    assert Path(job.storylines[0].segments_path).is_file()
+
+
+def test_layout_repair_overrides_legacy_absolute_subtitle_position(tmp_path):
+    from hashlib import sha256
+    calls=Calls();base_deps=_deps(tmp_path,calls);styles=[];reviews=[]
+    def render_base(video,segments,doc,style,*args,**kwargs):
+        styles.append(style)
+        return base_deps.render_base_and_assets(video,segments,doc,style,*args,**kwargs)
+    def review(video,*_a,**_k):
+        reviews.append(1)
+        return ({'passed':False,'issues':[{'kind':'layout','evidence':'자막이 입을 가림'}]}
+            if len(reviews)==1 else {'passed':True,'video_sha256':sha256(video.read_bytes()).hexdigest()})
+    deps=replace(base_deps,
+        load_style=lambda path:replace(base_deps.load_style(path),sub_y=-420),
+        render_base_and_assets=render_base,review_render_output=review,
+        repair_document=lambda doc,*_a,**_k:{**doc,'render_adjustments':{'sub_y_frac':.9}})
+    service=JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
+    job=_run_ready(service,candidate_count=1)
+    assert job.status is Status.READY
+    assert styles[0].sub_y==-420
+    assert styles[1].sub_y is None and styles[1].sub_y_frac==.9
+
+
+def test_retry_recovers_valid_checkpoint_when_older_job_omitted_paths(tmp_path):
+    calls = Calls()
+    deps = replace(_deps(tmp_path, calls), repair_document=lambda doc, *_a, **_k: doc,
+        review_render_output=lambda *_a, **_k: {'passed': False, 'issues': [
+            {'kind': 'timing', 'evidence': '자막 지연'}]})
+    service = JobService(store=JobStore(tmp_path/'jobs'), deps=deps)
+    job = _run_ready(service, candidate_count=1)
+    story = job.storylines[0]
+    checkpoint = Path(story.edl_path)
+    story.edl_path = story.segments_path = None
+    service.store.save(job)
+    generated = calls.generate
+    service.deps = replace(deps, review_render_output=_deps(tmp_path, calls).review_render_output)
+    retried = service.retry_storyline(job.id, story.id)
+    assert retried.status is Status.READY
+    assert calls.generate == generated
+    assert Path(retried.storylines[0].edl_path) == checkpoint
+
+
+def test_retry_uses_saved_review_before_rendering_and_keeps_two_repair_limit(tmp_path):
+    from reels_editor import caption_timing, edl
+    calls = Calls()
+    feedbacks, review_paths, render_order = [], [], []
+    deps = _deps(tmp_path, calls)
+    def render_base(*args, **kwargs):
+        render_order.append('render')
+        return deps.render_base_and_assets(*args, **kwargs)
+    def repair(doc, *_a, **kwargs):
+        render_order.append('repair')
+        feedbacks.append(kwargs['feedback'])
+        return doc
+    def review(video, doc, segments, assets, speed, title, work, **kwargs):
+        report = {'passed': False, 'signature': doc['caption_timing']['signature'], 'issues': [
+            {'kind': 'hook', 'evidence': '독립적으로 이해할 수 없는 훅'}]}
+        work.mkdir(parents=True, exist_ok=True)
+        path = work/'review.json'
+        path.write_text(json.dumps(report))
+        review_paths.append(path)
+        return report
+    def prepare(_video, doc, segments, speed, *_a, **_k):
+        text = ' '.join(row['text'] for row in edl.ordered_segments(doc, segments))
+        return {**doc, 'caption_timing': {
+            'version': caption_timing.VERSION,
+            'signature': caption_timing.signature(doc, segments, speed),
+            'words': [{'word': text, 'start': 0, 'end': 1/speed}],
+            'captions': [{'text': text, 'start_word': 0, 'end_word': 0}]}}
+    service = JobService(store=JobStore(tmp_path/'jobs'), deps=replace(deps,
+        render_base_and_assets=render_base, repair_document=repair,
+        prepare_caption_timing=prepare,
+        review_render_output=review))
+    job = _run_ready(service, candidate_count=1)
+    assert job.status is Status.FAILED and len(feedbacks) == 2
+    render_order.clear()
+    retried = service.retry_storyline(job.id, job.storylines[0].id)
+    assert retried.status is Status.FAILED
+    assert render_order == ['repair', 'render', 'repair', 'render']
+    assert len(feedbacks) == 4
+    assert feedbacks[2]['selected_candidate']['id'] == 'c1'
+    assert len(set(review_paths)) == 5 and all(path.is_file() for path in review_paths)
+
+
+def test_opus_unavailable_never_marks_unreviewed_video_ready(tmp_path):
+    calls=Calls()
+    def unavailable(*_a,**_k):raise RuntimeError('Opus 연결 실패')
+    deps=replace(_deps(tmp_path,calls),review_render_output=unavailable)
+    service=JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
+    job=_run_ready(service,candidate_count=1)
+    assert job.status is Status.FAILED and not job.artifacts
+    assert 'Opus' in job.storylines[0].error
+    assert calls.overlay==1
+
+
+def test_pre_render_validation_can_repair_before_rendering(tmp_path):
+    calls=Calls();topic_calls=[]
+    def trim(doc,*_a,**_k):
+        topic_calls.append(1)
+        if len(topic_calls)==1:raise ValueError('주제 이탈 구간 제거 후 문장이 중간에서 끊김')
+        return doc
+    repairs=[]
+    def repair(doc,*_a,**kwargs):
+        repairs.append(kwargs['feedback'])
+        return doc
+    deps=replace(_deps(tmp_path,calls),trim_topic_edges=trim,repair_document=repair)
+    service=JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
+    job=_run_ready(service,candidate_count=1)
+    assert job.status is Status.READY and calls.overlay==1
+    assert len(repairs)==1 and repairs[0]['stage']=='렌더 전 주제 검수'
+
+
+def test_review_for_different_mp4_cannot_publish(tmp_path):
+    calls=Calls()
+    deps=replace(_deps(tmp_path,calls),repair_document=lambda doc,*_a,**_k:doc,
+        review_render_output=lambda *_a,**_k:{'passed':True,'video_sha256':'old-video'})
+    service=JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
+    job=_run_ready(service,candidate_count=1)
+    assert job.status is Status.FAILED and not job.artifacts
+    assert calls.overlay==3
 
 
 def test_google_drive_batch_export_places_all_videos_and_jpgs_in_episode_folder(tmp_path):
@@ -2121,9 +2354,12 @@ def test_thumbnail_partial_failure_still_returns_successful_interview_candidate(
     service = JobService(store=JobStore(tmp_path / 'jobs'), deps=deps)
     job = _run_ready(service)
     render_thumb = deps.render_thumbnail
+    succeeded = False
     def partial(assets, **kwargs):
-        if kwargs['frame_time_s'] is None:
+        nonlocal succeeded
+        if kwargs['frame_time_s'] is None or succeeded:
             raise RuntimeError('no open eye frame')
+        succeeded = True
         return render_thumb(assets, **kwargs)
     def search_fail(*_args, **_kwargs):
         raise RuntimeError('search unavailable')
@@ -2132,3 +2368,53 @@ def test_thumbnail_partial_failure_still_returns_successful_interview_candidate(
     assert len(result['candidates']) == 1
     assert result['candidates'][0]['kind'] == 'interview'
     assert len(result['warnings']) == 2
+
+
+def test_thumbnail_generation_returns_four_distinct_shots_and_passes_previous_shots(tmp_path):
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    service = JobService(store=JobStore(tmp_path / 'jobs'), deps=deps)
+    job = _run_ready(service)
+    counts = []
+    def render_cover(assets, **kwargs):
+        previous = kwargs['exclude_shots']
+        counts.append(len(previous))
+        path = deps.render_thumbnail(assets, **kwargs)
+        path.with_suffix('.shot.json').write_text(json.dumps({'shot': len(previous)}))
+        return path
+    def no_search(*_args, **_kwargs):
+        raise AssertionError('Four interview shots already available')
+    service.deps = replace(deps, render_thumbnail=render_cover, find_founder_photos=no_search)
+    result = service.generate_thumbnail_candidates(job.id, 's1')
+    assert counts == [0, 1, 2, 3]
+    assert len(result['candidates']) == 4
+    assert len({c['artifact_id'] for c in result['candidates']}) == 4
+    assert [c['label'] for c in result['candidates']] == [f'인터뷰 구도 {i}' for i in range(1, 5)]
+    assert not result['warnings']
+
+
+def test_failed_thumbnail_keeps_video_playable_and_can_be_retried(tmp_path):
+    from reels_editor.desktop.server import _snapshot_from_job
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("눈을 뜬 선명한 단독 장면을 찾지 못했습니다.")
+    service = JobService(store=JobStore(tmp_path / "jobs"), deps=replace(deps, render_thumbnail=fail))
+    job = _run_ready(service, candidate_count=1)
+    story = job.storylines[0]
+    assert job.status is Status.READY
+    assert story.status is Status.READY and story.error is None
+    assert story.thumbnail_error and story.archive_path
+    assert Path(story.active_variant_path).is_file()
+    snapshot = _snapshot_from_job(job)["storylines"][0]
+    assert snapshot["video_url"] and snapshot["thumbnail_url"] is None
+    assert snapshot["thumbnail_error"] == story.thumbnail_error
+    persisted = service.store.load(job.id)
+    assert persisted.storylines[0].thumbnail_error == story.thumbnail_error
+    base_calls, overlay_calls = calls.base, calls.overlay
+    service.deps = replace(deps, find_founder_photos=lambda *_a, **_kw: ([], []))
+    candidates = service.generate_thumbnail_candidates(job.id, story.id)
+    updated = service.select_thumbnail_candidate(job.id, story.id, candidates["candidates"][0]["artifact_id"])
+    assert updated.storylines[0].thumbnail_error is None
+    assert _snapshot_from_job(updated)["storylines"][0]["thumbnail_url"]
+    assert (calls.base, calls.overlay) == (base_calls, overlay_calls)

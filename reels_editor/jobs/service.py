@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import base64
+import binascii
+import io
 import hashlib
 import os
 import re
@@ -18,11 +21,12 @@ from typing import Any, Callable
 
 from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, speaker_identity, source_cache, thumbnail, title_suggestion, youtube
 from reels_editor import founder_photos, speaker_focus
-from PIL import Image
+from reels_editor import caption_timing, quality_review
+from PIL import Image, ImageOps, UnidentifiedImageError
 from reels_editor.topic_edges import trim_topic_edges
 from reels_editor.config import AppConfig, merged_style
 from reels_editor.drive_paths import episode_export_root
-from reels_editor.llm import build_runner
+from reels_editor.llm import build_runner, summarize_codex_error
 from reels_editor.processes import ProcessRegistry, use_process_registry
 from reels_editor.storyteller import (
     StorylineResult,
@@ -65,8 +69,16 @@ class JobServiceError(RuntimeError):
     pass
 
 
+def _failure_summary(message: str, storylines: list[Storyline]) -> str:
+    reasons = list(dict.fromkeys(summarize_codex_error(story.error) for story in storylines if story.error))
+    return message + (" 원인: " + "; ".join(reason[:400] for reason in reasons[:3]) if reasons else "")
+
+
 @dataclass(frozen=True)
 class JobServiceDeps:
+    prepare_caption_timing: Callable[..., dict] = caption_timing.prepare_caption_timing
+    review_render_output: Callable[..., dict] = quality_review.review_render_output
+    repair_document: Callable[..., dict] = quality_review.repair_document
     find_founder_photos: Callable[..., tuple] = founder_photos.find_photos
     trim_topic_edges: Callable[..., dict] = trim_topic_edges
     enrich_speakers: Callable[..., None] = speaker_identity.enrich_speakers
@@ -525,11 +537,23 @@ class JobService:
         with self._lock:
             job = self.store.load(job_id)
             storyline = self._find_storyline(job, storyline_id)
+            if storyline.status in {Status.GENERATING, Status.RENDERING_BASE, Status.RENDERING_OVERLAY}:
+                raise JobServiceError("이 클립은 이미 생성 중입니다.")
+            if not storyline.edl_path:
+                checkpoint_dir = self.store.job_dir(job_id) / storyline_id
+                checkpoint_edl, checkpoint_segments = checkpoint_dir/'edl.json', checkpoint_dir/'segments.json'
+                try:
+                    saved_doc = json.loads(checkpoint_edl.read_text(encoding='utf-8'))
+                    saved_segments = json.loads(checkpoint_segments.read_text(encoding='utf-8'))
+                    if not edl.validate_edl(saved_doc, saved_segments):
+                        storyline.edl_path = str(checkpoint_edl)
+                        storyline.segments_path = str(checkpoint_segments)
+                except (OSError, ValueError, TypeError, KeyError):
+                    pass
             if not storyline.edl_path:
                 storyline.status = Status.GENERATING
                 storyline.error = None
                 storyline.progress = 0.05
-                self._save(job)
                 recover_generation = True
             else:
                 recover_generation = False
@@ -537,12 +561,52 @@ class JobService:
                 storyline.status = Status.RENDERING_BASE
                 storyline.error = None
                 storyline.progress = 0.2
-                self._save(job)
+            job.status = storyline.status
+            job.phase = "generating" if recover_generation else "rendering"
+            job.progress = storyline.progress
+            job.error = None
+            job.message = f"{storyline.index + 1}번 릴스를 다시 생성하는 중입니다."
+            self._save(job)
         with self._job_operation(job_id):
-            if recover_generation:
-                self._recover_failed_generation(job_id, storyline_id)
-            else:
-                self._render_storyline_base(job_id, storyline_id)
+            try:
+                if recover_generation:
+                    self._recover_failed_generation(job_id, storyline_id)
+                else:
+                    self._render_storyline_base(job_id, storyline_id)
+            except Exception as exc:
+                self._record_background_failure(job_id, exc)
+                with self._lock:
+                    current = self.store.load(job_id)
+                    if current.status is not Status.CANCELLED:
+                        failed = self._find_storyline(current, storyline_id)
+                        failed.status = Status.FAILED
+                        failed.error = str(exc)
+                        self._save(current)
+                raise JobServiceError(str(exc)) from exc
+            with self._lock:
+                current = self.store.load(job_id)
+                if current.status is not Status.CANCELLED:
+                    ready = sum(item.status is Status.READY for item in current.storylines)
+                    current.progress = 1.0
+                    pending = sum(item.status in {Status.GENERATING, Status.RENDERING_BASE, Status.RENDERING_OVERLAY}
+                                  for item in current.storylines)
+                    if pending:
+                        current.status = Status.RENDERING_BASE
+                        current.phase = 'review'
+                        current.error = None
+                        current.message = f'대표 영상 {ready}개 준비 완료 · {pending}개 생성·검수 중입니다.'
+                    elif ready == current.n_storylines:
+                        current.status = Status.READY
+                        current.phase = "ready"
+                        current.error = None
+                        current.message = f"대표 영상 {ready}개가 준비되었습니다."
+                    else:
+                        current.status = Status.FAILED
+                        current.phase = "partial-failure"
+                        current.error = _failure_summary(
+                            f"대표 영상 {ready}/{current.n_storylines}개만 준비되었습니다.", current.storylines)
+                        current.message = current.error
+                    self._save(current)
         return self.store.load(job_id)
 
     def generate_instagram_caption(
@@ -941,7 +1005,7 @@ class JobService:
 
         try:
             doc = self.deps.generate_script(
-                segments,
+                candidate_analyzer.candidate_segments(segments, candidate) if candidate else segments,
                 job.duration_s,
                 runner=recovery_runner,
                 angle=candidate_analyzer.candidate_brief(candidate) if candidate else None,
@@ -971,6 +1035,8 @@ class JobService:
             recovered.status = Status.RENDERING_BASE
             recovered.progress = 0.2
             recovered.error = None
+            current.status = Status.RENDERING_BASE
+            current.phase = "rendering"
             self._save(current)
 
         result = StorylineResult(
@@ -984,21 +1050,6 @@ class JobService:
             style,
             style.speed,
         )
-        with self._lock:
-            current = self.store.load(job_id)
-            ready = sum(item.status is Status.READY for item in current.storylines)
-            current.progress = 1.0
-            if ready == current.n_storylines:
-                current.status = Status.READY
-                current.phase = "ready"
-                current.error = None
-                current.message = f"대표 영상 {ready}개가 준비되었습니다."
-            else:
-                current.status = Status.FAILED
-                current.phase = "partial-failure"
-                current.error = f"대표 영상 {ready}/{current.n_storylines}개만 준비되었습니다."
-                current.message = current.error
-            self._save(current)
 
     def ensure_storyline_role(self, job_id: str, storyline_id: str) -> Job:
         """Repair existing name-only reels before export using their saved source context."""
@@ -1231,7 +1282,13 @@ class JobService:
             if variant.path is None:
                 raise JobServiceError("selected variant has no output path")
             if refresh_thumbnail:
-                self._refresh_export_thumbnail(job_id, story, variant)
+                try:
+                    self._refresh_export_thumbnail(job_id, story, variant)
+                except Exception as exc:  # export the completed MP4 even without a cover
+                    with self._lock:
+                        current = self.store.load(job_id)
+                        self._find_storyline(current, story.id).thumbnail_error = str(exc)
+                        self._save(current)
             destination = destination.expanduser()
             if self._is_archive_namespace_path(destination):
                 self._assert_safe_archive_directory(destination.parent)
@@ -1345,21 +1402,40 @@ class JobService:
             options = dict(title_text=story.title, title_upper=story.title_upper,
                            title_lower=story.title_lower, style=style,
                            speaker_text=self._speaker_text(story, doc))
-            candidates, warnings = [], []
-            for i, time_s in enumerate((None, max(0, assets.total_s * 0.55))):
+            candidates, warnings, selected_shots = [], [], []
+            attempts = [(assets, None), (assets, max(0, assets.total_s * .33)), (assets, max(0, assets.total_s * .66))]
+            # Sibling reels retain other sections of the same interview, often with another shot.
+            for sibling in job.storylines:
+                if sibling.id == story.id or not sibling.assets_path:
+                    continue
+                sibling_doc = self._harmonized_storyline_doc(job, sibling)
+                if self._speaker_text(sibling, sibling_doc) != self._speaker_text(story, doc):
+                    continue
+                try:
+                    sibling_assets = render.RenderAssets.read_manifest(Path(sibling.assets_path))
+                    attempts.extend((sibling_assets, time_s) for time_s in (None, sibling_assets.total_s * .33, sibling_assets.total_s * .66))
+                except (OSError, ValueError):
+                    continue
+            for i, (source_assets, time_s) in enumerate(attempts):
                 path = directory / f"interview-{i + 1}.jpg"
                 try:
-                    self.deps.render_thumbnail(assets, out_path=path, frame_time_s=time_s,
-                                               require_open_eyes=True, **options)
+                    self.deps.render_thumbnail(source_assets, out_path=path, frame_time_s=time_s,
+                                               require_open_eyes=True, exclude_shots=selected_shots, **options)
                 except (OSError, RuntimeError, ValueError):
-                    warnings.append(f"인터뷰 장면 {i + 1}에서 적절한 사진을 찾지 못해 제외했습니다.")
                     continue
-                candidates.append({"path": str(path), "kind": "interview", "label": f"인터뷰 장면 {i + 1}"})
+                shot_path = path.with_suffix('.shot.json')
+                if shot_path.is_file():
+                    selected_shots.append(json.loads(shot_path.read_text()))
+                candidates.append({"path": str(path), "kind": "interview", "label": f"인터뷰 구도 {len(candidates) + 1}"})
+                if len(candidates) == 4:
+                    break
             speaker = {**doc.get("speaker", {}), **(story.speaker_override or {})}
             try:
-                photos, search_warnings = self.deps.find_founder_photos(speaker,
-                    {"source_title": job.project_name, "source_url": job.source_url}, directory, max_photos=4)
-                warnings.extend(search_warnings)
+                photos = []
+                if len(candidates) < 4:
+                    photos, search_warnings = self.deps.find_founder_photos(speaker,
+                        {"source_title": job.project_name, "source_url": job.source_url}, directory, max_photos=4)
+                    warnings.extend(search_warnings)
             except (OSError, RuntimeError, ValueError):
                 photos = []
                 warnings.append("검색 사진을 가져오지 못했습니다. 인터뷰 장면 후보를 사용할 수 있습니다.")
@@ -1371,23 +1447,29 @@ class JobService:
                     if face is None:
                         warnings.append("눈 개폐를 확인할 수 없거나 눈 감은 검색 사진은 제외했습니다.")
                         continue
+                    shot = thumbnail.shot_descriptor(Path(photo["path"]), face)
+                    if any(thumbnail.same_shot(shot, previous) for previous in selected_shots):
+                        continue
                     with Image.open(photo["path"]) as frame:
                         image = thumbnail.compose_thumbnail(frame, story.title, style,
                             title_upper=story.title_upper, title_lower=story.title_lower, face=face)
                     path = directory / f"search-{len(candidates)}.jpg"
                     image.save(path, "JPEG", quality=95, subsampling=0)
-                    if thumbnail.open_eye_face(path) is None:
+                    if len(speaker_focus._detect_faces(path)) != 1:
                         path.unlink(missing_ok=True)
-                        warnings.append("최종 검색 썸네일에서 눈을 뜬 얼굴을 확인하지 못해 제외했습니다.")
+                        warnings.append("최종 검색 썸네일에서 단독 얼굴을 확인하지 못해 제외했습니다.")
                         continue
                     candidates.append({"path": str(path), "kind": "search", "label": f"창업자 검색 사진 {sum(c['kind'] == 'search' for c in candidates) + 1}",
                                        "source_url": photo["source_url"], "image_url": photo["image_url"]})
-                    if sum(c['kind'] == 'search' for c in candidates) == 2:
+                    selected_shots.append(shot)
+                    if len(candidates) == 4:
                         break
                 except (ImportError, KeyError, OSError, RuntimeError, ValueError):
                     warnings.append("검색 사진을 검사하거나 합성하지 못해 해당 사진을 제외했습니다.")
             if not candidates:
                 raise JobServiceError("사용할 수 있는 썸네일 후보를 찾지 못했습니다. 다른 장면으로 다시 생성하세요.")
+            if len(candidates) < 4:
+                warnings.append(f"서로 다른 구도는 {len(candidates)}개만 확인됐습니다. 눈 감은 사진이나 중복 구도로 4개를 채우지 않았습니다.")
             warnings = list(dict.fromkeys(warnings))
             with self._lock:
                 current = self.store.load(job_id)
@@ -1431,7 +1513,79 @@ class JobService:
             self._register_thumbnail(job_id, Path(variant.path))
             if story.archive_path and Path(story.archive_path).is_file():
                 shutil.copyfile(cover, thumbnail.thumbnail_path(Path(story.archive_path)))
-            return self._save(self.store.load(job_id))
+            current = self.store.load(job_id)
+            self._find_storyline(current, storyline_id).thumbnail_error = None
+            return self._save(current)
+
+    def create_uploaded_thumbnail(self, job_id: str, storyline_id: str, image_base64: str, mime_type: str) -> str:
+        """Create a styled thumbnail candidate from a user-provided image."""
+        try:
+            raw = base64.b64decode(image_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise JobServiceError("이미지 데이터가 올바르지 않습니다.") from exc
+        if not raw or len(raw) > 10 * 1024 * 1024:
+            raise JobServiceError("이미지는 10MB 이하로 선택하세요.")
+        expected_formats = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
+        if mime_type not in expected_formats:
+            raise JobServiceError("JPEG, PNG, WebP 이미지만 선택할 수 있습니다.")
+        try:
+            with Image.open(io.BytesIO(raw)) as probe:
+                if probe.format != expected_formats[mime_type]:
+                    raise JobServiceError("JPEG, PNG, WebP 이미지만 선택할 수 있습니다.")
+                if probe.width < 64 or probe.height < 64 or probe.width * probe.height > 40_000_000:
+                    raise JobServiceError("이미지 크기를 확인하세요. 최소 64×64, 최대 40MP까지 지원합니다.")
+                probe.verify()
+            with Image.open(io.BytesIO(raw)) as opened:
+                frame = ImageOps.exif_transpose(opened).convert("RGB")
+        except JobServiceError:
+            raise
+        except (OSError, ValueError, UnidentifiedImageError) as exc:
+            raise JobServiceError("이미지 파일을 읽지 못했습니다.") from exc
+
+        with self._job_operation(job_id):
+            with self._lock:
+                job = self.store.load(job_id)
+                story = self._find_storyline(job, storyline_id)
+                if story.status is not Status.READY or not story.assets_path:
+                    raise JobServiceError("완성된 릴스에서 썸네일을 적용하세요.")
+                variant = self._active_variant(story)
+                revision = story.revision
+                style = self._style_for_episode(
+                    merged_style(self.deps.load_style(self.style_path), self.config.style),
+                    story.episode_number or job.episode_number,
+                )
+                doc = self._harmonized_storyline_doc(job, story)
+                speaker_text = self._speaker_text(story, doc)
+                directory = self.store.job_dir(job_id) / storyline_id / "thumbnail-candidates" / uuid.uuid4().hex
+                directory.mkdir(parents=True)
+                path = directory / "uploaded.jpg"
+                composed = thumbnail.compose_thumbnail(frame, story.title, style,
+                    title_upper=story.title_upper, title_lower=story.title_lower, speaker_text=speaker_text)
+                composed.convert("RGB").save(path, "JPEG", quality=95, subsampling=0)
+                current = self.store.load(job_id)
+                current_story = self._find_storyline(current, storyline_id)
+                if current_story.revision != revision or self._active_variant(current_story).path != variant.path:
+                    path.unlink(missing_ok=True)
+                    raise JobServiceError("생성 중 릴스가 변경되었습니다. 이미지를 다시 적용하세요.")
+                artifact = self.store.register_artifact(job_id, path, kind="image/jpeg")
+                candidate = {"id": artifact.id, "artifact_id": artifact.id, "kind": "uploaded", "label": "직접 선택한 이미지", "url": f"/media/{job_id}/{artifact.id}"}
+                manifest = {"revision": revision, "variant_path": variant.path, "candidates": [candidate], "warnings": []}
+                (directory / "candidates.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+                return artifact.id
+
+    def _try_render_thumbnail(self, job_id: str, storyline_id: str, assets, **options) -> None:
+        """A cover failure must never discard a verified, playable video."""
+        error = None
+        try:
+            self.deps.render_thumbnail(assets, **options)
+            if not Path(options["out_path"]).is_file():
+                raise JobServiceError("썸네일 생성기가 JPG를 생성하지 못했습니다.")
+        except Exception as exc:  # per-cover failure boundary, separate from video
+            error = str(exc)
+        with self._lock:
+            current = self.store.load(job_id)
+            self._find_storyline(current, storyline_id).thumbnail_error = error
+            self._save(current)
 
     def _refresh_export_thumbnail(self, job_id: str, story: Storyline, variant: Variant) -> None:
         """Apply the current cover template even to previously rendered videos."""
@@ -1461,6 +1615,12 @@ class JobService:
         )
         if not cover.is_file():
             raise JobServiceError("썸네일 생성기가 JPG를 생성하지 못했습니다.")
+        with self._lock:
+            current = self.store.load(job_id)
+            current_story = self._find_storyline(current, story.id)
+            if current_story.thumbnail_error:
+                current_story.thumbnail_error = None
+                self._save(current)
 
     @staticmethod
     def _copy_file_exclusive(source: Path, destination: Path) -> None:
@@ -1830,9 +1990,12 @@ class JobService:
         with self._lock:
             job = self.store.load(job_id)
             if not self._is_cancelled(job_id) and job.status is not Status.CANCELLED:
+                failed_phase = job.phase
                 job.status = Status.FAILED
                 job.phase = "failed"
-                job.error = str(exc)
+                label = {"analyzing": "후보 분석", "generating": "대본 생성",
+                         "rendering": "영상 렌더링", "loading": "원본 준비"}.get(failed_phase, "작업")
+                job.error = f"{label} 실패: {exc}"
                 job.message = "작업이 실패했습니다."
                 self._save(job)
 
@@ -2001,7 +2164,7 @@ class JobService:
                 job.status = Status.FAILED
                 job.phase = "failed"
                 job.progress = 1.0
-                job.error = "선택한 모든 후보의 대본 생성에 실패했습니다."
+                job.error = _failure_summary("선택한 모든 후보의 대본 생성에 실패했습니다.", job.storylines)
                 job.message = job.error
                 self._save(job)
                 return
@@ -2034,7 +2197,7 @@ class JobService:
             if not ready:
                 job.status = Status.FAILED
                 job.phase = "failed"
-                job.error = "렌더링에 성공한 릴스가 없습니다."
+                job.error = _failure_summary("렌더링에 성공한 릴스가 없습니다.", job.storylines)
                 job.message = job.error
             else:
                 first = ready[0]
@@ -2050,7 +2213,8 @@ class JobService:
                 else:
                     job.status = Status.FAILED
                     job.phase = "partial-failure"
-                    job.error = f"선택한 릴스 {len(ready)}/{job.n_storylines}개만 준비되었습니다."
+                    job.error = _failure_summary(
+                        f"선택한 릴스 {len(ready)}/{job.n_storylines}개만 준비되었습니다.", job.storylines)
                     job.message = job.error
             self._save(job)
             completed_count = len(ready)
@@ -2281,6 +2445,7 @@ class JobService:
             status=Status.RENDERING_BASE,
             detail="컷 순서와 자막 구간을 준비하는 중입니다.",
         )
+        stage = "화자 정보 확인"
         try:
             self._raise_if_cancelled(job_id)
             self.deps.enrich_speakers(
@@ -2289,91 +2454,15 @@ class JobService:
                 required=True,
             )
             self._raise_if_cancelled(job_id)
-            review_job = self.store.load(job_id)
-            review_provider = review_job.provider or self.config.provider
-            reviewed_doc = self.deps.trim_topic_edges(
-                result.doc, segments, title=result.title or _fallback_doc_title(result.doc),
-                runner=lambda prompt: self.deps.build_runner(AppConfig(
-                    provider=review_provider, model=review_job.model or "",
-                    base_url=self.config.base_url if review_provider == self.config.provider else "",
-                ))(prompt),
-            )
-            result = replace(result, doc=reviewed_doc)
-            self._raise_if_cancelled(job_id)
             sdir = self.store.job_dir(job_id) / story_id
-            if not video.is_file():
-                source_job = self.store.load(job_id)
-                self._set_storyline_render_progress(job_id, story_id, progress=0.30,
-                    status=Status.RENDERING_BASE,
-                    detail="대본에 필요한 영상·오디오 구간만 다운로드하는 중입니다.")
-                video, segments = self.deps.prepare_selected_source(
-                    source_job.source_url or "", segments, result.doc,
-                    self._source_cache_dir(source_job.source_url or ""),
-                    cancelled=lambda: self._is_cancelled(job_id),
-                )
-            self._write_storyline_outputs_once(sdir, result.doc, segments, speed)
-            self._raise_if_cancelled(job_id)
-            self._set_storyline_render_progress(
-                job_id,
-                story_id,
-                progress=0.45,
-                status=Status.RENDERING_BASE,
-                detail="세로 영상용 중앙 크롭·자막 에셋을 준비하는 중입니다.",
-            )
-            job = self.store.load(job_id)
-            persisted_story = self._find_storyline(job, story_id)
-            style = style.for_episode(persisted_story.episode_number or job.episode_number)
-            assets = self.deps.render_base_and_assets(
-                video,
-                segments,
-                result.doc,
-                style,
-                sdir / ".render",
-                speed,
-                episode_number=persisted_story.episode_number or job.episode_number,
-            )
-            self._raise_if_cancelled(job_id)
-            self._set_storyline_render_progress(
-                job_id,
-                story_id,
-                progress=0.78,
-                status=Status.RENDERING_OVERLAY,
-                detail="크롭·제목·자막·로고를 합쳐 최종 영상을 인코딩하는 중입니다.",
-            )
-            assets_path = assets.write_manifest(sdir / ".render" / "assets.json")
+            stage = "릴스 자동 검수"
+            result, segments, style, assets, assets_path, out, review = self._render_with_quality_gate(
+                job_id, story_id, result, segments, video, style, speed)
             title_text = normalize_title(result.title or _fallback_doc_title(result.doc))
             title_upper, title_lower = editor_title_lines(title_text)
+            persisted_story = self._find_storyline(self.store.load(job_id), story_id)
             speaker_text = self._speaker_text(persisted_story, result.doc)
-            key = render.variant_cache_key(
-                storyline_id=story_id,
-                title_text=title_text,
-                subtitles_enabled=True,
-                style_hash_value=f"{render.style_hash(style)}-{_assets_fingerprint(assets_path, assets)}",
-                speaker_text=speaker_text,
-                title_upper=title_upper,
-                title_lower=title_lower,
-            )
-            out = sdir / f"{key}.mp4"
-            self.deps.render_overlay_variant(
-                assets,
-                title_text=title_text,
-                keyword="",
-                style=style,
-                out_path=out,
-                subtitles_enabled=True,
-                speaker_text=speaker_text,
-                title_upper=title_upper,
-                title_lower=title_lower,
-            )
-            self._set_storyline_render_progress(
-                job_id,
-                story_id,
-                progress=0.94,
-                status=Status.RENDERING_OVERLAY,
-                detail="최종 영상의 해상도·길이·오디오를 검수하는 중입니다.",
-            )
-            self.deps.verify_render_output(out, style.canvas, assets.total_s)
-            self.deps.render_thumbnail(
+            self._try_render_thumbnail(job_id, story_id,
                 assets, title_text=title_text, style=style,
                 out_path=thumbnail.thumbnail_path(out),
                 title_upper=title_upper, title_lower=title_lower,
@@ -2390,6 +2479,9 @@ class JobService:
                 job = self.store.load(job_id)
                 storyline = self._find_storyline(job, story_id)
                 storyline.status = Status.READY
+                storyline.error = None
+                storyline.review_message = None
+                storyline.quality_review_path = review.get('report_path')
                 storyline.progress = 1.0
                 storyline.base_path = str(assets.base)
                 storyline.base_video_path = str(assets.base)
@@ -2440,9 +2532,135 @@ class JobService:
                 storyline = self._find_storyline(job, story_id)
                 if storyline.status is not Status.CANCELLED:
                     storyline.status = Status.FAILED
-                    storyline.error = str(exc)
+                    storyline.error = f"{stage} 실패: {exc}"
+                    storyline.review_message = '자동 수정 후에도 확인이 필요합니다.'
                     storyline.progress = 1.0
                     self._save(job)
+
+    def _render_with_quality_gate(self, job_id, story_id, result, source_segments, source_video, style, speed):
+        """Every changed EDL is retimed, rerendered and independently reviewed."""
+        job = self.store.load(job_id)
+        sdir = self.store.job_dir(job_id) / story_id
+        original_style = style
+        quality_run = sdir / 'quality' / uuid.uuid4().hex[:12]
+        provider = job.provider or self.config.provider
+        def topic_runner(prompt):
+            return self.deps.build_runner(AppConfig(provider=provider, model=job.model or '',
+                base_url=self.config.base_url if provider == self.config.provider else ''))(prompt)
+        def repair_runner(prompt):
+            return self.deps.build_runner(AppConfig(provider='codex-cli',
+                model=job.model if provider == 'codex-cli' and job.model else 'gpt-5.6-sol'))(prompt)
+        feedback = None
+        prior_signature = result.doc.get('caption_timing', {}).get('signature')
+        if prior_signature:
+            for path in sorted(sdir.glob('quality/**/review.json'), key=lambda p:p.stat().st_mtime, reverse=True):
+                try:
+                    prior = json.loads(path.read_text(encoding='utf-8'))
+                    if prior.get('signature') == prior_signature and prior.get('passed') is False:
+                        feedback = prior
+                        break
+                except (OSError,ValueError,TypeError):
+                    continue
+        repair_count = 0
+        stage = '렌더 전 주제 검수'
+        for attempt in range(quality_review.MAX_REPAIRS + 1):
+            self._raise_if_cancelled(job_id)
+            attempt_dir = quality_run / f'attempt-{attempt}'
+            if feedback is not None:
+                repair_count += 1
+                candidate = self._candidate_for_storyline(job, self._find_storyline(job, story_id))
+                if candidate is not None:
+                    feedback = {**feedback, 'selected_candidate':candidate.to_dict()}
+                self._set_storyline_render_progress(job_id, story_id, progress=0.93,
+                    status=Status.RENDERING_OVERLAY,
+                    detail=f'자막·훅 검수 결과를 자동 수정하는 중입니다 ({repair_count}/{quality_review.MAX_REPAIRS}).')
+                result = replace(result, doc=self.deps.repair_document(
+                    result.doc, source_segments, runner=repair_runner, feedback=feedback,
+                    speed=speed, maximum_s=candidate_analyzer.MAX_DURATION_S, work=attempt_dir))
+            try:
+                stage = '렌더 전 주제 검수'
+                reviewed = self.deps.trim_topic_edges(result.doc, source_segments,
+                    title=result.title or _fallback_doc_title(result.doc), runner=topic_runner)
+                result = replace(result, doc=reviewed)
+                stage = '원본 영상 준비'
+                video, segments = source_video, source_segments
+                if not source_video.is_file():
+                    video, segments = self.deps.prepare_selected_source(
+                        job.source_url or '', source_segments, result.doc,
+                        self._source_cache_dir(job.source_url or ''),
+                        cancelled=lambda: self._is_cancelled(job_id))
+                stage = '음성 기준 자막 정렬'
+                self._set_storyline_render_progress(job_id, story_id, progress=0.40,
+                    status=Status.RENDERING_BASE, detail='실제 음성의 단어 시간에 자막과 첫 훅을 맞추는 중입니다.')
+                result = replace(result, doc=self.deps.prepare_caption_timing(
+                    video, result.doc, segments, speed, attempt_dir / 'timing', runner=repair_runner,
+                    feedback=feedback or ''))
+                self._raise_if_cancelled(job_id)
+                self._write_storyline_outputs_once(sdir, result.doc, segments, speed)
+                # A later QA failure must retain the latest corrected EDL for
+                # an explicit retry, without exposing an unapproved video.
+                with self._lock:
+                    checkpoint = self.store.load(job_id)
+                    checkpoint_story = self._find_storyline(checkpoint, story_id)
+                    checkpoint_story.edl_path = str(sdir / 'edl.json')
+                    checkpoint_story.segments_path = str(sdir / 'segments.json')
+                    self._save(checkpoint)
+                stage = '영상 렌더링'
+                story = self._find_storyline(self.store.load(job_id), story_id)
+                adjustments = dict(result.doc.get('render_adjustments', {}))
+                if 'sub_y_frac' in adjustments:
+                    adjustments['sub_y'] = None
+                style = replace(original_style.for_episode(story.episode_number or job.episode_number),
+                                **adjustments)
+                self._set_storyline_render_progress(job_id, story_id, progress=0.60,
+                    status=Status.RENDERING_BASE, detail='음성에 정렬한 자막으로 세로 영상을 렌더링하는 중입니다.')
+                assets = self.deps.render_base_and_assets(video, segments, result.doc, style,
+                    sdir / '.render', speed, episode_number=story.episode_number or job.episode_number)
+                assets_path = assets.write_manifest(sdir / '.render' / 'assets.json')
+                title = normalize_title(result.title or _fallback_doc_title(result.doc))
+                upper, lower = editor_title_lines(title)
+                speaker = self._speaker_text(story, result.doc)
+                key = render.variant_cache_key(storyline_id=story_id, title_text=title, subtitles_enabled=True,
+                    style_hash_value=f'{render.style_hash(style)}-{_assets_fingerprint(assets_path, assets)}',
+                    speaker_text=speaker, title_upper=upper, title_lower=lower)
+                out = sdir / f'{key}.mp4'
+                self._set_storyline_render_progress(job_id, story_id, progress=0.78,
+                    status=Status.RENDERING_OVERLAY, detail='제목·자막을 합쳐 최종 영상을 인코딩하는 중입니다.')
+                self.deps.render_overlay_variant(assets, title_text=title, keyword='', style=style,
+                    out_path=out, subtitles_enabled=True, speaker_text=speaker, title_upper=upper, title_lower=lower)
+                self.deps.verify_render_output(out, style.canvas, assets.total_s)
+                stage = 'Opus 최종 영상·훅 검수'
+                self._set_storyline_render_progress(job_id, story_id, progress=0.94,
+                    status=Status.RENDERING_OVERLAY,
+                    detail='Opus가 최종 영상의 자막 타이밍과 첫 5초 훅을 검수하는 중입니다.')
+                review = self.deps.review_render_output(out, result.doc, segments, assets, speed,
+                    title, attempt_dir / 'review', reference_segments=source_segments)
+                self._raise_if_cancelled(job_id)
+                if review.get('passed') is True:
+                    if review.get('video_sha256') != caption_timing.file_hash(out):
+                        raise ValueError('검수한 영상과 완료할 영상이 다릅니다.')
+                    result.doc['quality_review'] = review
+                    self._write_storyline_outputs_once(sdir, result.doc, segments, speed)
+                    return result, segments, style, assets, assets_path, out, review
+                feedback = review
+            except ValueError as exc:
+                feedback = {'stage': stage, 'issues': [{
+                    'kind': ('cut' if stage == '렌더 전 주제 검수' else
+                             'translation' if stage == '음성 기준 자막 정렬' else 'timing'),
+                    'start_s': 0, 'end_s': 1, 'evidence': str(exc),
+                    'correction': '원문 근거를 보존하며 해당 검증 오류를 수정하라.'}]}
+                if isinstance(exc, caption_timing.CaptionTimingError):
+                    feedback.update(audio_reference=exc.transcript, signature=exc.doc_signature)
+                    if '인덱스 오류' in str(exc):
+                        feedback['issues'][0]['kind']='timing'
+                caption_timing.write_json(attempt_dir / 'validation-error.json', feedback)
+            except Exception as exc:
+                raise JobServiceError(f'{stage} 실패: {str(exc) or type(exc).__name__}') from exc
+            if repair_count >= quality_review.MAX_REPAIRS or attempt == quality_review.MAX_REPAIRS:
+                reasons = feedback.get('issues', []) + feedback.get('machine_issues', [])
+                detail = '; '.join(item.get('evidence', '') for item in reasons)[:500]
+                raise JobServiceError(f'{stage}: 자동 수정 {quality_review.MAX_REPAIRS}회 후 확인 필요 — {detail}')
+        raise AssertionError('unreachable')
 
     def _set_job_progress(
         self, job_id: str, *, phase: str, progress: float, message: str,
@@ -2473,6 +2691,7 @@ class JobService:
                 return
             storyline = self._find_storyline(job, storyline_id)
             storyline.status = status
+            storyline.review_message = detail if status is not Status.READY else None
             storyline.progress = max(storyline.progress, progress)
             if job.status is Status.RENDERING_BASE:
                 completed = sum(
@@ -2501,6 +2720,13 @@ class JobService:
             raise JobServiceError("storyline has no persisted EDL")
         segments = json.loads((Path(story.edl_path).parent / "segments.json").read_text(encoding="utf-8"))
         doc = self._harmonized_storyline_doc(job, story)
+        if segments.get('original_video_path') and job.source_url:
+            try:
+                original = json.loads((self._source_cache_dir(job.source_url)/'segments.json').read_text(encoding='utf-8'))
+                if not edl.validate_edl(doc, original):
+                    segments = original
+            except (OSError,ValueError,TypeError,KeyError):
+                pass
         style = self._style_for_episode(
             merged_style(self.deps.load_style(self.style_path), self.config.style),
             story.episode_number or job.episode_number,
@@ -2558,7 +2784,7 @@ class JobService:
                 title_lower=title_lower,
             )
         if not thumbnail.thumbnail_path(out).is_file():
-            self.deps.render_thumbnail(
+            self._try_render_thumbnail(job_id, storyline_id,
                 assets, title_text=title_text, style=style,
                 out_path=thumbnail.thumbnail_path(out),
                 title_upper=title_upper, title_lower=title_lower,
@@ -2645,7 +2871,9 @@ class JobService:
             self.deps.write_outputs(sdir, doc, segments)
         else:
             persisted = json.loads(edl_path.read_text(encoding="utf-8"))
-            if persisted.get("cuts") != doc.get("cuts") or persisted.get("topic_edge_review") != doc.get("topic_edge_review"):
+            if any(persisted.get(key) != doc.get(key) for key in (
+                'cuts', 'subtitle_translations', 'topic_edge_review', 'caption_timing',
+                'quality_review', 'render_adjustments', 'source_trim_us', 'focus_overrides')):
                 self.deps.write_outputs(sdir, doc, segments)
                 (sdir / "reel.srt").unlink(missing_ok=True)
             elif persisted.get("speaker") != doc.get("speaker"):
@@ -2654,13 +2882,7 @@ class JobService:
                 tmp.write_text(json.dumps(persisted, ensure_ascii=False, indent=2), encoding="utf-8")
                 os.replace(tmp, edl_path)
         if not (sdir / "reel.srt").is_file():
-            ordered = edl.ordered_segments(doc, segments)
-            groups = render.group_captions(
-                [
-                    [a, b, render.apply_text_fixes(text, render.DEFAULT_TEXT_FIXES)]
-                    for a, b, text in render.timeline_items(ordered, speed)
-                ]
-            )
+            groups = render.caption_groups(doc, segments, speed)
             self.deps.write_srt(groups, sdir / "reel.srt")
         # The desktop workflow renders straight from the source timeline. Encoding
         # every beat as a separate full-resolution MP4 only duplicates work; the

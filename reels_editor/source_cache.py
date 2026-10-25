@@ -48,9 +48,13 @@ def locked(path: Path, cancelled: Callable[[], bool]) -> Iterator[None]:
 
 def selected_ranges(doc: dict, segments: dict) -> list[tuple[int, int]]:
     """Merge overlapping selected cuts; include 250ms handles for exact trimming."""
+    # The packed manifest maps complete subtitle IDs to local time. Keep their
+    # full source bounds even when an audio-grounded repair trims inside a cue;
+    # the renderer applies source_trim_us after that coordinate mapping.
+    untrimmed = {key: value for key, value in doc.items() if key != 'source_trim_us'}
     windows = sorted((max(0, s["source_start_us"] - US // 4),
                       s["source_end_us"] + US // 4)
-                     for s in edl.ordered_segments(doc, segments))
+                     for s in edl.ordered_segments(untrimmed, segments))
     duration = segments.get("video_duration_us")
     if duration:
         windows = [(start, min(end, duration)) for start, end in windows]

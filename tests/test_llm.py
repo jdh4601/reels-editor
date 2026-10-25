@@ -331,3 +331,122 @@ def test_codex_capacity_exhaustion_is_concise_and_other_errors_not_retried(monke
     with pytest.raises(RuntimeError, match='authentication failed'):
         build_runner(AppConfig(provider='codex-cli'))('prompt')
     assert len(calls) == 1
+
+
+def test_codex_429_retries_same_request_without_echoing_transcript(monkeypatch):
+    from reels_editor import llm
+    calls, waits = [], []
+    monkeypatch.setattr(llm.time, 'sleep', waits.append)
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs['input']))
+        if len(calls) < 3:
+            return subprocess.CompletedProcess(args, 1, '',
+                'user\nPRIVATE TRANSCRIPT\nERROR: exceeded retry limit, last status: 429 Too Many Requests')
+        return subprocess.CompletedProcess(args, 0, '{"ok":true}', '')
+    monkeypatch.setattr(llm.processes, 'run', fake_run)
+    assert build_runner(AppConfig(provider='codex-cli', model='gpt-5.6-sol'))('original prompt') == '{"ok":true}'
+    assert len(calls) == 3
+    assert all(prompt == 'original prompt' and 'gpt-5.6-sol' in args for args, prompt in calls)
+    assert sum(waits) == pytest.approx(90)
+    calls.clear()
+    monkeypatch.setattr(llm.processes, 'run', lambda args, **kw: subprocess.CompletedProcess(
+        args, 1, '', 'PRIVATE TRANSCRIPT\nERROR: 429 Too Many Requests'))
+    with pytest.raises(RuntimeError, match='429') as exc:
+        build_runner(AppConfig(provider='codex-cli'))('original prompt')
+    assert 'PRIVATE TRANSCRIPT' not in str(exc.value)
+    assert len(str(exc.value)) < 200
+
+
+def test_codex_quota_429_is_not_retried(monkeypatch):
+    from reels_editor import llm
+    calls = []
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, '', 'ERROR: 429 insufficient_quota')
+    monkeypatch.setattr(llm.processes, 'run', fake_run)
+    with pytest.raises(RuntimeError, match='사용 한도'):
+        build_runner(AppConfig(provider='codex-cli'))('prompt')
+    assert len(calls) == 1
+
+
+def test_codex_retry_classification_ignores_echoed_source(monkeypatch):
+    from reels_editor import llm
+    calls = []
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, '',
+            'user\nWe fixed 429 rate limits in our startup.\nERROR: authentication failed')
+    monkeypatch.setattr(llm.processes, 'run', fake_run)
+    with pytest.raises(RuntimeError, match='authentication failed') as exc:
+        build_runner(AppConfig(provider='codex-cli'))('prompt')
+    assert len(calls) == 1
+    assert 'startup' not in str(exc.value)
+
+
+def test_codex_slots_are_shared_by_separate_runners_and_released_on_failure(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from reels_editor import llm
+    entered, second_started, second_entered, release = (threading.Event() for _ in range(4))
+    def fake_run(args, **kwargs):
+        if kwargs['input'] == 'first':
+            entered.set()
+            assert release.wait(3)
+            return subprocess.CompletedProcess(args, 1, '', 'ERROR: authentication failed')
+        second_entered.set()
+        return subprocess.CompletedProcess(args, 0, 'OK', '')
+    monkeypatch.setattr(llm.processes, 'run', fake_run)
+    first_runner = build_runner(AppConfig(provider='codex-cli'))
+    second_runner = build_runner(AppConfig(provider='codex-cli'))
+    def second():
+        second_started.set()
+        return second_runner('second')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_runner, 'first')
+        assert entered.wait(3)
+        other = pool.submit(second)
+        try:
+            assert second_started.wait(3)
+            assert not second_entered.wait(0.15)
+        finally:
+            release.set()
+        with pytest.raises(RuntimeError, match='authentication failed'):
+            first.result(timeout=3)
+        assert other.result(timeout=3) == 'OK'
+
+
+def test_codex_backoff_can_be_cancelled(monkeypatch):
+    from reels_editor import llm, processes
+    registry = processes.ProcessRegistry()
+    calls = []
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, '', 'ERROR: 429 Too Many Requests')
+    monkeypatch.setattr(llm.processes, 'run', fake_run)
+    monkeypatch.setattr(llm.time, 'sleep', lambda _: registry.terminate_all())
+    with processes.use_process_registry(registry), pytest.raises(RuntimeError, match='cancelled'):
+        build_runner(AppConfig(provider='codex-cli'))('prompt')
+    assert len(calls) == 1
+    # Cancellation must release the shared slot too.
+    assert llm._CODEX_SLOT.acquire(timeout=0.1)
+    llm._CODEX_SLOT.release()
+
+
+def test_codex_cancelled_while_queued_never_starts_process(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from reels_editor import llm, processes
+    registry = processes.ProcessRegistry()
+    calls = []
+    monkeypatch.setattr(llm.processes, 'run', lambda *args, **kwargs: calls.append(args))
+    assert llm._CODEX_SLOT.acquire(timeout=0.1)
+    def queued():
+        with processes.use_process_registry(registry):
+            return build_runner(AppConfig(provider='codex-cli'))('prompt')
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(queued)
+            registry.terminate_all()
+            with pytest.raises(RuntimeError, match='cancelled'):
+                pending.result(timeout=3)
+    finally:
+        llm._CODEX_SLOT.release()
+    assert calls == []

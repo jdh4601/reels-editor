@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 import hashlib
 import json
@@ -37,7 +37,7 @@ _SUBTITLE_PUNCTUATION_TO_HIDE = str.maketrans("", "", ",.")
 _VIDEOTOOLBOX_ENCODER = "h264_videotoolbox"
 _SOFTWARE_ENCODER = "libx264"
 _VIDEOTOOLBOX_SLOTS = threading.BoundedSemaphore(1)
-_OVERLAY_RENDER_VERSION = 3
+_OVERLAY_RENDER_VERSION = 4
 # Normalize the assembled reel once, with headroom for AAC encoding.
 _REEL_AUDIO_FILTER = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
 
@@ -141,6 +141,17 @@ def group_captions(items: list[list], max_dur: float = 2.4,
         elif display_groups:
             display_groups[-1][1] = b
     return display_groups
+
+
+def caption_groups(doc: dict, segments: dict, speed: float) -> list[list]:
+    """Use measured audio anchors when present; legacy/CLI documents keep their format."""
+    if 'caption_timing' in doc:
+        from reels_editor.caption_timing import plan_groups
+        return [[a, b, hide_subtitle_punctuation(text)]
+                for a, b, text in plan_groups(doc['caption_timing'], doc, segments, speed)]
+    from reels_editor.edl import ordered_segments
+    return group_captions([[a,b,apply_text_fixes(text, DEFAULT_TEXT_FIXES)]
+                           for a,b,text in timeline_items(ordered_segments(doc, segments), speed)])
 
 
 def hide_subtitle_punctuation(text: str) -> str:
@@ -338,7 +349,7 @@ def build_overlay_filter(
         out = f"[o{idx}]"
         parts.append(
             f"{prev}[{first_overlay_input + n_static + j}:v]"
-            f"overlay=enable='between(t,{a:.3f},{b:.3f})'{out}"
+            f"overlay=enable='gte(t,{a:.3f})*lt(t,{b:.3f})'{out}"
         )
         prev = out
         idx += 1
@@ -891,6 +902,15 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
         work_dir,
         center_visible_width=center_crop_width,
     )
+    if edl_doc.get('focus_overrides'):
+        ids = [sid for cut in edl_doc['cuts'] for sid in cut['seg_ids']]
+        if not focus_slices:
+            focus_slices = [speaker_focus.FocusSlice(i, s['source_start_us']/US,
+                s['source_end_us']/US, speaker_focus.FocusPoint()) for i,s in enumerate(ordered)]
+        focus_slices = [replace(item, point=speaker_focus.FocusPoint(
+            x={'left':0.0, 'center':0.5, 'right':1.0}[edl_doc['focus_overrides'][ids[item.segment_index]]],
+            zoom=1.0)) if ids[item.segment_index] in edl_doc['focus_overrides'] else item
+            for item in focus_slices]
     filt = build_base_filter(
         ordered,
         speed,
@@ -908,9 +928,7 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
         work_dir / "wm.png",
         episode_number=episode_number,
     )
-    items = [[a, b, apply_text_fixes(t, DEFAULT_TEXT_FIXES)]
-             for a, b, t in timeline_items(ordered, speed)]
-    groups = group_captions(items)
+    groups = caption_groups(edl_doc, segments, speed)
     keywords = edl_doc.get("subtitle_keywords", [])
     sub_paths = render_subtitle_pngs(groups, keywords, style, work_dir / f"subs-{style_hash(style)}")
     if progress_cb is not None:

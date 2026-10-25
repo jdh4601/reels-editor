@@ -34,11 +34,9 @@ class NotesError(RuntimeError):
 
 
 def caption_body_for_notes(caption: str) -> str:
-    """Remove the Instagram heading line before saving the caption to Notes."""
-    lines = caption.splitlines()
-    if len(lines) < 2:
-        return ""
-    return "\n".join(lines[1:]).lstrip("\n")
+    """Preserve the exact visible caption, including its title and source."""
+    return caption
+
 
 
 class NotesProvider(Protocol):

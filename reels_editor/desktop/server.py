@@ -28,6 +28,7 @@ from reels_editor.config import (
     user_config_path,
 )
 from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceError, JobStore, Status, Storyline, Variant
+from reels_editor.llm import summarize_codex_error
 from reels_editor.title_rules import editor_title_lines
 from reels_editor.youtube import YouTubeSourceError, thumbnail_url_for_video, video_id_from_url
 
@@ -77,8 +78,18 @@ class InstagramCaptionRequest(BaseModel):
     model: str | None = Field(default=None, max_length=100)
 
 
+class CaptionNoteRequest(BaseModel):
+    caption: str = Field(min_length=1, max_length=1000)
+
+
 class ThumbnailSelectionRequest(BaseModel):
     artifact_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class ThumbnailUploadRequest(BaseModel):
+    image_base64: str = Field(min_length=1, max_length=13_981_016)
+    mime_type: Literal["image/jpeg", "image/png", "image/webp"]
+    filename: str = Field(default="image", max_length=256)
 
 
 class StorylineTitleRequest(BaseModel):
@@ -353,6 +364,7 @@ def create_app(
     def save_instagram_caption_to_notes(
         job_id: str,
         storyline_id: str,
+        request: CaptionNoteRequest | None = None,
         _auth: None = Depends(require_token),
     ) -> dict[str, Any]:
         try:
@@ -364,10 +376,10 @@ def create_app(
         story = next((item for item in job.storylines if item.id == storyline_id), None)
         if story is None:
             raise HTTPException(status_code=404, detail="릴스를 찾을 수 없습니다.")
-        note_body = caption_body_for_notes(story.instagram_caption)
+        note_body = caption_body_for_notes(request.caption if request else story.instagram_caption)
         if not note_body.strip():
             raise HTTPException(status_code=400, detail="메모에 저장할 캡션 본문이 없습니다.")
-        note_title = f"에피소드{job.episode_number}_{story.title or '릴스 캡션'}"
+        note_title = note_body.splitlines()[0]
         try:
             notes.save_caption(note_title, note_body)
         except NotesError as exc:
@@ -435,6 +447,15 @@ def create_app(
                          _auth: None = Depends(require_token)) -> dict:
         try:
             return _snapshot_from_job(service.select_thumbnail_candidate(job_id, storyline_id, request.artifact_id))
+        except (JobServiceError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/storylines/{storyline_id}/thumbnail/upload")
+    def upload_thumbnail(job_id: str, storyline_id: str, request: ThumbnailUploadRequest,
+                         _auth: None = Depends(require_token)) -> dict:
+        try:
+            artifact_id = service.create_uploaded_thumbnail(job_id, storyline_id, request.image_base64, request.mime_type)
+            return _snapshot_from_job(service.select_thumbnail_candidate(job_id, storyline_id, artifact_id))
         except (JobServiceError, OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -600,7 +621,7 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "progress": job.progress,
         "message": job.message,
         "download_progress": job.download_progress,
-        "error": job.error,
+        "error": _storyline_error_message(job.error),
         "selected_storyline_id": job.selected_storyline_id or job.export.selected_storyline_id,
         "subtitles_on": _selected_subtitles(job),
         "duration_s": job.duration_s,
@@ -658,6 +679,8 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
         "progress": int(round(storyline.progress * 100)) if storyline.progress <= 1 else int(storyline.progress),
         "video_url": _media_url(job.id, artifact_id) if artifact_id else None,
         "thumbnail_url": _media_url(job.id, cover_id),
+        "thumbnail_error": storyline.thumbnail_error,
+        "review_message": storyline.review_message,
         "title": storyline.title,
         "title_upper": storyline.title_upper,
         "title_lower": storyline.title_lower,
@@ -869,6 +892,7 @@ def _story_content_for_storyline(storyline: Storyline) -> dict[str, Any]:
 def _storyline_error_message(error: str | None) -> str | None:
     if not error:
         return None
+    error = summarize_codex_error(error)
     if "대본 생성 3회 실패" in error and ("마지막 응답" in error or "JSON 파싱" in error):
         return (
             "AI 응답의 JSON 따옴표 형식이 올바르지 않아 대본을 읽지 못했습니다. "

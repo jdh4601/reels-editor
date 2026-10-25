@@ -121,7 +121,8 @@ def test_thumbnail_orange_episode_sits_above_lowered_title_and_bottom_fades_to_b
     assert title_bbox is not None and bbox[3] < title_bbox[1]
     assert h * 0.71 < (title_bbox[1] + title_bbox[3]) / 2 < h * 0.82
     assert bbox[0] > w * 0.07 and bbox[2] < w * 0.93
-    assert cover.getpixel((0, round(h * 0.70))) == (200, 200, 200)
+    assert cover.getpixel((0, round(h * 0.45))) == (200, 200, 200)
+    assert cover.getpixel((0, round(h * 0.70)))[0] < 150
     assert cover.getpixel((0, h - 1))[0] < 3
     assert cover.getpixel((0, round(h * 0.85)))[0] < 120
 
@@ -165,3 +166,78 @@ def test_best_frame_uses_open_eyes_instead_of_first_frame(tmp_path, monkeypatch)
     assert thumbnail.choose_cover_frame([closed, opened])[0] == opened
     with pytest.raises(RuntimeError, match='눈을 뜬'):
         thumbnail.choose_cover_frame([closed])
+
+
+def test_large_face_is_reduced_with_surrounding_space(style_preset):
+    frame = Image.new('RGB', (1000, 600), 'gray')
+    frame.paste('green', (225, 105, 775, 495))
+    face = speaker_focus.FaceSignal(.5, .55, 0, y=.5, height=.65)
+    cover = thumbnail.compose_thumbnail(frame, '', replace(style_preset, watermark_image=None, watermark_text=''), face=face)
+    mask = Image.new('L', cover.size)
+    mask.putdata([255 if g > r * 2 and g > b * 2 else 0 for r, g, b in cover.getdata()])
+    box = mask.getbbox()
+    assert box is not None
+    assert box[2] - box[0] <= cover.width * .40
+    assert box[3] - box[1] <= cover.height * .26
+    assert box[0] > 0 and box[1] > 0
+
+
+def test_duplicate_shot_is_excluded_when_selecting_next_candidate(tmp_path, monkeypatch):
+    a, b, wide = [tmp_path / f'{name}.png' for name in ('a', 'b', 'wide')]
+    for path in (a, b, wide):
+        Image.new('RGB', (100, 100), 'gray').save(path)
+    faces = {a: speaker_focus.FaceSignal(.5, .3, 0, height=.4, eye_open=.3),
+             b: speaker_focus.FaceSignal(.51, .31, 0, height=.41, eye_open=.3),
+             wide: speaker_focus.FaceSignal(.5, .1, 0, height=.2, eye_open=.3)}
+    monkeypatch.setattr(speaker_focus, 'vision_available', lambda: True)
+    monkeypatch.setattr(speaker_focus, '_detect_faces', lambda path: [faces[path]])
+    previous = thumbnail.shot_descriptor(a, faces[a])
+    assert thumbnail.same_shot(previous, thumbnail.shot_descriptor(b, faces[b]))
+    assert thumbnail.choose_cover_frame([b, wide], exclude_shots=[previous])[0] == wide
+
+
+def test_wide_photo_bottom_fades_before_padding_without_darkening_face_area(style_preset):
+    frame = Image.new('RGB', (1000, 600), 'white')
+    face = speaker_focus.FaceSignal(.5, .55, 0, y=.5, height=.65)
+    style = replace(style_preset, watermark_image=None, watermark_text='')
+    cover = thumbnail.compose_thumbnail(frame, '', style, face=face)
+    w, h = cover.size
+    crop_width = max(round(600 * w / h), round(.55 * 1000 / .38), round(.65 * 600 / .24 * w / h))
+    crop_height = round(crop_width * h / w)
+    top = round(.5 * 600 - crop_height * .32)
+    edge = round((600 - top) * h / crop_height) + round(10*h/1920)
+    assert cover.getpixel((w//3, round(h*.25)))[0] > 240
+    assert cover.getpixel((w//3, edge-2))[0] < 10
+    assert cover.getpixel((w//3, edge+2))[0] < 5
+
+
+def test_thumbnail_uses_analyzed_closeup_before_wide_raw_frames(tmp_path, style_preset, monkeypatch):
+    assets = render.RenderAssets(tmp_path / 'base.mp4', tmp_path / 'wm.png', [], [], tmp_path, [],
+                                source=tmp_path / 'source.mp4', total_s=30)
+    calls = []
+    monkeypatch.setattr(thumbnail, '_closeup_window', lambda _assets: (8.5, 2.5))
+    monkeypatch.setattr(thumbnail, '_raw_interview_filter', lambda _assets: 'select=1')
+    def ffmpeg(args):
+        calls.append(args)
+        Image.new('RGB', (100, 100), 'green').save(Path(args[-1].replace('%03d', '001')))
+    monkeypatch.setattr(render, '_ffmpeg', ffmpeg)
+    monkeypatch.setattr(thumbnail, 'choose_cover_frame', lambda paths, **_kw: (paths[0], None))
+    monkeypatch.setattr(thumbnail.speaker_focus, '_detect_faces', lambda _path: [object()])
+    thumbnail.render_thumbnail(assets, title_text='창업자가 선택한 첫 번째 기준', style=style_preset,
+                               out_path=tmp_path / 'cover.jpg')
+    assert calls[0][:2] == ['-ss', '8.5']
+    assert (tmp_path / 'cover.jpg').is_file()
+
+
+def test_cover_does_not_reclassify_open_source_eyes_after_resize(tmp_path, style_preset, monkeypatch):
+    assets = render.RenderAssets(tmp_path / 'base.mp4', tmp_path / 'wm.png', [], [], tmp_path, [], total_s=10)
+    face = speaker_focus.FaceSignal(.5, .2, 0, y=.4, height=.2, eye_open=.4)
+    closed_after_resize = replace(face, eye_open=.1)
+    monkeypatch.setattr(speaker_focus, 'vision_available', lambda: True)
+    monkeypatch.setattr(speaker_focus, '_detect_faces', lambda path: [closed_after_resize if path.suffix == '.jpg' else face])
+    def ffmpeg(args):
+        Image.new('RGB', (1280, 720), 'gray').save(Path(args[-1].replace('%03d', '001')))
+    monkeypatch.setattr(render, '_ffmpeg', ffmpeg)
+    out = tmp_path / 'cover.jpg'
+    thumbnail.render_thumbnail(assets, title_text='첫 고객을 만든 인터뷰의 결정적 질문', style=style_preset, out_path=out)
+    assert out.is_file()

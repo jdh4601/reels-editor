@@ -30,6 +30,22 @@ def validate_edl(edl_doc: dict, segments: dict) -> list[str]:
                 errors.append(f"cut {c}: verbatim 불일치 — 원문 그대로만 허용 "
                               f"(기대: {joined!r})")
     known_ids = [sid for sid in selected_ids if sid in idx]
+    trims = edl_doc.get('source_trim_us', {})
+    if not isinstance(trims, dict):
+        errors.append('source_trim_us는 객체여야 함')
+    else:
+        for sid, trim in trims.items():
+            if sid not in known_ids or not isinstance(trim, dict):
+                errors.append('컷 경계 수정의 seg_id가 선택 구간에 없음')
+                continue
+            a, b = trim.get('start', 0), trim.get('end', 0)
+            if (type(a) is not int or type(b) is not int or a < 0 or b < 0 or
+                a + b >= idx[sid]['source_end_us'] - idx[sid]['source_start_us']):
+                errors.append('컷 경계 수정이 원문 구간을 벗어남')
+    focus = edl_doc.get('focus_overrides', {})
+    if not isinstance(focus, dict) or any(sid not in known_ids or side not in ('left','center','right')
+                                          for sid,side in focus.items()):
+        errors.append('화자 크롭 수정 근거 구간·방향 오류')
     for previous_id, current_id in zip(known_ids, known_ids[1:]):
         if idx[current_id]["source_start_us"] < idx[previous_id]["source_start_us"]:
             errors.append(
@@ -53,9 +69,10 @@ def ordered_segments(edl_doc: dict, segments: dict) -> list[dict]:
     for cut in edl_doc["cuts"]:
         for sid in cut["seg_ids"]:
             s = idx[sid]
+            trim = edl_doc.get('source_trim_us', {}).get(sid, {})
             out.append({
-                "source_start_us": s["source_start_us"],
-                "source_end_us": s["source_end_us"],
+                "source_start_us": s["source_start_us"] + trim.get('start', 0),
+                "source_end_us": s["source_end_us"] - trim.get('end', 0),
                 "speed": s.get("speed", 1.0),
                 "text": str(translations.get(sid) or s.get("text", "")),
             })

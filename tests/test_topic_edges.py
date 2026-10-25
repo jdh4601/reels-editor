@@ -56,5 +56,15 @@ def test_incomplete_or_all_unrelated_review_fails_without_mutating_doc(verdicts)
 def test_trimming_cannot_leave_dependent_opener():
     doc, segments = fixture()
     doc['subtitle_translations']['s1'] = '그래서 바로 시작했습니다.'
-    with pytest.raises(ValueError, match='문장 검증 실패'):
-        trim_topic_edges(doc, segments, title='고객 피드백', runner=runner({'s0': 'off_topic', 's1': 'relevant', 's2': 'off_topic'}))
+    result = trim_topic_edges(doc, segments, title='고객 피드백', runner=runner({'s0': 'off_topic', 's1': 'relevant', 's2': 'off_topic'}))
+    assert result['cuts'] == doc['cuts'][:2]
+    assert result['topic_edge_review']['sentence_protected_seg_ids'] == ['s0']
+
+
+def test_trim_restores_last_cue_needed_to_close_sentence_and_quote():
+    doc, segments = fixture()
+    doc['subtitle_translations'] = {'s0': '안녕하세요.', 's1': '고객은 “제품이 정말', 's2': '필요하다”고 말했습니다.'}
+    result = trim_topic_edges(doc, segments, title='고객 피드백', runner=runner({'s0':'off_topic','s1':'relevant','s2':'off_topic'}))
+    assert result['cuts'] == doc['cuts'][1:]
+    assert result['topic_edge_review']['removed_seg_ids'] == ['s0']
+    assert result['topic_edge_review']['sentence_protected_seg_ids'] == ['s2']

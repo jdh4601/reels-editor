@@ -60,6 +60,15 @@ _ALTERNATE_ROLES = {
     "연쇄 창업가": "연쇄 창업가",
 }
 
+
+def speaker_name_known(value: str) -> bool:
+    key = re.sub(r"[\W_]", "", value.casefold())
+    return bool(key) and key not in {
+        "알수없음", "미상", "이름미상", "이름없음", "화자미상", "인터뷰화자",
+        "unknown", "unknownspeaker", "unnamed", "anonymous", "na", "none", "null",
+    }
+
+
 ANGLES: list[tuple[str, str]] = [
     ("정면승부형", "창업가가 즉시 공감할 현실적인 문제나 결정 한 가지를 훅부터 직진으로 전개한다."),
     ("반전형", "예상을 뒤집는 실패담·솔직한 고백·웃긴 순간을 찾아 반전 문장을 축으로 전개한다."),
@@ -91,7 +100,8 @@ def maximum_duration_s(duration_s: int) -> int:
 def build_prompt(segments: dict, duration_s: int, feedback: str | None,
                  angle: str | None = None, *, speed: float = DEFAULT_SPEED,
                  min_duration_s: int = 0,
-                 max_duration_s: int | None = None) -> str:
+                 max_duration_s: int | None = None,
+                 enforce_duration: bool = True) -> str:
     template = PROMPT_PATH.read_text(encoding="utf-8")
     listing = "\n".join(
         f"- [{_timestamp(s.get('source_start_us', 0))}] {s['id']}: {s['text']}"
@@ -130,6 +140,7 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             "- 이름·기업·역할은 제공된 영상 맥락이나 SEGMENTS에서 직접 확인되는 정보만 쓴다.\n"
             "- 기업과 역할을 확인할 수 있으면 둘 다 반드시 채우고, evidence에는 그 기업명과 역할이 함께 드러난 원문을 인용한다.\n"
             "- 직책의 직접 근거가 없으면 name만 쓰고 company, role, alternate_role은 빈 문자열로 둔다.\n"
+            "- 여러 게스트 중 실제 발언자를 구별할 수 없으면 개인 이름을 추측하지 말고 name을 빈 문자열로 둔다.\n"
         )
     else:
         source_context = ""
@@ -143,6 +154,8 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             f"원문 소스 길이 합은 최대 {round(maximum_s * speed)}초다."
         )
     )
+    if not enforce_duration:
+        duration_rule = "길이 제한은 없다. 목표 시간을 맞추려고 발언을 늘리거나 자르지 말고, 한 주제를 완결한다."
     return (template
             .replace("{speed}", str(speed))
             .replace("{duration_s}", str(duration_s))
@@ -232,11 +245,14 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
 def normalize_speaker_data(speaker: Any) -> dict[str, str]:
     """Normalize only identity data already present in a script/legacy EDL."""
     if isinstance(speaker, str):
-        return {"name": " ".join(speaker.split()), "company": "", "role": "", "alternate_role": ""}
+        name = " ".join(speaker.split())
+        return {"name": name if speaker_name_known(name) else "", "company": "", "role": "", "alternate_role": ""}
     if not isinstance(speaker, dict):
         return {"name": "", "company": "", "role": "", "alternate_role": ""}
 
     name = " ".join(str(speaker.get("name") or "").split())
+    if not speaker_name_known(name):
+        name = ""
     company = " ".join(str(speaker.get("company") or "").split())
     raw_role = " ".join(str(speaker.get("role") or "").split())
     raw_alternate = " ".join(str(speaker.get("alternate_role") or "").split())
@@ -264,7 +280,7 @@ def normalize_speaker_data(speaker: Any) -> dict[str, str]:
     }
     if evidence:
         normalized["evidence"] = evidence
-    for key in ("source_url", "source_name", "checked_at"):
+    for key in ("source_url", "source_name", "checked_at", "identity_scope", "evidence_source"):
         if speaker.get(key):
             normalized[key] = str(speaker[key])
     return normalized
@@ -281,6 +297,8 @@ def format_speaker_label(speaker: Any) -> str:
         evidence and _speaker_evidence_supports_identity(normalized, evidence)
     )
     if evidence_supports_identity and normalized["company"] and normalized["role"]:
+        if normalized.get("identity_scope") == "group" and normalized["role"] == "창업자":
+            return f"{normalized['company']} 공동 창업자"
         return f"{name} ({normalized['company']} {normalized['role']})"
     if evidence_supports_identity and normalized["alternate_role"]:
         return f"{name} ({normalized['alternate_role']})"
@@ -294,6 +312,13 @@ def _speaker_evidence_supports_identity(speaker: dict[str, str], evidence: str) 
     alternate = speaker["alternate_role"]
     if company and company.casefold() not in evidence_key:
         return False
+    if speaker.get("identity_scope") == "group":
+        brand = re.escape(company)
+        if (not company or role != "창업자" or speaker["name"] != company
+                or not re.search(
+                    rf"(?:founders\s+(?:of|at)\s+{brand}\b|{brand}\s+(?:co-?founders|founders)\b|"
+                    rf"{brand}\s*(?:공동\s*창업자|창업진))", evidence, re.I)):
+            return False
     if role == "CEO" and not any(
         token in evidence_key for token in ("ceo", "chief executive officer", "대표", "대표이사")
     ):
@@ -327,9 +352,9 @@ def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]
         return []
     name = " ".join(str(speaker.get("name") or "").split())
     if not name:
-        if source_context_available:
-            return ["speaker.name이 비어있음"]
-        name = "인터뷰 화자"
+        # Missing identity is resolved separately from source context; retrying
+        # the entire EDL pressures the model to invent a guest's name.
+        name = "" if source_context_available else "인터뷰 화자"
     normalized = normalize_speaker_data({**speaker, "name": name})
     if normalized["company"] or normalized["role"] or normalized["alternate_role"]:
         evidence = normalized.get("evidence", "")
@@ -395,6 +420,7 @@ def generate_script(segments: dict, duration_s: int = 30,
                     speed: float = DEFAULT_SPEED,
                     min_duration_s: int = 0,
                     max_duration_s: int | None = None,
+                    enforce_duration: bool = True,
                     fixed_title: str | None = None) -> dict:
     run = runner or _run_claude
     last_raw = ""
@@ -408,6 +434,7 @@ def generate_script(segments: dict, duration_s: int = 30,
             speed=speed,
             min_duration_s=min_duration_s,
             max_duration_s=max_duration_s,
+            enforce_duration=enforce_duration,
         ))
         # Keep every response, including valid EDLs and the response before a
         # transport failure on a later validation attempt, available for retry.
@@ -450,7 +477,7 @@ def generate_script(segments: dict, duration_s: int = 30,
             title_errs + speaker_errs + translation_errs + edl_errs
             + continuity_errs + caption_errs
         )
-        if not errs:
+        if not errs and enforce_duration:
             actual_duration = edl_mod.estimate_duration_s(doc, segments, speed)
             maximum_s = max_duration_s if max_duration_s is not None else maximum_duration_s(duration_s)
             if actual_duration > maximum_s:

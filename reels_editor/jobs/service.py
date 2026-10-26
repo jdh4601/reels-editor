@@ -69,6 +69,10 @@ class JobServiceError(RuntimeError):
     pass
 
 
+class QualityRepairExhausted(JobServiceError):
+    """A completed review still found defects after the bounded repairs."""
+
+
 def _failure_summary(message: str, storylines: list[Storyline]) -> str:
     reasons = list(dict.fromkeys(summarize_codex_error(story.error) for story in storylines if story.error))
     return message + (" 원인: " + "; ".join(reason[:400] for reason in reasons[:3]) if reasons else "")
@@ -1012,8 +1016,7 @@ class JobService:
                 raw_dump=raw_path,
                 speed=style.speed,
                 **({
-                    "min_duration_s": candidate_analyzer.MIN_DURATION_S,
-                    "max_duration_s": candidate_analyzer.MAX_DURATION_S,
+                    "enforce_duration": False,
                     "fixed_title": storyline.title,
                 } if job.selected_candidate_ids else {}),
             )
@@ -2533,7 +2536,8 @@ class JobService:
                 if storyline.status is not Status.CANCELLED:
                     storyline.status = Status.FAILED
                     storyline.error = f"{stage} 실패: {exc}"
-                    storyline.review_message = '자동 수정 후에도 확인이 필요합니다.'
+                    storyline.review_message = (
+                        '자동 수정 후에도 확인이 필요합니다.' if isinstance(exc, QualityRepairExhausted) else None)
                     storyline.progress = 1.0
                     self._save(job)
 
@@ -2556,7 +2560,10 @@ class JobService:
             for path in sorted(sdir.glob('quality/**/review.json'), key=lambda p:p.stat().st_mtime, reverse=True):
                 try:
                     prior = json.loads(path.read_text(encoding='utf-8'))
-                    if prior.get('signature') == prior_signature and prior.get('passed') is False:
+                    if (prior.get('review_version') == quality_review.REVIEW_VERSION
+                            and prior.get('signature') == prior_signature and prior.get('passed') is False):
+                        if prior.get('render_recipe_sha256') != quality_review.render_recipe_hash(result.doc):
+                            continue
                         feedback = prior
                         break
                 except (OSError,ValueError,TypeError):
@@ -2576,12 +2583,16 @@ class JobService:
                     detail=f'자막·훅 검수 결과를 자동 수정하는 중입니다 ({repair_count}/{quality_review.MAX_REPAIRS}).')
                 result = replace(result, doc=self.deps.repair_document(
                     result.doc, source_segments, runner=repair_runner, feedback=feedback,
-                    speed=speed, maximum_s=candidate_analyzer.MAX_DURATION_S, work=attempt_dir))
+                    speed=speed, maximum_s=None, work=attempt_dir))
             try:
                 stage = '렌더 전 주제 검수'
-                reviewed = self.deps.trim_topic_edges(result.doc, source_segments,
-                    title=result.title or _fallback_doc_title(result.doc), runner=topic_runner)
-                result = replace(result, doc=reviewed)
+                # Final-review repairs may deliberately restore an antecedent
+                # the initial topic pass removed. Do not undo that repair.
+                # Every version still receives the independent final topic check.
+                if feedback is None:
+                    reviewed = self.deps.trim_topic_edges(result.doc, source_segments,
+                        title=result.title or _fallback_doc_title(result.doc), runner=topic_runner)
+                    result = replace(result, doc=reviewed)
                 stage = '원본 영상 준비'
                 video, segments = source_video, source_segments
                 if not source_video.is_file():
@@ -2632,7 +2643,7 @@ class JobService:
                 stage = 'Opus 최종 영상·훅 검수'
                 self._set_storyline_render_progress(job_id, story_id, progress=0.94,
                     status=Status.RENDERING_OVERLAY,
-                    detail='Opus가 최종 영상의 자막 타이밍과 첫 5초 훅을 검수하는 중입니다.')
+                    detail='Opus가 자막 타이밍·훅 줌인·whoosh 효과음을 검수하는 중입니다.')
                 review = self.deps.review_render_output(out, result.doc, segments, assets, speed,
                     title, attempt_dir / 'review', reference_segments=source_segments)
                 self._raise_if_cancelled(job_id)
@@ -2650,7 +2661,8 @@ class JobService:
                     'start_s': 0, 'end_s': 1, 'evidence': str(exc),
                     'correction': '원문 근거를 보존하며 해당 검증 오류를 수정하라.'}]}
                 if isinstance(exc, caption_timing.CaptionTimingError):
-                    feedback.update(audio_reference=exc.transcript, signature=exc.doc_signature)
+                    feedback.update(audio_reference=exc.transcript, signature=exc.doc_signature,
+                                    audio_signature=caption_timing.audio_signature(result.doc,segments,speed))
                     if '인덱스 오류' in str(exc):
                         feedback['issues'][0]['kind']='timing'
                 caption_timing.write_json(attempt_dir / 'validation-error.json', feedback)
@@ -2659,7 +2671,7 @@ class JobService:
             if repair_count >= quality_review.MAX_REPAIRS or attempt == quality_review.MAX_REPAIRS:
                 reasons = feedback.get('issues', []) + feedback.get('machine_issues', [])
                 detail = '; '.join(item.get('evidence', '') for item in reasons)[:500]
-                raise JobServiceError(f'{stage}: 자동 수정 {quality_review.MAX_REPAIRS}회 후 확인 필요 — {detail}')
+                raise QualityRepairExhausted(f'{stage}: 자동 수정 {quality_review.MAX_REPAIRS}회 후 확인 필요 — {detail}')
         raise AssertionError('unreachable')
 
     def _set_job_progress(
@@ -2873,7 +2885,7 @@ class JobService:
             persisted = json.loads(edl_path.read_text(encoding="utf-8"))
             if any(persisted.get(key) != doc.get(key) for key in (
                 'cuts', 'subtitle_translations', 'topic_edge_review', 'caption_timing',
-                'quality_review', 'render_adjustments', 'source_trim_us', 'focus_overrides')):
+                'quality_review', 'render_adjustments', 'source_trim_us', 'focus_overrides', 'hook_effect')):
                 self.deps.write_outputs(sdir, doc, segments)
                 (sdir / "reel.srt").unlink(missing_ok=True)
             elif persisted.get("speaker") != doc.get("speaker"):

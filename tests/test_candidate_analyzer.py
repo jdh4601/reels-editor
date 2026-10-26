@@ -245,7 +245,7 @@ def test_selected_candidates_accept_18_second_clip_without_retry(segments, edl_d
     assert results[0].doc is not None, results[0].error
     assert edl.estimate_duration_s(results[0].doc, segments, 1.0) == 18
     assert len(calls) == 1
-    assert "15" in calls[0] and "50" in calls[0]
+    assert "길이 제한은 없다" in calls[0]
 
 
 import pytest
@@ -268,10 +268,11 @@ def test_selected_candidate_duration_boundaries(segments, edl_doc, duration):
     assert edl.estimate_duration_s(result.doc, source, 1.0) == duration
 
 
-@pytest.mark.parametrize("duration", [14, 51])
-def test_selected_candidate_outside_duration_window_is_rejected(segments, edl_doc, duration):
+@pytest.mark.parametrize("duration", [14, 14.5, 51, 75])
+def test_selected_candidate_has_no_duration_rejection_or_trimming(segments, edl_doc, duration):
     from copy import deepcopy
     from reels_editor.jobs.models import ContentCandidate
+    from reels_editor import edl
     source = deepcopy(segments)
     source["segments"][1]["source_start_us"] = 0
     source["segments"][1]["source_end_us"] = duration * 1_000_000
@@ -281,5 +282,6 @@ def test_selected_candidate_outside_duration_window_is_rejected(segments, edl_do
                                  summary="요약", takeaway="교훈", segment_ids=["t1"])
     result = candidate_analyzer.generate_selected_candidates(source, [candidate],
         runner=lambda _p: json.dumps(doc, ensure_ascii=False), speed=1.0)[0]
-    assert result.doc is None
-    assert ("최소 15초" if duration < 15 else "최대 50초") in result.error
+    assert result.doc is not None, result.error
+    assert edl.estimate_duration_s(result.doc, source, 1.0) == duration
+    assert result.doc['cuts'] == doc['cuts']

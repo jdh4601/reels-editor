@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-from reels_editor import captions, processes, speaker_focus
+from reels_editor import captions, processes, speaker_focus, hook_effects
 from reels_editor.storyteller import format_speaker_label
 from reels_editor.style import StylePreset
 from reels_editor.timebase import US
@@ -37,7 +37,7 @@ _SUBTITLE_PUNCTUATION_TO_HIDE = str.maketrans("", "", ",.")
 _VIDEOTOOLBOX_ENCODER = "h264_videotoolbox"
 _SOFTWARE_ENCODER = "libx264"
 _VIDEOTOOLBOX_SLOTS = threading.BoundedSemaphore(1)
-_OVERLAY_RENDER_VERSION = 4
+_OVERLAY_RENDER_VERSION = 6
 # Normalize the assembled reel once, with headroom for AAC encoding.
 _REEL_AUDIO_FILTER = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
 
@@ -262,7 +262,8 @@ def detect_content_crop(video_path: Path, at_s: float,
 def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
                       in_size: tuple[int, int],
                       content_crop: tuple[int, int, int, int] | None = None,
-                      focus_slices: list[speaker_focus.FocusSlice] | None = None) -> str:
+                      focus_slices: list[speaker_focus.FocusSlice] | None = None,
+                      audio_fade_out_s: float = 0) -> str:
     """트림+배속+concat → (콘텐츠 크롭) → 영상영역 크롭·스케일 → 캔버스 pad."""
     vw, vh = style.video_area()
     cw, ch = style.canvas
@@ -304,11 +305,12 @@ def build_base_filter(ordered: list[dict], speed: float, style: StylePreset,
                 f"{pre}crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={vw}:{vh},"
                 f"pad={cw}:{ch}:0:{style.top_bar}:black,setsar=1[v{i}];"
             )
-        parts.append(f"[0:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={speed}[a{i}];")
     concat_video_label = "[v]" if dynamic_focus is not None else "[vc]"
+    from reels_editor.caption_timing import edited_audio_filter
     concat = (
-        "".join(f"[v{i}][a{i}]" for i in range(n))
-        + f"concat=n={n}:v=1:a=1{concat_video_label}[a];"
+        "".join(f"[v{i}]" for i in range(n))
+        + f"concat=n={n}:v=1:a=0{concat_video_label};"
+        + edited_audio_filter(ordered, speed, fade_out_s=audio_fade_out_s) + ";"
     )
     if dynamic_focus is not None:
         return "".join(parts) + concat
@@ -712,6 +714,7 @@ class RenderAssets:
     source: Path | None = None
     base_filter: Path | None = None
     total_s: float = 0.0
+    hook_effect: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -724,6 +727,7 @@ class RenderAssets:
             "source": str(self.source) if self.source is not None else None,
             "base_filter": str(self.base_filter) if self.base_filter is not None else None,
             "total_s": self.total_s,
+            "hook_effect": self.hook_effect,
         }
 
     @classmethod
@@ -738,6 +742,7 @@ class RenderAssets:
             source=Path(data["source"]) if data.get("source") else None,
             base_filter=Path(data["base_filter"]) if data.get("base_filter") else None,
             total_s=float(data.get("total_s", 0.0)),
+            hook_effect=data.get("hook_effect"),
         )
 
     def write_manifest(self, path: Path) -> Path:
@@ -886,6 +891,7 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
                            episode_number: int | None = None,
                            ) -> RenderAssets:
     from reels_editor import edl as edl_mod
+    hook_effects.validate(edl_doc, segments, speed)
     ordered = edl_mod.ordered_segments(edl_doc, segments)
     work_dir.mkdir(parents=True, exist_ok=True)
     # 단독 샷은 중앙 고정, 투샷만 실제 발화 인물 쪽 끝으로 수평 이동한다.
@@ -918,6 +924,7 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
         source_size,
         content_crop=content,
         focus_slices=focus_slices,
+        audio_fade_out_s=edl_doc.get('audio_fade_out_s',0),
     )
     fpath = work_dir / "base_filter.txt"
     fpath.write_text(filt)
@@ -946,6 +953,7 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
         source=video_path,
         base_filter=fpath,
         total_s=total_s,
+        hook_effect=edl_doc.get("hook_effect"),
     )
 
 
@@ -994,24 +1002,33 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
         and assets.base_filter is not None
         and assets.base_filter.is_file()
     )
+    effect = assets.hook_effect
+    if effect and not single_pass:
+        raise ValueError("훅 줌인은 원본과 크롭 필터가 있는 렌더 자산이 필요합니다.")
     filt2, last = build_overlay_filter(
         n_static=2,
         groups=groups,
-        base_label="[v]" if single_pass else "[0:v]",
+        base_label="[vhook]" if effect else ("[v]" if single_pass else "[0:v]"),
     )
     video_input = assets.source if single_pass else assets.base
     args = ["-i", str(video_input), "-i", str(title_png), "-i", str(wm_png)]
     for p in sub_pngs:
         args += ["-i", str(p)]
+    sound_input = 3 + len(sub_pngs)
+    if effect:
+        if hook_effects.file_hash(Path(effect["sound_path"])) != effect["sound_sha256"]:
+            raise ValueError("훅 효과음 파일이 변경됐습니다.")
+        args += ["-i", effect["sound_path"]]
     tmp = out_path.with_name(f".{out_path.stem}.part{out_path.suffix}")
     if single_pass:
         base_filter = reposition_video_filter(
             assets.base_filter.read_text(encoding="utf-8").rstrip(";\n "), style,
         )
-        full_filter = (
-            f"{base_filter};{filt2};{last}format=yuv420p[vout];"
-            f"[a]{_REEL_AUDIO_FILTER}[aout]"
-        )
+        if effect:
+            base_filter += ";" + hook_effects.zoom_filter(effect, style)
+        audio_filter = (hook_effects.audio_filter(effect, sound_input, _REEL_AUDIO_FILTER)
+                        if effect else f"[a]{_REEL_AUDIO_FILTER}[aout]")
+        full_filter = f"{base_filter};{filt2};{last}format=yuv420p[vout];{audio_filter}"
         args += [
             "-filter_complex", full_filter,
             "-map", "[vout]",
@@ -1028,6 +1045,7 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
             total_s=assets.total_s,
         )
         os.replace(tmp, out_path)
+        hook_effects.write_receipt(out_path, assets)
     finally:
         if tmp.exists():
             tmp.unlink()

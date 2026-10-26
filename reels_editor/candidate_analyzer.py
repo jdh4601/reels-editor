@@ -27,10 +27,6 @@ if TYPE_CHECKING:
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "candidate-analysis.md"
 CANDIDATE_COUNT = 10
 TARGET_DURATION_S = 35
-# Keep short but usable clips: the target remains 35s, while completed
-# storylines from 15s through 50s are valid.
-MIN_DURATION_S = 15
-MAX_DURATION_S = 50
 MAX_RETRIES = 2
 CONTENT_TYPES: dict[str, dict[str, str]] = {
     "story": {
@@ -182,8 +178,7 @@ def generate_selected_candidates(
                 raw_dump=raw_dump,
                 angle=candidate_brief(candidate),
                 speed=speed,
-                min_duration_s=MIN_DURATION_S,
-                max_duration_s=MAX_DURATION_S,
+                enforce_duration=False,
                 fixed_title=candidate.title,
             )
             return StorylineResult(index, label, doc, title=candidate.title)

@@ -2160,6 +2160,7 @@ def test_persistent_quality_failure_stops_after_two_repairs_without_publishing(t
     assert job.storylines[0].active_variant_path is None
     assert not job.artifacts
     assert '자동 수정 2회' in job.storylines[0].error
+    assert job.storylines[0].review_message == '자동 수정 후에도 확인이 필요합니다.'
     assert Path(job.storylines[0].edl_path).is_file()
     assert Path(job.storylines[0].segments_path).is_file()
 
@@ -2204,8 +2205,9 @@ def test_retry_recovers_valid_checkpoint_when_older_job_omitted_paths(tmp_path):
     assert Path(retried.storylines[0].edl_path) == checkpoint
 
 
-def test_retry_uses_saved_review_before_rendering_and_keeps_two_repair_limit(tmp_path):
-    from reels_editor import caption_timing, edl
+@pytest.mark.parametrize('changed_plan', [None, 'caption', 'hook'])
+def test_retry_uses_saved_review_only_for_exact_recipe_and_keeps_two_repair_limit(tmp_path, changed_plan):
+    from reels_editor import caption_timing, edl, quality_review
     calls = Calls()
     feedbacks, review_paths, render_order = [], [], []
     deps = _deps(tmp_path, calls)
@@ -2217,7 +2219,7 @@ def test_retry_uses_saved_review_before_rendering_and_keeps_two_repair_limit(tmp
         feedbacks.append(kwargs['feedback'])
         return doc
     def review(video, doc, segments, assets, speed, title, work, **kwargs):
-        report = {'passed': False, 'signature': doc['caption_timing']['signature'], 'issues': [
+        report = {'review_version': quality_review.REVIEW_VERSION, 'render_recipe_sha256': quality_review.render_recipe_hash(doc), 'passed': False, 'signature': doc['caption_timing']['signature'], 'issues': [
             {'kind': 'hook', 'evidence': '독립적으로 이해할 수 없는 훅'}]}
         work.mkdir(parents=True, exist_ok=True)
         path = work/'review.json'
@@ -2237,13 +2239,22 @@ def test_retry_uses_saved_review_before_rendering_and_keeps_two_repair_limit(tmp
         review_render_output=review))
     job = _run_ready(service, candidate_count=1)
     assert job.status is Status.FAILED and len(feedbacks) == 2
+    if changed_plan:
+        checkpoint=Path(job.storylines[0].edl_path)
+        doc=json.loads(checkpoint.read_text())
+        if changed_plan=='caption':
+            doc['caption_timing']['captions'][0]['hold_s']=.16
+        else:
+            doc['hook_effect']={'anchor_s':.9,'clean_voice_onset':{'onset_s':.9}}
+        checkpoint.write_text(json.dumps(doc))
     render_order.clear()
     retried = service.retry_storyline(job.id, job.storylines[0].id)
     assert retried.status is Status.FAILED
-    assert render_order == ['repair', 'render', 'repair', 'render']
+    assert render_order == (['render','repair','render','repair','render'] if changed_plan
+                            else ['repair', 'render', 'repair', 'render'])
     assert len(feedbacks) == 4
     assert feedbacks[2]['selected_candidate']['id'] == 'c1'
-    assert len(set(review_paths)) == 5 and all(path.is_file() for path in review_paths)
+    assert len(set(review_paths)) == (6 if changed_plan else 5) and all(path.is_file() for path in review_paths)
 
 
 def test_opus_unavailable_never_marks_unreviewed_video_ready(tmp_path):
@@ -2254,6 +2265,7 @@ def test_opus_unavailable_never_marks_unreviewed_video_ready(tmp_path):
     job=_run_ready(service,candidate_count=1)
     assert job.status is Status.FAILED and not job.artifacts
     assert 'Opus' in job.storylines[0].error
+    assert job.storylines[0].review_message is None
     assert calls.overlay==1
 
 
@@ -2272,6 +2284,24 @@ def test_pre_render_validation_can_repair_before_rendering(tmp_path):
     job=_run_ready(service,candidate_count=1)
     assert job.status is Status.READY and calls.overlay==1
     assert len(repairs)==1 and repairs[0]['stage']=='렌더 전 주제 검수'
+
+
+def test_final_review_context_repairs_are_not_cut_again_by_initial_topic_pass(tmp_path):
+    from hashlib import sha256
+    calls = Calls(); topic_calls = []; review_calls = []
+    def trim(doc, *_a, **_k):
+        topic_calls.append(1)
+        assert len(topic_calls) == 1, 'Do not undo a final-review context repair'
+        return doc
+    def review(video, *_a, **_k):
+        review_calls.append(1)
+        return ({'passed':False,'issues':[{'kind':'hook','evidence':'restore source subject'}]}
+            if len(review_calls)==1 else {'passed':True,'video_sha256':sha256(video.read_bytes()).hexdigest()})
+    service = JobService(store=JobStore(tmp_path/'jobs'), deps=replace(_deps(tmp_path,calls),
+        trim_topic_edges=trim, review_render_output=review,
+        repair_document=lambda doc,*_a,**_k:doc))
+    job = _run_ready(service, candidate_count=1)
+    assert job.status is Status.READY and len(review_calls)==2 and len(topic_calls)==1
 
 
 def test_review_for_different_mp4_cannot_publish(tmp_path):
@@ -2331,6 +2361,22 @@ def test_export_repairs_missing_role_and_rerenders_existing_overlay(tmp_path):
     assert calls.speaker_texts[-1] == '김현지 (Example 창업자)'
     assert output.is_file() and output.with_suffix('.jpg').is_file()
     assert json.loads(Path(updated.storylines[0].edl_path).read_text())['speaker']['company'] == 'Example'
+
+
+def test_identity_failure_does_not_claim_final_review_or_automatic_repairs(tmp_path):
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    def fail(_results, _segments, **kwargs):
+        if kwargs.get('required'):
+            raise ValueError('화자 이름을 확인하지 못했습니다.')
+    service = JobService(store=JobStore(tmp_path / 'jobs'),
+                         deps=replace(deps, enrich_speakers=fail))
+    job = _run_ready(service)
+    assert job.status is Status.FAILED
+    assert calls.base == 0
+    for story in job.storylines:
+        assert '화자 정보 확인 실패' in story.error
+        assert story.review_message is None
 
 
 def test_export_does_not_complete_without_verified_role(tmp_path):

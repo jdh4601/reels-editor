@@ -14,7 +14,7 @@ def trim_topic_edges(doc: dict, segments: dict, *, title: str, runner: Callable[
     ids = [sid for cut in doc['cuts'] for sid in cut['seg_ids']]
     index = {s['id']: s for s in segments['segments']}
     rows = [{**index[sid], 'caption': doc.get('subtitle_translations', {}).get(sid, index[sid]['text'])} for sid in ids]
-    fingerprint = hashlib.sha256(json.dumps([2, title, rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    fingerprint = hashlib.sha256(json.dumps([3, title, rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     if doc.get('topic_edge_review', {}).get('fingerprint') == fingerprint:
         return doc
     prompt = (
@@ -56,12 +56,25 @@ def trim_topic_edges(doc: dict, segments: dict, *, title: str, runner: Callable[
             begin, text = position + 1, ''
     if begin < len(ids):
         units.append((begin, len(ids)))
+    # Translation can supply a missing subject and conceal an English source
+    # fragment. Preserve the original spoken sentence as well as the translation.
+    source_units, begin, text = [], 0, ''
+    for position, row in enumerate(rows):
+        text = f'{text} {row["text"]}'.strip()
+        if captions.is_complete_sentence(text):
+            source_units.append((begin, position + 1))
+            begin, text = position + 1, ''
+    if begin < len(ids):
+        source_units.append((begin, len(ids)))
     requested_first, requested_last = first, last
-    for a, b in units:
-        if a <= first < b:
-            first = a
-        if a < last <= b:
-            last = b
+    previous = None
+    while previous != (first, last):
+        previous = first, last
+        for a, b in units + source_units:
+            if a <= first < b:
+                first = a
+            if a < last <= b:
+                last = b
     protected = ids[first:requested_first] + ids[requested_last:last]
     removed = ids[:first] + ids[last:]
     result = deepcopy(doc)
@@ -96,7 +109,7 @@ def trim_topic_edges(doc: dict, segments: dict, *, title: str, runner: Callable[
         if errors:
             raise ValueError('주제 이탈 구간 제거 후 문장 검증 실패: ' + '; '.join(errors))
     remaining_rows = [row for row in rows if row['id'] in set(ids[first:last])]
-    review['fingerprint'] = hashlib.sha256(json.dumps([2, title, remaining_rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    review['fingerprint'] = hashlib.sha256(json.dumps([3, title, remaining_rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     review['removed_seg_ids'] = removed
     review['sentence_protected_seg_ids'] = protected
     review['removed_source_us'] = sum(index[sid]['source_end_us'] - index[sid]['source_start_us'] for sid in removed)

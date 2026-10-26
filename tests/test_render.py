@@ -325,8 +325,8 @@ def test_build_base_filter_applies_one_fixed_center_crop_after_concat(
     crop = render.video_crop_box((1920, 1080), style)
     crop_filter = f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}"
     assert filt.count(crop_filter) == 1
-    assert "concat=n=2:v=1:a=1[vc][a]" in filt
-    assert filt.index("concat=n=2:v=1:a=1[vc][a]") < filt.index(crop_filter)
+    assert "concat=n=2:v=1:a=0[vc]" in filt
+    assert filt.index("concat=n=2:v=1:a=0[vc]") < filt.index(crop_filter)
 
 
 def test_build_base_filter_moves_crop_only_for_detected_two_person_windows(
@@ -357,7 +357,9 @@ def test_build_base_filter_moves_crop_only_for_detected_two_person_windows(
     assert f"crop={centered[0]}:{centered[1]}:{centered[2]}:{centered[3]}" in filt
     assert f"crop={left[0]}:{left[1]}:{left[2]}:{left[3]}" in filt
     assert f"crop={right[0]}:{right[1]}:{right[2]}:{right[3]}" in filt
-    assert "concat=n=4:v=1:a=1[v][a]" in filt
+    assert "concat=n=4:v=1:a=0[v]" in filt
+    assert "concat=n=2:v=0:a=1,atempo=1.2[a]" in filt
+    assert filt.count('atempo=') == 1
 
 
 def test_video_crop_box_snaps_horizontal_focus_to_three_anchors() -> None:

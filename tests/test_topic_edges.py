@@ -68,3 +68,15 @@ def test_trim_restores_last_cue_needed_to_close_sentence_and_quote():
     assert result['cuts'] == doc['cuts'][1:]
     assert result['topic_edge_review']['removed_seg_ids'] == ['s0']
     assert result['topic_edge_review']['sentence_protected_seg_ids'] == ['s2']
+
+
+def test_translation_cannot_hide_a_missing_subject_in_original_speech():
+    doc, segments = fixture()
+    segments['segments'][0]['text'] = 'We still talk to dads in our DMs and'
+    segments['segments'][1]['text'] = 'comments every single day.'
+    doc['subtitle_translations']['s0'] = '직접 소통해요.'
+    doc['subtitle_translations']['s1'] = '지금도 매일 댓글에 답해요.'
+    result = trim_topic_edges(doc, segments, title='직접 소통하는 이유',
+        runner=runner({'s0':'off_topic','s1':'relevant','s2':'off_topic'}))
+    assert [sid for cut in result['cuts'] for sid in cut['seg_ids']] == ['s0','s1']
+    assert result['topic_edge_review']['sentence_protected_seg_ids'] == ['s0']

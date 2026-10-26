@@ -14,7 +14,7 @@ from pathlib import Path
 from reels_editor import captions, edl, processes
 from reels_editor.storyteller import extract_json
 
-VERSION = 1
+VERSION = 3
 HOOK_SECONDS = 5.0
 _ASR_SLOT = threading.BoundedSemaphore(1)
 
@@ -42,9 +42,25 @@ def file_hash(path: Path) -> str:
 
 
 def signature(doc: dict, segments: dict, speed: float) -> str:
+    # A downloaded bundle changes file-local coordinates, not the selected
+    # source speech. Use original cue coordinates for the same audio identity.
+    canonical = {**segments, 'segments': [{**row,
+        'source_start_us': row.get('original_source_start_us', row['source_start_us']),
+        'source_end_us': row.get('original_source_end_us', row['source_end_us'])}
+        for row in segments['segments']]}
     return hashlib.sha256(json.dumps([
-        VERSION, edl.ordered_segments(doc, segments), speed,
+        VERSION, edl.ordered_segments(doc, canonical), speed, doc.get('audio_fade_out_s',0),
     ], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def audio_signature(doc: dict, segments: dict, speed: float) -> str:
+    canonical = {**segments, 'segments':[{**row,
+        'source_start_us':row.get('original_source_start_us',row['source_start_us']),
+        'source_end_us':row.get('original_source_end_us',row['source_end_us'])}
+        for row in segments['segments']]}
+    speech = [{k:v for k,v in row.items() if k != 'text'}
+              for row in edl.ordered_segments(doc,canonical)]
+    return hashlib.sha256(json.dumps([VERSION,speech,speed,doc.get('audio_fade_out_s',0)],sort_keys=True).encode()).hexdigest()
 
 
 def _run_ffmpeg(args: list[str]) -> None:
@@ -54,18 +70,32 @@ def _run_ffmpeg(args: list[str]) -> None:
         raise RuntimeError('자막 타이밍용 음성 추출 실패: ' + result.stderr[-500:])
 
 
+def edited_audio_filter(ordered, speed, output='[a]', fade_out_s=0):
+    # Match rendering exactly: concatenate speech before changing tempo.
+    # Video frame rounding and camera-focus subdivisions must not pad or
+    # restart the audio at every subtitle cue.
+    filters = [f'[0:a]atrim={s["source_start_us"]/1e6}:{s["source_end_us"]/1e6},'
+               f'asetpts=PTS-STARTPTS[rawa{i}]' for i,s in enumerate(ordered)]
+    tail=''
+    if fade_out_s:
+        if type(fade_out_s) not in (float,int) or not math.isfinite(fade_out_s) or not 0 < fade_out_s <= .06:
+            raise ValueError('끝 페이드아웃은 최대 0.06초여야 합니다.')
+        duration=sum((s['source_end_us']-s['source_start_us'])/1e6 for s in ordered)/speed
+        tail=f',apad,atrim=duration={duration},afade=t=out:st={max(0,duration-fade_out_s)}:d={fade_out_s}'
+    filters.append(''.join(f'[rawa{i}]' for i in range(len(ordered)))
+                   + f'concat=n={len(ordered)}:v=0:a=1,atempo={speed}{tail}{output}')
+    return ';'.join(filters)
+
+
 def extract_audio(video: Path, output: Path, *, doc=None, segments=None,
                   speed=1.0, duration=None) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     args = ['-i', str(video)]
     if doc is not None:
         ordered = edl.ordered_segments(doc, segments)
-        filters = [f'[0:a]atrim={s["source_start_us"]/1e6}:{s["source_end_us"]/1e6},'
-                   f'asetpts=PTS-STARTPTS,atempo={speed}[a{i}]'
-                   for i, s in enumerate(ordered)]
-        filters.append(''.join(f'[a{i}]' for i in range(len(ordered)))
-                       + f'concat=n={len(ordered)}:v=0:a=1,loudnorm=I=-14:TP=-1.5:LRA=11[out]')
-        args += ['-filter_complex', ';'.join(filters), '-map', '[out]']
+        filters = edited_audio_filter(ordered, speed, '[edited]', doc.get('audio_fade_out_s',0))
+        filters += ';[edited]loudnorm=I=-14:TP=-1.5:LRA=11[out]'
+        args += ['-filter_complex', filters, '-map', '[out]']
     if duration is not None:
         args += ['-t', str(duration)]
     _run_ffmpeg([*args, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', str(output)])
@@ -155,10 +185,15 @@ def plan_groups(plan: dict, doc: dict, segments: dict, speed: float) -> list[lis
         # Short captions flash past, especially in the opening hook. Condense
         # the translation or choose a slower complete source passage instead.
         if b - a < 0.60 or len(normalized_text(text)) / (b - a) > (14 if a < HOOK_SECONDS else 16):
-            raise ValueError(f'자막 읽기 시간이 부족합니다 ({a:.2f}초: {text}).')
+            raise ValueError(
+                f'자막 {number+1} 읽기 시간이 부족합니다 ({a:.2f}~{b:.2f}초, '
+                f'표시 {b-a:.2f}초: {text}). 최소 0.6초와 초당 글자 수를 지키도록 '
+                '실제 발화에 맞춰 묶거나 번역을 간결하게 고치세요.')
         if len(text) > 32:
-            raise ValueError('한 줄 자막이 너무 깁니다. 발화 의미 단위로 나누세요.')
-        if len(captions.sentence_chunks(text)) > 1:
+            raise ValueError(f'자막 {number+1}이 {len(text)}자로 한 줄 최대 32자를 넘습니다: {text}. '
+                             '발화 의미 단위로 나누세요.')
+        chunks = captions.sentence_chunks(text)
+        if len(chunks) > 1 and not all(captions.is_complete_sentence(chunk) for chunk in chunks):
             raise ValueError('한 화면 자막에 이전 문장 끝과 다음 문장 시작을 섞지 마세요.')
         if groups and a < groups[-1][1] - .001:
             raise ValueError('인접 자막의 표시 시간이 겹칩니다.')
@@ -169,14 +204,30 @@ def plan_groups(plan: dict, doc: dict, segments: dict, speed: float) -> list[lis
     expected = ' '.join(item['text'] for item in edl.ordered_segments(doc, segments))
     if normalized_text(' '.join(row[2] for row in groups)) != normalized_text(expected):
         raise ValueError('타이밍 수정 과정에서 자막 내용이 추가되거나 누락됐습니다.')
+    for unit in doc.get('caption_keep_together', []):
+        key = normalized_text(unit)
+        if not key or key not in normalized_text(expected):
+            raise ValueError('보호할 자막 의미 단위가 번역 원문에 없습니다.')
+        if not any(key in normalized_text(group[2]) for group in groups):
+            raise ValueError(f'부정·수량 등 보호된 의미 단위를 다른 화면으로 나누지 마세요: {unit}')
     return groups
 
 
 def prepare_caption_timing(video: Path, doc: dict, segments: dict, speed: float,
                            work: Path, *, runner, feedback='') -> dict:
     work.mkdir(parents=True, exist_ok=True)
+    if doc.get('caption_timing') and not feedback:
+        try:
+            plan_groups(doc['caption_timing'], doc, segments, speed)
+        except (ValueError, KeyError, TypeError):
+            pass
+        else:
+            from reels_editor import hook_effects
+            return hook_effects.prepare(deepcopy(doc), segments, speed, work / 'hook',
+                                        runner=runner, feedback=feedback)
     reference = feedback.get('audio_reference') if isinstance(feedback, dict) else None
-    if reference and feedback.get('signature') == signature(doc, segments, speed):
+    if reference and (feedback.get('signature') == signature(doc, segments, speed)
+                      or feedback.get('audio_signature') == audio_signature(doc,segments,speed)):
         # When the final encoder introduced a measurable offset, repair against
         # that final audio, rather than repeating the same preliminary estimate.
         transcript = deepcopy(reference)
@@ -190,8 +241,14 @@ def prepare_caption_timing(video: Path, doc: dict, segments: dict, speed: float,
         '자막 전체 내용과 순서를 그대로 보존하되, 원래 seg_id별 파편 경계는 무시하고 완결 문장으로 '
         '재조합한 뒤 화면에 읽기 좋은 의미 절로 나눈다(권장 10~22자, 최대 32자). '
         '이전 문장 끝과 다음 문장 시작을 같은 화면 자막에 섞지 마라. '
+        '단, 네/맞아요 같은 짧은 맞장구를 0.6초 미만의 독립 자막으로 만들지 마라. '
+        '맞장구와 이어지는 완결 문장은 합계 32자 이내라면 한 화면에 함께 표시할 수 있다. '
+        '여러 문장을 합칠 때는 각 문장 전체를 포함하고 다음 문장 도입만 붙이지 마라. '
         '글자 수 비례로 시간을 배분하지 마라. 영어→한국어 번역은 어순이 달라도 그 뜻이 실제로 발화되는 '
         '단어 범위에 대응시킨다. 첫 5초 훅은 핵심 질문·반전 음성과 자막이 동시에 전달되어야 한다. '
+        '부정어와 부정되는 의미를 다른 화면으로 갈라 반대 뜻으로 읽히게 하지 마라. '
+        '한국어 어순 때문에 뜻이 바뀌는 경계는 의미 절 전체를 한 자막으로 묶어라. '
+        'caption_keep_together의 각 문구는 반드시 한 화면 자막 안에 통째로 포함하라. '
         '각 자막 start_word/end_word는 0부터 시작하는 WORDS 배열 인덱스(양끝 포함)다. '
         'timing_kind=point인 단어는 ASR이 구간 길이를 측정하지 못한 시점 앵커다. 시간을 '
         '새로 만들지 말고 인접한 실제 발화 단어와 같은 자막에 묶어라. '
@@ -203,6 +260,7 @@ def prepare_caption_timing(video: Path, doc: dict, segments: dict, speed: float,
                                 for cut in doc['cuts'] for sid in cut['seg_ids']
                                 for s in segments['segments'] if s['id'] == sid],
                       'captions': [s['text'] for s in edl.ordered_segments(doc, segments)],
+                      'caption_keep_together': doc.get('caption_keep_together', []),
                       'WORDS': [dict(word, index=i) for i,word in enumerate(words)],
                       'word_count':len(words),'last_word_index':len(words)-1,
                       'feedback': feedback}, ensure_ascii=False)
@@ -219,7 +277,10 @@ def prepare_caption_timing(video: Path, doc: dict, segments: dict, speed: float,
             result = deepcopy(doc)
             result['caption_timing'] = plan
             write_json(work / 'caption-timing.json', plan)
-            return result
+            break
         except (ValueError, KeyError, TypeError) as exc:
             problem = str(exc)
-    raise CaptionTimingError(problem, transcript, signature(doc, segments, speed))
+    else:
+        raise CaptionTimingError(problem, transcript, signature(doc, segments, speed))
+    from reels_editor import hook_effects
+    return hook_effects.prepare(result, segments, speed, work / 'hook', runner=runner, feedback=feedback)

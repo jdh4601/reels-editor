@@ -52,6 +52,8 @@ def setup_review(monkeypatch,tmp_path):
         'hook_rms_dbfs':-20,'hook_peak_dbfs':-5,'clipped_sample_ratio':0})
     monkeypatch.setattr(quality,'make_sheets',lambda *_a,**_k:([tmp_path/'sheet.jpg'],[.2,1,3]))
     monkeypatch.setattr(quality,'source_hook_sheet',lambda *_a,**_k:tmp_path/'source.jpg')
+    monkeypatch.setattr(quality,'tail_audio_evidence',lambda *_a,**_k:None)
+    monkeypatch.setattr(quality,'recheck_audio_evidence',lambda *_a,**_k:[])
     return video,doc,segments,assets,actual
 
 
@@ -78,11 +80,25 @@ def test_modified_mp4_cannot_inherit_an_old_review(monkeypatch,tmp_path):
         quality.review_render_output(video,doc,segments,assets,1,'제목',tmp_path/'review',reviewer=reviewer)
 
 
+def test_review_includes_whole_question_beyond_one_adjacent_cue(monkeypatch,tmp_path):
+    video,doc,segments,assets,_=setup_review(monkeypatch,tmp_path)
+    reference={'segments':[
+        dict(id='question',text='How did you build this community?',source_start_us=0,source_end_us=2_000_000),
+        dict(id='continued',text='And what advice',source_start_us=2_000_000,source_end_us=8_000_000),
+        dict(id='fragment',text='for founders?',source_start_us=8_000_000,source_end_us=10_000_000),
+        *segments['segments']]}
+    quality.review_render_output(video,doc,segments,assets,1,'제목',tmp_path/'review',
+        reviewer=lambda *_a:json.dumps(passed()),reference_segments=reference)
+    evidence=json.loads((tmp_path/'review/evidence.json').read_text())
+    assert evidence['source_context'][0]['id']=='question'
+
+
 def test_review_separates_bundle_handle_from_trim_inside_original_cue(monkeypatch,tmp_path):
     video,doc,segments,assets,_=setup_review(monkeypatch,tmp_path)
     segments['original_video_path']='/original.mp4'
     segments['segments'][0].update(original_source_start_us=100_000_000,
                                    original_source_end_us=104_000_000)
+    doc['caption_timing']['signature'] = caption_timing.signature(doc, segments, 1)
     quality.review_render_output(video,doc,segments,assets,1,'제목',tmp_path/'review',
                                  reviewer=lambda *_a:json.dumps(passed()))
     evidence=json.loads((tmp_path/'review/evidence.json').read_text())
@@ -159,6 +175,7 @@ def test_edge_trim_can_use_old_audio_anchors_after_removing_earlier_cuts():
         {**source, 'id': 's2', 'source_start_us': 30_000_000, 'source_end_us': 34_000_000},
         {**source, 'id': 's3', 'source_start_us': 50_000_000, 'source_end_us': 54_000_000}]
     doc['cuts'] = [{'seg_ids': ['s1', 's2', 's3']}]
+    plan['signature'] = caption_timing.signature(doc, segments, 1)
     doc['caption_timing'] = plan
     result = deepcopy(doc)
     result['cuts'] = [{'seg_ids': ['s3']}]
@@ -189,6 +206,26 @@ def test_later_translation_repair_keeps_previous_caption_layout_fix(tmp_path):
     assert result['render_adjustments']==doc['render_adjustments']
 
 
+def test_timing_verdict_can_repair_korean_clause_order(tmp_path):
+    doc,segments,plan=fixture()
+    segments['segments'][0]['text']='It was not surprising that we chose a fatherhood brand.'
+    doc['subtitle_translations']['s1']='아빠들을 위한 브랜드를 택한 건 놀랍지 않았어요.'
+    doc['caption_timing']=plan
+    corrected='놀랍지 않았어요. 아빠들을 위한 브랜드를 택한 건요.'
+    prompts=[]
+    def repair(prompt):
+        prompts.append(prompt)
+        return json.dumps({'cuts':doc['cuts'],'subtitle_translations':{'s1':corrected}})
+    result=quality.repair_document(doc,segments,runner=repair,
+        feedback={'issues':[{'kind':'timing','start_s':0,'end_s':4,
+            'evidence':'한국어 절 순서 때문에 뜻이 미리 나타남','correction':'발화 순서에 맞춰 번역 절을 재배치하라'}]},
+        speed=1,maximum_s=None,work=tmp_path)
+    assert len(prompts)==1 and '점진 번역' in prompts[0]
+    assert result['cuts']==doc['cuts']
+    assert result['subtitle_translations']['s1']==corrected
+    assert 'caption_timing' not in result
+
+
 def test_silent_hook_cannot_pass_even_if_opus_says_pass(monkeypatch,tmp_path):
     video,doc,segments,assets,_=setup_review(monkeypatch,tmp_path)
     monkeypatch.setattr(quality,'audio_metrics',lambda *_a:{
@@ -197,3 +234,181 @@ def test_silent_hook_cannot_pass_even_if_opus_says_pass(monkeypatch,tmp_path):
         reviewer=lambda *_a:json.dumps(passed()))
     assert not result['passed']
     assert any(issue['kind']=='audio' for issue in result['machine_issues'])
+
+
+def test_repair_without_duration_cap_keeps_complete_longer_source(tmp_path):
+    doc, segments, _ = fixture()
+    segments['segments'][0]['source_end_us'] = 90_000_000
+    patch = {'cuts': doc['cuts']}
+    result = quality.repair_document(doc, segments, runner=lambda _: json.dumps(patch),
+        feedback={}, speed=1, maximum_s=None, work=tmp_path)
+    assert result['cuts'] == doc['cuts']
+    from reels_editor.edl import estimate_duration_s
+    assert estimate_duration_s(result, segments, 1) > 50
+
+
+def test_trim_uses_verified_audio_even_when_timing_plan_failed_validation():
+    doc, segments, plan = fixture()
+    doc['caption_timing'] = {'signature': 'stale-plan-before-the-cuts-changed'}
+    result = deepcopy(doc)
+    feedback = {'signature': caption_timing.signature(doc, segments, 1),
+                'audio_reference': {'words': plan['words']}}
+    quality.apply_edge_trim(result, doc, segments, 1,
+                            {'start_word': 0, 'end_word': 3}, feedback)
+    assert result['source_trim_us']['s1'] == {'start': 120_000, 'end': 450_000}
+    with pytest.raises(ValueError, match='시간 근거'):
+        quality.apply_edge_trim(deepcopy(doc), doc, segments, 1,
+            {'start_word': 0, 'end_word': 3}, {**feedback, 'signature': 'different-audio'})
+
+
+def test_audio_repair_can_restore_source_instead_of_trimming_more(tmp_path):
+    doc, segments, _ = fixture()
+    doc['source_trim_us'] = {'s1': {'start': 200_000, 'end': 300_000}}
+    patch = {'cuts': doc['cuts'], 'restore_trim': ['start']}
+    feedback = {'issues':[{'kind':'audio','evidence':'First syllable might be clipped'}]}
+    result = quality.repair_document(doc, segments, runner=lambda _:json.dumps(patch),
+        feedback=feedback, speed=1, maximum_s=None, work=tmp_path)
+    assert result['source_trim_us'] == {'s1': {'start':0,'end':300_000}}
+    assert doc['source_trim_us']['s1']['start'] == 200_000
+    with pytest.raises(ValueError, match='검수 근거'):
+        quality.repair_document(doc, segments, runner=lambda _:json.dumps(patch),
+            feedback={}, speed=1, maximum_s=None, work=tmp_path/'unsupported')
+
+
+def test_repair_protects_actual_negative_phrase_and_rejects_invented_unit(tmp_path):
+    doc, segments, _ = fixture()
+    text = '저희 판단을 고집하지 않아요.'
+    patch = {'cuts':doc['cuts'],'subtitle_translations':{'s1':text},'caption_keep_together':[text]}
+    result = quality.repair_document(doc, segments, runner=lambda _:json.dumps(patch),
+        feedback={'issues':[{'kind':'translation'}]}, speed=1, maximum_s=None, work=tmp_path)
+    assert result['caption_keep_together'] == [text]
+    patch['caption_keep_together'] = ['원문에 없는 부정입니다.']
+    with pytest.raises(ValueError, match='실제 번역'):
+        quality.repair_document(doc, segments, runner=lambda _:json.dumps(patch),
+            feedback={}, speed=1, maximum_s=None, work=tmp_path/'invalid')
+
+
+def test_boundary_probe_compares_uncut_source_word_and_measured_quiet_gap(monkeypatch,tmp_path):
+    import wave
+    audio = tmp_path/'source.wav'
+    with wave.open(str(audio),'wb') as w:
+        w.setnchannels(1);w.setsampwidth(2);w.setframerate(16000);w.writeframes(b'\0'*16000*3*2)
+    monkeypatch.setattr(quality,'extract_audio',lambda *_a,**_k:audio)
+    source_words=[{'word':'thinking.','start':.1,'end':.8,'probability':.99},
+                  {'word':'Hats','start':1.45,'end':1.8,'probability':.998}]
+    monkeypatch.setattr(quality,'transcribe_audio',lambda *_a,**_k:{'audio_sha256':'source-hash','words':source_words})
+    doc,segments,_=fixture();segments['video_path']=str(audio)
+    doc['source_trim_us']={'s1':{'start':1_000_000}}
+    actual={'words':[{'word':'hats','start':0,'end':.4,'probability':.485}]}
+    result=quality.boundary_audio_evidence(audio,doc,segments,1,actual,tmp_path/'probe')
+    assert result['cut_between_measured_words']
+    assert result['first_retained_source_word']['probability']==.998
+    assert all(b['rms_dbfs'] < -100 for b in result['source_waveform_20ms_bins'])
+
+
+@pytest.mark.parametrize('trim,between',[(1_000_000,True),(500_000,False)])
+def test_ending_probe_uses_original_speed_and_exposes_next_sentence(monkeypatch,tmp_path,trim,between):
+    import wave
+    audio=tmp_path/'source.wav'
+    with wave.open(str(audio),'wb') as w:
+        w.setnchannels(1);w.setsampwidth(2);w.setframerate(16000);w.writeframes(b'\0'*16000*4*2)
+    def extract(_video,_out,*,doc,segments,speed):
+        assert speed==1
+        assert segments['segments'][0]['source_start_us']==10_000_000
+        return audio
+    monkeypatch.setattr(quality,'extract_audio',extract)
+    source_words=[{'word':'thing.','start':2.6,'end':2.9,'probability':.99},
+                  {'word':'We','start':3.2,'end':3.7,'probability':.99}]
+    monkeypatch.setattr(quality,'transcribe_audio',lambda *_a,**_k:{'audio_sha256':'source-hash','words':source_words})
+    doc,segments,_=fixture();doc['source_trim_us']={'s1':{'end':trim}}
+    result=quality.ending_audio_evidence(audio,doc,segments,
+        {'words':[{'word':'thing.','start':0,'end':.2,'probability':.99}]},tmp_path/'probe')
+    assert result['cut_between_measured_words']==between
+    assert result['following_source_word']['word']=='We'
+    assert result['source_context_speed']==1
+
+
+def test_tail_probe_uses_actual_final_samples_and_reports_absolute_times(monkeypatch,tmp_path):
+    import wave
+    audio=tmp_path/'final.wav'
+    with wave.open(str(audio),'wb') as w:
+        w.setnchannels(1);w.setsampwidth(2);w.setframerate(16000);w.writeframes(b'\0'*16000*10*2)
+    def transcribe(tail,language,work):
+        with wave.open(str(tail)) as w:assert w.getnframes()==8*16000
+        return {'words':[{'word':'We','start':7.7,'end':7.9}], 'audio_sha256':'tail'}
+    monkeypatch.setattr(quality,'transcribe_audio',transcribe)
+    result=quality.tail_audio_evidence(audio,'en',tmp_path/'probe')
+    assert result['words'][0]['start']==9.7
+    assert result['timeline_offset_s']==2
+    assert result['parent_audio_sha256']==caption_timing.file_hash(audio)
+
+
+def test_edge_padding_cannot_keep_next_phrase_only_detected_in_final_tail():
+    doc,segments,plan=fixture();doc['caption_timing']=plan
+    actual={'words':deepcopy(plan['words'])}
+    tail=deepcopy(actual)
+    tail['words'].append({'word':'We','start':3.44,'end':3.6,'probability':.99})
+    feedback={'signature':caption_timing.signature(doc,segments,1),
+              'audio_reference':actual,'audio_tail_reference':tail}
+    result=deepcopy(doc)
+    quality.apply_edge_trim(result,doc,segments,1,{'start_word':0,'end_word':3},feedback)
+    assert result['source_trim_us']['s1']['end']==580_000
+
+
+def test_repair_can_shorten_measured_end_padding_and_apply_bounded_fade(tmp_path):
+    doc,segments,plan=fixture()
+    feedback={'signature':caption_timing.signature(doc,segments,1),
+              'audio_reference':{'words':plan['words']},'issues':[{'kind':'cut'}]}
+    patch={'cuts':doc['cuts'],'edge_trim':{'start_word':0,'end_word':3,'end_pad_s':.02},
+           'audio_fade_out_s':.04}
+    result=quality.repair_document(doc,segments,runner=lambda _:json.dumps(patch),
+        feedback=feedback,speed=1,maximum_s=None,work=tmp_path)
+    assert result['source_trim_us']['s1']['end']==580_000
+    assert result['audio_fade_out_s']==.04
+    patch['audio_fade_out_s']=.5
+    with pytest.raises(ValueError,match='최대 0.06초'):
+        quality.repair_document(doc,segments,runner=lambda _:json.dumps(patch),
+            feedback=feedback,speed=1,maximum_s=None,work=tmp_path/'invalid')
+
+
+def measured_reference():
+    words=[dict(word=w,start=a,end=b,probability=.99) for w,a,b in
+           [('we',0,.2),('talk',.2,.4),('every',1.2,1.5),('day',1.5,1.8)]]
+    full={'audio_sha256':'same-final-audio','duration_s':2,'words':words}
+    supplement={'audio_sha256':'actual-chunk','parent_audio_sha256':'same-final-audio',
+        'timeline_offset_s':0,'duration_s':2,'words':words[:2]+[
+            dict(word='to',start=.4,end=.7,probability=.99),
+            dict(word='dads',start=.7,end=1,probability=.99)]+words[2:],
+        'waveform_20ms_bins':[{'start_s':at,'rms_dbfs':-20} for at in [.4,.5,.7,.9]]}
+    return full,supplement
+
+
+def test_missing_boundary_words_are_recovered_from_same_final_samples():
+    full,supplement=measured_reference()
+    result=quality.recover_measured_words(full,[supplement])
+    assert [w['word'] for w in result['words']]==['we','talk','to','dads','every','day']
+    assert len(full['words'])==4
+    plan={'words':supplement['words'],'captions':[{'text':'아빠들과 대화해요.','start_word':0,'end_word':3},
+                                                {'text':'매일요.','start_word':4,'end_word':5}]}
+    assert quality.timing_diagnostics(plan,full)
+    assert quality.timing_diagnostics(plan,result)==[]
+    assert result['supplemental_word_sources'][0]['audio_sha256']=='actual-chunk'
+
+
+@pytest.mark.parametrize('problem',['different_audio','uncertain_word','silence','unaligned'])
+def test_word_recovery_requires_actual_audio_confidence_voice_and_time_anchors(problem):
+    full,supplement=measured_reference();supplement=deepcopy(supplement)
+    if problem=='different_audio':supplement['parent_audio_sha256']='different'
+    if problem=='uncertain_word':supplement['words'][2]['probability']=.3
+    if problem=='silence':supplement['waveform_20ms_bins']=[]
+    if problem=='unaligned':
+        for w in supplement['words']:w['start']+=.5;w['end']+=.5
+    result=quality.recover_measured_words(full,[supplement])
+    assert result['words']==full['words']
+
+
+def test_second_pass_cannot_remove_a_real_following_phrase():
+    full,supplement=measured_reference()
+    full['words'].append(dict(word='Next',start=1.8,end=2,probability=.99))
+    result=quality.recover_measured_words(full,[supplement])
+    assert result['words'][-1]['word']=='Next'

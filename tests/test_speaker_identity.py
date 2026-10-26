@@ -150,3 +150,81 @@ def test_failed_quote_triggers_search_with_feedback_before_failing_render(tmp_pa
     assert len(prompts) == 2
     assert "이전 원문 검증 실패" in prompts[1]
     assert "Social Capital" in format_speaker_label(result.doc["speaker"])
+
+
+def _unknown_clip():
+    return StorylineResult(0, "전략형", {
+        "speaker": {"name": "알 수 없음"},
+        "cuts": [{"seg_ids": ["clip"]}],
+    })
+
+
+def _group_source():
+    return {"source_description": "Grant, Bart and Ejay run Dad Gang. The founders of Dad Gang answer every DM.",
+            "segments": [{"id": "clip", "text": "We still answer every DM ourselves."}]}
+
+
+def _group_response(prompt):
+    request = json.loads(prompt.split('\n', 1)[1])
+    return json.dumps({"speakers": [{"clip_id": clip["id"], "identity_scope": "group",
+        "name": "Dad Gang", "company": "Dad Gang", "role": "창업자",
+        "evidence_source": "source_description", "evidence": "The founders of Dad Gang answer every DM."}
+        for clip in request["clips"]]})
+
+
+def test_unknown_speaker_resolves_to_source_grounded_group_without_assigning_a_guest(tmp_path):
+    result = _unknown_clip()
+    prompts = []
+    def runner(prompt):
+        prompts.append(prompt)
+        return _group_response(prompt)
+    for current in [result, _unknown_clip()]:
+        speaker_identity.enrich_speakers([current], _group_source(), cache_path=tmp_path / 'lookup.json',
+                                        required=True, runner=runner)
+        assert format_speaker_label(current.doc['speaker']) == 'Dad Gang 공동 창업자'
+        assert current.doc['speaker']['identity_scope'] == 'group'
+        assert current.doc['speaker']['evidence_source'] == 'source_description'
+    assert len(prompts) == 1
+    assert '"names"' not in prompts[0]
+    assert 'We still answer every DM ourselves.' in prompts[0]
+
+
+def test_unidentified_names_never_reach_person_search(tmp_path):
+    import pytest
+    for name in ['알 수 없음', '미상', '이름 미상', '인터뷰 화자', 'Unknown', 'N/A', '']:
+        result = _unknown_clip()
+        result.doc['speaker']['name'] = name
+        def fail(_):
+            raise AssertionError('A placeholder is not a searchable person')
+        with pytest.raises(ValueError, match='화자 이름을 확인하지 못해'):
+            speaker_identity.enrich_speakers([result], {}, cache_path=tmp_path / 'lookup.json',
+                                            required=True, runner=fail)
+        assert format_speaker_label(result.doc['speaker']) == ''
+
+
+def test_context_identity_rejects_fabricated_quote_and_unsupported_group(tmp_path):
+    import pytest
+    for evidence in ['The founders of Other Company answer every DM.',
+                     'Grant, Bart and Ejay run Dad Gang.']:
+        result = _unknown_clip()
+        def runner(prompt):
+            response = json.loads(_group_response(prompt))
+            response['speakers'][0]['evidence'] = evidence
+            return json.dumps(response)
+        with pytest.raises(ValueError, match='화자 이름을 확인하지 못해'):
+            speaker_identity.enrich_speakers([result], _group_source(), cache_path=tmp_path / 'lookup.json',
+                                            required=True, runner=runner)
+        assert format_speaker_label(result.doc['speaker']) == ''
+
+
+def test_context_cache_is_scoped_to_source_and_selected_clip(tmp_path):
+    prompts = []
+    def runner(prompt):
+        prompts.append(prompt)
+        return _group_response(prompt)
+    for text in ['We answer every DM.', 'We personally answer every email.']:
+        source = _group_source()
+        source['segments'][0]['text'] = text
+        speaker_identity.enrich_speakers([_unknown_clip()], source, cache_path=tmp_path / 'lookup.json',
+                                        required=True, runner=runner)
+    assert len(prompts) == 2

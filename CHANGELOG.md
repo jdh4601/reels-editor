@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-26
+
+- Standalone source-quote checks, measured opening effects and independent final-video verification.
+- English interface, menus, progress messages, notifications and diagnostics; English is the default for new jobs.
+- Korean, English and Simplified Chinese output saved per job and preserved across retries.
+- Mandatory review after overlay edits and approved-file hash checks before and after export copies.
+- Verified CLI rerenders and local batch export without a cloud account.
+- Neutral packaged template, OFL CJK font, procedural sound and portable prompt resources.
+- Updated English/Korean READMEs, added Simplified Chinese README and verification contract.
+
 ## [Unreleased]
 
 ### Added
@@ -42,7 +52,7 @@ new field is absent.
 
 ### Added
 
-- Desktop app for macOS that turns a long-form founder interview on YouTube into
+- Desktop app for macOS that turns a long-form video on YouTube into
   vertical 30–40 second reels.
 - Candidate analysis: ten non-overlapping reel ideas across four content types
   (story, strategy, failure analysis, principle), of which you generate only the

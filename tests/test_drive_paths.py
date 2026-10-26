@@ -32,5 +32,5 @@ def test_episode_folder_cannot_redirect_outside_selected_drive(tmp_path: Path):
     drive.mkdir()
     outside.mkdir()
     (drive / EPISODE_FOLDER).symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError, match='선택 경로 밖'):
+    with pytest.raises(ValueError, match="outside the selected path"):
         episode_export_root(drive)

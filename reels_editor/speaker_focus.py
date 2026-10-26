@@ -347,11 +347,11 @@ def _extract_sample_frames(video_path: Path, window: FocusWindow, out_dir: Path)
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"화자 분석 프레임 추출 실패: {result.stderr.strip()}")
+        raise RuntimeError(f"Could not extract speaker-analysis frames: {result.stderr.strip()}")
     paths = sorted(out_dir.glob("frame-*.jpg"))
     times = [float(value) for value in re.findall(r"\bpts_time:([-+0-9.eE]+)", result.stderr)]
     if len(times) != len(paths):
-        raise RuntimeError("화자 분석 프레임과 시간 정보가 일치하지 않습니다.")
+        raise RuntimeError("Speaker-analysis frames and timestamps do not match.")
     (out_dir / "frame-times.json").write_text(json.dumps(times))
     return paths
 
@@ -428,7 +428,7 @@ def _detect_faces(path: Path) -> list[FaceSignal]:
     )
     ok, error = handler.performRequests_error_([request], None)
     if not ok:
-        raise RuntimeError(f"Vision 얼굴 탐지 실패: {error}")
+        raise RuntimeError(f"Vision face detection failed: {error}")
     faces: list[FaceSignal] = []
     for observation in request.results() or ():
         box = observation.boundingBox()

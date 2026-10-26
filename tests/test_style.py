@@ -4,23 +4,23 @@ import pytest
 
 from reels_editor.style import episode_label, load_style
 
-STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
+STYLE = Path(__file__).parent.parent / "reels_editor" / "resources" / "styles" / "default.yaml"
 
 
-def test_load_done_preset() -> None:
+def test_load_default_preset() -> None:
     s = load_style(STYLE)
     assert s.canvas == (1080, 1920)
     assert s.title_highlight == "#F06400"
     assert s.title_color == "#F06400"
     assert s.sub_highlight == "#FFFFFF"
     assert s.watermark_text == ""
-    assert s.title_font.name == "A2Z-7Bold.otf"
-    assert s.title_upper_font.name == "A2Z-5Medium.otf"
-    assert s.title_speaker_font.name == "A2Z-3Light.otf"
-    assert s.sub_font.name == "A2Z-3Light.otf"
+    assert s.title_font.name == "NotoSansCJKsc-Regular.otf"
+    assert s.title_upper_font.name == "NotoSansCJKsc-Regular.otf"
+    assert s.title_speaker_font.name == "NotoSansCJKsc-Regular.otf"
+    assert s.sub_font.name == "NotoSansCJKsc-Regular.otf"
     assert s.sub_box_alpha == 200
     assert s.sub_shadow_alpha == 0
-    assert s.watermark_font.name == "A2Z-5Medium.otf"
+    assert s.watermark_font.name == "NotoSansCJKsc-Regular.otf"
     assert s.title_size == 84
     assert s.title_emphasis_size is None
     assert s.title_line_gap == 24
@@ -37,11 +37,12 @@ def test_load_done_preset() -> None:
     assert s.watermark_size == 75
     assert s.watermark_opacity == 255
     assert s.watermark_y == -1190
-    assert s.watermark_image == (STYLE.parent / "assets" / "D.one.png").resolve()
+    assert s.watermark_image is None
     assert s.watermark_width == 192
-    assert s.episode_text == "에피소드 1 / 1000"
+    assert s.episode_text == ""
+    assert s.show_episode is False
     assert s.episode_size == 34
-    assert s.episode_font.name == "A2Z-3Light.otf"
+    assert s.episode_font.name == "NotoSansCJKsc-Regular.otf"
     assert s.episode_color == "#FFFFFF"
     assert s.episode_opacity == 255
     assert s.episode_gap == 18
@@ -65,7 +66,7 @@ def test_video_area_matches_reference_window() -> None:
 
 def test_missing_font_raises(tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
-    bad.write_text(STYLE.read_text().replace("A2Z-7Bold", "없는폰트"),
+    bad.write_text(STYLE.read_text().replace("NotoSansCJKsc-Regular", "없는폰트"),
                    encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         load_style(bad)
@@ -76,8 +77,8 @@ def test_job_episode_creates_render_style_with_fixed_total() -> None:
 
     episode_style = style.for_episode(37)
 
-    assert episode_label(37) == "에피소드 37 / 1000"
-    assert episode_style.episode_text == "에피소드 37 / 1000"
-    assert style.episode_text == "에피소드 1 / 1000"
+    assert episode_label(37) == "Episode 37"
+    assert episode_style.episode_text == "Episode 37"
+    assert style.episode_text == ""
     with pytest.raises(ValueError):
         style.for_episode(0)

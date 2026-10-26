@@ -1,5 +1,7 @@
-"""Find ten distinct, useful reel opportunities in a founder interview transcript."""
+"""Find ten distinct, useful reel opportunities in a long-form video transcript."""
 from __future__ import annotations
+
+from reels_editor.languages import language_instruction, output_language, translation_required
 
 import json
 import re
@@ -24,30 +26,30 @@ from reels_editor.title_rules import (
 if TYPE_CHECKING:
     from reels_editor.jobs.models import ContentCandidate
 
-PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "candidate-analysis.md"
+PROMPT_PATH = Path(__file__).parent / "resources" / "prompts" / "candidate-analysis.md"
 CANDIDATE_COUNT = 10
 TARGET_DURATION_S = 35
 MAX_RETRIES = 2
 CONTENT_TYPES: dict[str, dict[str, str]] = {
     "story": {
-        "label": "스토리형",
+        "label": "Story",
         "example": "회사가 망하기 직전에 바꾼 한 가지",
         "guidance": "위기나 전환이 있는 실제 사건을 중심으로 상황, 선택, 결과, 교훈이 이어지는 내용",
     },
     "strategy": {
-        "label": "전략형",
+        "label": "Strategy",
         "example": "광고 없이 첫 고객을 만든 방법",
         "guidance": "마케팅, 판매, 제품, 운영에서 실제로 사용한 방법과 실행 과정을 배울 수 있는 내용",
     },
     "failure": {
-        "label": "실패 분석형",
+        "label": "Failure analysis",
         "example": "6개월을 낭비하게 만든 잘못된 가정",
         "guidance": "잘못된 판단이나 가정, 손실, 원인, 이후 바꾼 행동이 구체적으로 드러나는 내용",
     },
     "principle": {
-        "label": "원칙형",
+        "label": "Principle",
         "example": "확장보다 이것이 먼저입니다",
-        "guidance": "창업가의 의사결정 기준, 생존 원칙, 마인드셋이나 장기적인 관점을 설명하는 내용",
+        "guidance": "화자의 의사결정 기준, 생존 원칙, 마인드셋이나 장기적인 관점을 설명하는 내용",
     },
 }
 
@@ -55,10 +57,10 @@ CONTENT_TYPES: dict[str, dict[str, str]] = {
 def validate_content_types(values: list[str] | tuple[str, ...]) -> list[str]:
     selected = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
     if not selected:
-        raise ValueError("콘텐츠 유형을 하나 이상 선택하세요.")
+        raise ValueError("Select at least one content type.")
     unknown = [value for value in selected if value not in CONTENT_TYPES]
     if unknown:
-        raise ValueError("지원하지 않는 콘텐츠 유형: " + ", ".join(unknown))
+        raise ValueError("Unsupported content type: " + ", ".join(unknown))
     return selected
 
 
@@ -77,8 +79,8 @@ def build_candidate_prompt(
         f"- [{_timestamp(item.get('source_start_us', 0))}] {item['id']}: {item['text']}"
         for item in segments.get("segments", [])
     )
-    correction = f"\n## 수정 피드백\n{feedback}\n" if feedback else ""
-    return (
+    correction = f"\n## Correction feedback\n{feedback}\n" if feedback else ""
+    return language_instruction(segments) + (
         PROMPT_PATH.read_text(encoding="utf-8")
         .replace("{candidate_count}", str(CANDIDATE_COUNT))
         .replace("{text_hook_block}", text_hook_principles())
@@ -106,7 +108,7 @@ def generate_candidates(
             candidates, errors = _parse_candidates(payload, segments, selected)
         except (ValueError, json.JSONDecodeError) as exc:
             candidates = []
-            errors = [f"JSON 파싱 실패: {exc}"]
+            errors = [f"JSON parsing failed: {exc}"]
         if not errors:
             return candidates
         last_problem = "; ".join(errors)
@@ -119,13 +121,13 @@ def generate_candidates(
     if raw_dump is not None:
         raw_dump.parent.mkdir(parents=True, exist_ok=True)
         raw_dump.write_text(last_raw, encoding="utf-8")
-    raise RuntimeError(f"콘텐츠 후보 분석 3회 실패 — 마지막 오류: {last_problem}")
+    raise RuntimeError(f"Candidate analysis failed after 3 attempts — last error: {last_problem}")
 
 
 def candidate_brief(candidate: ContentCandidate) -> str:
     definition = CONTENT_TYPES[candidate.content_type]
     return (
-        f"콘텐츠 유형: {definition['label']}\n"
+        f"Content type: {definition['label']}\n"
         f"구성 원칙: {definition['guidance']}\n"
         f"선택한 후보 제목: {candidate.title}\n"
         f"후보 내용: {candidate.summary}\n"
@@ -145,7 +147,7 @@ def candidate_segments(segments: dict[str, Any], candidate: ContentCandidate) ->
     rows = segments.get("segments", [])
     by_id = {row["id"]: row for row in rows}
     if not candidate.segment_ids or any(sid not in by_id for sid in candidate.segment_ids):
-        raise ValueError("선택한 후보의 근거 자막을 찾지 못했습니다. 다시 분석하세요.")
+        raise ValueError("The selected candidate source evidence is missing. Analyze again.")
     padding_us = 30_000_000
     windows = [(by_id[sid]["source_start_us"] - padding_us,
                 by_id[sid]["source_end_us"] + padding_us) for sid in candidate.segment_ids]
@@ -184,7 +186,7 @@ def generate_selected_candidates(
             return StorylineResult(index, label, doc, title=candidate.title)
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             return StorylineResult(
-                index, label, None, f"대본 생성 실패: {exc}", title=candidate.title
+                index, label, None, f"Script generation failed: {exc}", title=candidate.title
             )
 
     with ThreadPoolExecutor(max_workers=len(candidates)) as executor:
@@ -204,10 +206,10 @@ def _parse_candidates(
 
     raw_candidates = payload.get("candidates")
     if not isinstance(raw_candidates, list):
-        return [], ["candidates는 배열이어야 함"]
+        return [], ["candidates must be an array"]
     errors: list[str] = []
     if len(raw_candidates) != CANDIDATE_COUNT:
-        errors.append(f"candidates는 정확히 {CANDIDATE_COUNT}개여야 함")
+        errors.append(f"candidates must contain exactly {CANDIDATE_COUNT} items")
     valid_segment_ids = {
         str(item.get("id"))
         for item in segments.get("segments", [])
@@ -216,7 +218,7 @@ def _parse_candidates(
     candidates: list[ContentCandidate] = []
     for index, item in enumerate(raw_candidates[:CANDIDATE_COUNT]):
         if not isinstance(item, dict):
-            errors.append(f"candidates[{index}]는 객체여야 함")
+            errors.append(f"candidates[{index}]: expected an object")
             continue
         content_type = str(item.get("content_type", "")).strip()
         title = normalize_title(str(item.get("title", "")))
@@ -224,11 +226,11 @@ def _parse_candidates(
         takeaway = " ".join(str(item.get("takeaway", "")).split())
         segment_ids = list(dict.fromkeys(str(value) for value in item.get("segment_ids", [])))
         if content_type not in selected_types:
-            errors.append(f"candidates[{index}].content_type이 선택 유형이 아님")
+            errors.append(f"candidates[{index}].content_type is not selected")
         if not title or not summary or not takeaway:
-            errors.append(f"candidates[{index}]의 title/summary/takeaway가 비어 있음")
+            errors.append(f"candidates[{index}]: title, summary or takeaway is empty")
         if not segment_ids or any(segment_id not in valid_segment_ids for segment_id in segment_ids):
-            errors.append(f"candidates[{index}].segment_ids가 실제 자막 구간과 맞지 않음")
+            errors.append(f"candidates[{index}].segment_ids do not match actual source segments")
         candidates.append(ContentCandidate(
             id=f"c{index + 1}",
             content_type=content_type,
@@ -237,22 +239,30 @@ def _parse_candidates(
             takeaway=takeaway,
             segment_ids=segment_ids,
         ))
+    from reels_editor.languages import text_language_error
+    for candidate in candidates:
+        problem = text_language_error(candidate.title, output_language(segments))
+        if problem:
+            errors.append(f"{candidate.id}: {problem}")
     errors.extend(_duplicate_errors(candidates))
-    errors.extend(_text_hook_errors(candidates))
+    errors.extend(_text_hook_errors(candidates, output_language(segments)))
+    from reels_editor.opening_hook import restore_opening_hook_evidence, opening_hook_errors
+    restore_opening_hook_evidence(candidates, segments)
+    errors.extend(opening_hook_errors(candidates, segments))
     return candidates, errors
 
 
-def _text_hook_errors(candidates: list[ContentCandidate]) -> list[str]:
+def _text_hook_errors(candidates: list[ContentCandidate], language="ko") -> list[str]:
     """후보 제목이 곧 릴스 제목이므로 텍스트 훅 원칙을 여기서 검증한다."""
     errors: list[str] = []
     titled = [candidate for candidate in candidates if candidate.title]
     for index, candidate in enumerate(titled):
-        hook_error = generated_title_error(candidate.title)
+        hook_error = generated_title_error(candidate.title, language=language)
         if hook_error:
-            errors.append(f"candidates[{index}].title이 {hook_error}")
+            errors.append(f"candidates[{index}].title: {hook_error}")
     if not errors and titled and all(is_declarative_sentence(c.title) for c in titled):
         errors.append(
-            "모든 title이 서술형 완결 문장임 — 최소 1개는 명사구로 끝맺을 것"
+            "At least one title must be a noun phrase rather than a complete declarative sentence"
         )
     return errors
 
@@ -267,7 +277,7 @@ def _duplicate_errors(candidates: list[ContentCandidate]) -> list[str]:
             similarity = len(signature & other) / len(union) if union else 1.0
             if similarity >= 0.72:
                 errors.append(
-                    f"후보 {other_index + 1}과 {len(signatures) + 1}의 내용이 너무 비슷함"
+                    f"Candidates {other_index + 1} and {len(signatures) + 1} are too similar"
                 )
                 break
         signatures.append(signature)

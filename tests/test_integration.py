@@ -11,7 +11,7 @@ from reels_editor.config import AppConfig
 from reels_editor.storyteller import StorylineResult
 from reels_editor.style import load_style
 
-STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
+STYLE = Path(__file__).parent.parent / "reels_editor" / "resources" / "styles" / "default.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -125,3 +125,9 @@ def test_multi_combo_render_reuses_storyline_analysis_assets(
     data = json.loads(manifest.read_text(encoding="utf-8"))
     assert len(data["outputs"]) == 3
     assert "api_key" not in json.dumps(data)
+
+
+@pytest.fixture(autouse=True)
+def isolate_low_level_compositing(monkeypatch):
+    from reels_editor import hook_effects
+    monkeypatch.setattr(hook_effects, "DEFAULT_SOUND", None)

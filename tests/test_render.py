@@ -11,7 +11,7 @@ from reels_editor import edl, render
 from reels_editor.style import load_style
 from pathlib import Path
 
-STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
+STYLE = Path(__file__).parent.parent / "reels_editor" / "resources" / "styles" / "default.yaml"
 
 
 def test_timeline_items_speed_compresses(edl_doc: dict, segments: dict) -> None:
@@ -248,7 +248,7 @@ def test_group_captions_splits_long_quote_without_unbalanced_quote_marks() -> No
 
 
 def test_group_captions_rejects_unfinished_sentence_and_open_quote() -> None:
-    with pytest.raises(ValueError, match="큰따옴표가 닫히지 않음"):
+    with pytest.raises(ValueError, match="quotation marks are not closed"):
         render.group_captions([[0.0, 1.0, '그는 "좋은 아이디어도']])
 
 
@@ -689,7 +689,7 @@ def test_overlay_regenerates_episode_image_without_mutating_original(
         )
         expected = render.render_watermark_png(style_preset.for_episode(episode), tmp_path / "expected.png")
         assert ImageChops.difference(captured[-1], Image.open(expected)).getbbox() is None
-        assert ImageChops.difference(captured[-1], Image.open(original)).getbbox() is not None
+        assert ImageChops.difference(captured[-1], Image.open(original)).getbbox() is None
     assert original.read_bytes() == original_bytes
 
 

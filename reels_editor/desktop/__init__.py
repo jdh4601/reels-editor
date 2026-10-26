@@ -1,1 +1,1 @@
-"""Desktop shell for the personal macOS app."""
+"""Desktop shell for the local macOS app."""

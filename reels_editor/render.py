@@ -130,8 +130,8 @@ def group_captions(items: list[list], max_dur: float = 2.4,
     errors = captions.completeness_errors(groups)
     if errors:
         raise ValueError(
-            "자막 완결성 검사 실패 — 다음 seg_id까지 포함해 문장과 큰따옴표를 "
-            "완성해야 합니다:\n" + "\n".join(errors)
+            "Caption completeness check failed. Include adjacent segments to finish the sentence and "
+            "close quotation marks:\n" + "\n".join(errors)
         )
     display_groups: list[list] = []
     for a, b, text in captions.split_display_phrases(groups, max_chars=max_chars):
@@ -572,7 +572,7 @@ def render_watermark_png(
                fill=(255, 255, 255, style.watermark_opacity))
         _wl, watermark_top, _wr, _wb = _ink_bbox(d, style.watermark_text, font)
         watermark_ink_top = watermark_origin[1] + watermark_top
-    if style.episode_text:
+    if style.show_episode and style.episode_text:
         episode_font = ImageFont.truetype(str(style.episode_font or style.watermark_font), style.episode_size)
         _el, episode_top, _er, episode_bottom = _ink_bbox(
             d,
@@ -671,11 +671,11 @@ def verify_render_output(
 ) -> None:
     """Final gate for generated MP4s before exposing them as ready."""
     if not video_path.is_file() or video_path.stat().st_size == 0:
-        raise RuntimeError("최종 영상 검수 실패: 출력 MP4가 비어 있음")
+        raise RuntimeError("Final video verification failed: output MP4 is empty")
     width, height = _probe_size(video_path)
     if (width, height) != expected_size:
         raise RuntimeError(
-            f"최종 영상 검수 실패: 해상도 {width}x{height}, 기대값 {expected_size[0]}x{expected_size[1]}"
+            f"Final video verification failed: resolution {width}x{height}, expected {expected_size[0]}x{expected_size[1]}"
         )
     duration = float(processes.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -684,7 +684,7 @@ def verify_render_output(
     ).stdout.strip())
     if abs(duration - expected_duration_s) > 1.0:
         raise RuntimeError(
-            f"최종 영상 검수 실패: 길이 {duration:.1f}초, 기대값 {expected_duration_s:.1f}초"
+            f"Final video verification failed: duration {duration:.1f} seconds, expected {expected_duration_s:.1f} seconds"
         )
     audio = processes.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
@@ -693,14 +693,14 @@ def verify_render_output(
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     if audio != "audio":
-        raise RuntimeError("최종 영상 검수 실패: 오디오 트랙이 없음")
+        raise RuntimeError("Final video verification failed: no audio track")
 
 
 def _ffmpeg(args: list[str]) -> None:
     r = processes.run(["ffmpeg", "-y", "-loglevel", "error", *args],
                       capture_output=True, text=True)
     if r.returncode != 0:
-        raise RuntimeError(f"ffmpeg 실패:\n{r.stderr}")
+        raise RuntimeError(f"FFmpeg failed:\n{r.stderr}")
 
 
 @dataclass(frozen=True)
@@ -843,7 +843,7 @@ def _ffmpeg_progress(args: list[str], total_s: float,
         proc.wait()
         stderr_thread.join()
         if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg 실패:\n{''.join(stderr_chunks)}")
+            raise RuntimeError(f"FFmpeg failed:\n{''.join(stderr_chunks)}")
     finally:
         registry = processes.current_registry()
         if registry is not None:
@@ -1004,7 +1004,7 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
     )
     effect = assets.hook_effect
     if effect and not single_pass:
-        raise ValueError("훅 줌인은 원본과 크롭 필터가 있는 렌더 자산이 필요합니다.")
+        raise ValueError("Opening zoom requires render assets with source and crop filters.")
     filt2, last = build_overlay_filter(
         n_static=2,
         groups=groups,
@@ -1017,7 +1017,7 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
     sound_input = 3 + len(sub_pngs)
     if effect:
         if hook_effects.file_hash(Path(effect["sound_path"])) != effect["sound_sha256"]:
-            raise ValueError("훅 효과음 파일이 변경됐습니다.")
+            raise ValueError("The opening sound file has changed.")
         args += ["-i", effect["sound_path"]]
     tmp = out_path.with_name(f".{out_path.stem}.part{out_path.suffix}")
     if single_pass:

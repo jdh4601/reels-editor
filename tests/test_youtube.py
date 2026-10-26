@@ -113,7 +113,7 @@ def test_select_caption_prefers_reported_original_track_over_translation() -> No
 
 
 def test_select_caption_requires_a_youtube_provided_transcript() -> None:
-    with pytest.raises(YouTubeSourceError, match="자막이 없습니다"):
+    with pytest.raises(YouTubeSourceError, match="no accessible YouTube captions"):
         select_caption_track({"subtitles": {}, "automatic_captions": {}})
 
 

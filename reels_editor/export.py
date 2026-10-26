@@ -40,7 +40,7 @@ def export_cuts(video_path: Path, edl_doc: dict, segments: dict,
                 out_dir: Path, speed: float) -> list[Path]:
     """비트별 클립을 배속 적용해 개별 MP4로 저장한다."""
     if not 0.5 <= speed <= 2.0:
-        raise ValueError(f"speed {speed}는 ffmpeg atempo 지원 범위(0.5~2.0)를 벗어남")
+        raise ValueError(f"speed {speed} is outside the supported FFmpeg atempo range (0.5–2.0)")
     idx = {s["id"]: s for s in segments["segments"]}
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
@@ -56,7 +56,7 @@ def export_cuts(video_path: Path, edl_doc: dict, segments: dict,
              "-c:a", "aac", str(p)],
             capture_output=True, text=True)
         if r.returncode != 0:
-            raise RuntimeError(f"컷 추출 실패 ({p.name}):\n{r.stderr}")
+            raise RuntimeError(f"Cut extraction failed ({p.name}):\n{r.stderr}")
         paths.append(p)
     return paths
 

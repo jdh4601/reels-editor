@@ -64,6 +64,7 @@ class FakeService:
         provider: str | None = None,
         model: str | None = None,
         episode_number: int = 1,
+        output_language: str = "ko",
     ) -> Job:
         self.youtube_start_args = {
             "youtube_url": youtube_url,
@@ -74,6 +75,7 @@ class FakeService:
         }
         assert self.job is not None
         self.job.source_url = youtube_url
+        self.job.output_language = output_language
         self.job.episode_number = episode_number
         self.job.provider = provider
         self.job.model = model
@@ -128,7 +130,7 @@ class FakeService:
         }
         assert self.job is not None
         story = next(item for item in self.job.storylines if item.id == storyline_id)
-        story.instagram_caption = "Ep 1. 첫 고객을 만든 방법\n\n본문\n\n질문?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
+        story.instagram_caption = "Ep 1. 첫 고객을 만든 방법\n\n본문\n\n질문?\n\n원문 출처를 확인하세요."
         return self.job
 
     def update_storyline_title(
@@ -788,7 +790,7 @@ def test_caption_note_request_saves_visible_caption_instead_of_stale_server_copy
     )
 
     assert response.status_code == 200
-    assert response.json() == {"saved": True, "folder": "릴스 캡션"}
+    assert response.json() == {"saved": True, "folder": "Reel captions"}
     assert notes.saved_notes == [("화면의 새 제목", "화면의 새 제목\n\n새 첫 문단\n\n새 두 번째 문단\n\n🎥 채널")]
 
 
@@ -810,7 +812,7 @@ def test_caption_note_request_reports_notes_failure(tmp_path: Path) -> None:
         media_dir=tmp_path,
         job_service=service,
         session_token="secret",
-        notes_provider=FakeNotesProvider(error="메모 자동화 권한이 필요합니다."),
+        notes_provider=FakeNotesProvider(error="Notes automation permission required."),
     )
 
     response = TestClient(app).post(
@@ -818,7 +820,7 @@ def test_caption_note_request_reports_notes_failure(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "메모 자동화 권한이 필요합니다."
+    assert response.json()["detail"] == "Notes automation permission required."
 
 
 def test_export_request_passes_requested_subtitle_state(tmp_path: Path) -> None:
@@ -879,7 +881,7 @@ def test_batch_export_request_passes_multiple_storylines_and_folder(tmp_path: Pa
     assert dialogs.opened_directories == [my_drive / "릴스(에피소드)" / "에피소드1_창업자"]
 
 
-def test_batch_export_requires_connected_google_drive(tmp_path: Path) -> None:
+def test_batch_export_uses_local_folder_without_google_drive(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "jobs")
     job = store.create_job()
     service = FakeService(store, job)
@@ -896,9 +898,8 @@ def test_batch_export_requires_connected_google_drive(tmp_path: Path) -> None:
         json={"storyline_ids": ["s1"]},
     )
 
-    assert response.status_code == 400
-    assert "Google Drive" in response.json()["detail"]
-    assert service.batch_export_args is None
+    assert response.status_code == 200
+    assert service.batch_export_args["destination_dir"] == tmp_path / "archive"
 
 
 def test_google_drive_settings_persist_exact_selected_folder(tmp_path: Path) -> None:

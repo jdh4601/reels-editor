@@ -1,6 +1,8 @@
 """LLM(claude -p) 1회 호출로 EDL 대본 생성. 검증 실패는 피드백 재시도 최대 2회."""
 from __future__ import annotations
 
+from reels_editor.languages import language_instruction, output_language, translation_required
+
 import json
 import re
 import subprocess
@@ -21,10 +23,10 @@ from reels_editor.title_rules import (
     normalize_title,
 )
 
-PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "storytelling-30s.md"
-TEXT_HOOK_PATH = Path(__file__).parent.parent / "prompts" / "text-hook-principles.md"
+PROMPT_PATH = Path(__file__).parent / "resources" / "prompts" / "storytelling-30s.md"
+TEXT_HOOK_PATH = Path(__file__).parent / "resources" / "prompts" / "text-hook-principles.md"
 SUBTITLE_TRANSLATION_PATH = (
-    Path(__file__).parent.parent / "prompts" / "subtitle-translation-principles.md"
+    Path(__file__).parent / "resources" / "prompts" / "subtitle-translation-principles.md"
 )
 DEFAULT_SPEED = 1.2
 MAX_RETRIES = 2
@@ -70,16 +72,16 @@ def speaker_name_known(value: str) -> bool:
 
 
 ANGLES: list[tuple[str, str]] = [
-    ("정면승부형", "창업가가 즉시 공감할 현실적인 문제나 결정 한 가지를 훅부터 직진으로 전개한다."),
+    ("정면승부형", "시청자가 즉시 공감할 현실적인 문제나 결정 한 가지를 훅부터 직진으로 전개한다."),
     ("반전형", "예상을 뒤집는 실패담·솔직한 고백·웃긴 순간을 찾아 반전 문장을 축으로 전개한다."),
-    ("감정선형", "불안·좌절·확신처럼 창업가가 겪는 감정 변화와 버틴 이유를 축으로 전개한다."),
+    ("감정선형", "불안·좌절·확신처럼 시청자가 겪는 감정 변화와 버틴 이유를 축으로 전개한다."),
 ]
 
 _SCHEMA = json.dumps({
     "story": {"five_lines": {"situation": "…", "desire": "…", "conflict": "…",
                              "change": "…", "result": "…"}, "lens": "…"},
     "speaker": {
-        "name": "한국어 이름",
+        "name": "화자 이름",
         "company": "근거에 직접 나온 기업명 또는 빈 문자열",
         "role": "창업자 또는 CEO 또는 빈 문자열",
         "alternate_role": "투자자/연쇄 창업가 등 근거에 직접 나온 대체 역할 또는 빈 문자열",
@@ -87,7 +89,7 @@ _SCHEMA = json.dumps({
     },
     "title_candidates": [{"text": "…", "keyword": "…"}],
     "subtitle_keywords": ["…"],
-    "subtitle_translations": {"seg_id": "자연스러운 한국어 번역"},
+    "subtitle_translations": {"seg_id": "출력 언어 번역"},
     "cuts": [{"beat": "훅", "seg_ids": ["seg_id"], "broll_marker": None}],
 }, ensure_ascii=False, indent=2)
 
@@ -107,25 +109,15 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
         f"- [{_timestamp(s.get('source_start_us', 0))}] {s['id']}: {s['text']}"
         for s in segments["segments"]
     )
-    fb = f"\n## 수정 피드백 (반드시 반영)\n{feedback}\n" if feedback else ""
-    ab = f"\n## 스토리 각도 (이 각도로만)\n{angle}\n" if angle else ""
-    language = str(segments.get("transcript_language", "")).lower()
-    if language.startswith("en"):
-        translation = (
-            "\n## 영어 원문 → 한국어 릴스\n"
-            "- 구간 선정과 의미 판단은 영어 원문으로 한다.\n"
-            "- 선택한 모든 seg_id를 subtitle_translations에 빠짐없이 넣고, 값은 짧고 자연스러운 한국어 자막으로 번역한다.\n"
-            "- 숫자·고유명사·사실관계를 보존하고 원문에 없는 내용을 추가하지 않는다.\n"
-            "- title_candidates 3개와 subtitle_keywords는 한국어로 쓴다.\n"
-            + subtitle_translation_principles()
-            + "\n"
-        )
+    fb = f"\n## Required correction feedback\n{feedback}\n" if feedback else ""
+    ab = f"\n## Script angle (use only this angle)\n{angle}\n" if angle else ""
+    translation = language_instruction(segments)
+    if translation_required(segments):
+        translation += "\nInclude subtitle_translations for EVERY selected seg_id in the output language.\n"
     else:
-        translation = (
-            "\n## 릴스 언어\n"
-            "- title_candidates 3개는 한국어로 쓴다.\n"
-            "- 영어 원문이 아니면 subtitle_translations는 빈 객체로 둔다.\n"
-        )
+        translation += "\nSource and output language match: keep subtitle_translations empty and use source text verbatim.\n"
+    if output_language(segments) == "ko":
+        translation += subtitle_translation_principles()
     source_title = " ".join(str(segments.get("source_title") or "").split())
     source_channel = " ".join(str(segments.get("source_channel") or "").split())
     source_description = " ".join(str(segments.get("source_description") or "").split())
@@ -146,12 +138,12 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
         source_context = ""
     maximum_s = max_duration_s if max_duration_s is not None else maximum_duration_s(duration_s)
     duration_rule = (
-        f"완성 영상은 반드시 {min_duration_s}~{maximum_s}초 사이여야 한다. "
-        f"목표는 {duration_s}초이며, 원문 소스 길이 합은 최대 {round(maximum_s * speed)}초다."
+        f"The finished video must be between {min_duration_s}~{maximum_s} seconds. "
+        f"The target is {duration_s} seconds; maximum original source duration: {round(maximum_s * speed)} seconds."
         if min_duration_s > 0
         else (
-            f"완성 영상은 절대 {maximum_s}초를 넘지 않는다. "
-            f"원문 소스 길이 합은 최대 {round(maximum_s * speed)}초다."
+            f"The finished video must not exceed {maximum_s} seconds. "
+            f"Maximum original source duration: {round(maximum_s * speed)} seconds."
         )
     )
     if not enforce_duration:
@@ -174,7 +166,7 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
 def extract_json(text: str) -> dict:
     a, b = text.find("{"), text.rfind("}")
     if a < 0 or b <= a:
-        raise ValueError("응답에서 JSON 객체를 찾지 못함")
+        raise ValueError("No JSON object was found in the response")
     candidate = text[a:b + 1]
     try:
         return json.loads(candidate)
@@ -215,20 +207,20 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
     """
     candidates = doc.get("title_candidates")
     if not isinstance(candidates, list) or len(candidates) != 3:
-        return ["title_candidates는 정확히 3개여야 함"]
+        return ["title_candidates must contain exactly three items"]
     errors: list[str] = []
     declarative_count = 0
     for i, candidate in enumerate(candidates):
         if not isinstance(candidate, dict):
-            errors.append(f"title_candidates[{i}]: 객체여야 함")
+            errors.append(f"title_candidates[{i}]: expected an object")
             continue
         text = normalize_title(str(candidate.get("text", "")))
         if not text:
-            errors.append(f"title_candidates[{i}].text 비어있음")
+            errors.append(f"title_candidates[{i}].text is empty")
             continue
         hook_error = generated_title_error(text)
         if hook_error:
-            errors.append(f"title_candidates[{i}].text가 {hook_error}")
+            errors.append(f"title_candidates[{i}].text: {hook_error}")
         if is_declarative_sentence(text):
             declarative_count += 1
         keyword = str(candidate.get("keyword", "")).strip()
@@ -236,8 +228,7 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
         candidate["keyword"] = keyword if keyword and keyword in text else ""
     if not errors and declarative_count == len(candidates):
         errors.append(
-            "title_candidates 3개가 모두 서술형 완결 문장임 — "
-            "최소 1개는 명사구로 끝맺을 것"
+            "At least one title candidate must be a noun phrase rather than a complete declarative sentence"
         )
     return errors
 
@@ -347,7 +338,7 @@ def validate_and_normalize_speaker(doc: dict[str, Any], segments: dict[str, Any]
     )
     if not isinstance(speaker, dict):
         if source_context_available:
-            return ["speaker는 name과 role을 가진 객체여야 함"]
+            return ["speaker must be an object containing name and role"]
         doc["speaker"] = {"name": "인터뷰 화자", "role": ""}
         return []
     name = " ".join(str(speaker.get("name") or "").split())
@@ -406,9 +397,9 @@ def _run_claude(prompt: str) -> str:
         r = processes.run(["claude", "-p", prompt], capture_output=True, text=True,
                            timeout=600)
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"claude -p 타임아웃(600초): {e}") from e
+        raise RuntimeError(f"claude -p timed out (600 seconds): {e}") from e
     if r.returncode != 0:
-        raise RuntimeError(f"claude -p 실패:\n{r.stderr}")
+        raise RuntimeError(f"claude -p failed:\n{r.stderr}")
     return r.stdout
 
 
@@ -444,9 +435,9 @@ def generate_script(segments: dict, duration_s: int = 30,
         try:
             doc = extract_json(last_raw)
         except (ValueError, json.JSONDecodeError) as e:
-            last_problem = f"JSON 파싱 실패: {e}"
+            last_problem = f"JSON parsing failed: {e}"
             feedback = (
-                f"이전 응답이 JSON 파싱에 실패했다: {e}. "
+                f"The previous response was not valid JSON: {e}. "
                 "모든 JSON 키와 문자열의 시작·끝 구분자는 반드시 ASCII 큰따옴표(\")를 쓰고, "
                 "문자열 안의 큰따옴표는 \\\"로 이스케이프한 유효한 JSON 하나만 출력할 것."
             )
@@ -491,28 +482,27 @@ def generate_script(segments: dict, duration_s: int = 30,
                 actual_duration = edl_mod.estimate_duration_s(doc, segments, speed)
             if min_duration_s > 0 and actual_duration < min_duration_s:
                 errs.append(
-                    f"완성 길이 {actual_duration:.1f}초가 최소 {min_duration_s}초보다 짧음 — 완결된 인접 seg_ids를 추가할 것"
+                    f"Finished duration {actual_duration:.1f} seconds is below the minimum {min_duration_s} seconds; include complete adjacent source segments"
                 )
             if actual_duration > maximum_s:
                 errs.append(
-                    f"완성 길이 {actual_duration:.1f}초가 최대 {maximum_s}초를 초과함 — seg_ids를 줄일 것"
+                    f"Finished duration {actual_duration:.1f} seconds exceeds the maximum {maximum_s} seconds; use fewer source segments"
                 )
         if not errs:
             doc.setdefault("selected_title", 0)
             return doc
         last_problem = "; ".join(errs)
-        feedback = ("이전 EDL이 검증에 실패했다. 다음 오류를 고쳐라 "
-                    f"(title_candidates는 정확히 3개이며 각각 공백 제외 {TWO_LINE_MIN_CHARS}~{MAX_TITLE_CHARS}자의 "
-                    "스타카토 텍스트 훅, seg_ids는 SEGMENTS의 id만, "
-                    "영어 원문이면 선택한 모든 seg_id의 한국어 subtitle_translations 포함, "
-                    "자막은 큰따옴표를 닫은 완전한 문장 단위, "
-                    "verbatim 유지):\n" + "\n".join(errs))
+        feedback = ("The previous EDL failed validation. Correct the errors below. "
+                    f"Provide exactly three title_candidates with {TWO_LINE_MIN_CHARS}~{MAX_TITLE_CHARS} visible characters. "
+                    "Use only actual SEGMENTS IDs. If source and output languages differ, include translations "
+                    "for every selected segment in the requested output language. Preserve complete utterances, "
+                    "closed quotations and original speech.\n" + "\n".join(errs))
     hint = ""
     if raw_dump is not None:
         raw_dump.parent.mkdir(parents=True, exist_ok=True)
         raw_dump.write_text(last_raw, encoding="utf-8")
-        hint = f" (원문 응답 저장됨: {raw_dump})"
-    raise RuntimeError(f"대본 생성 3회 실패{hint} — 마지막 오류: {last_problem}")
+        hint = f" (raw response saved: {raw_dump})"
+    raise RuntimeError(f"Script generation failed after 3 attempts{hint} — last error: {last_problem}")
 
 
 def _timestamp(source_start_us: Any) -> str:
@@ -527,12 +517,12 @@ def _timestamp(source_start_us: Any) -> str:
 
 def validate_subtitle_translations(doc: dict[str, Any], segments: dict[str, Any]) -> list[str]:
     language = str(segments.get("transcript_language", "")).lower()
-    if not language.startswith("en"):
-        doc.setdefault("subtitle_translations", {})
+    if not translation_required(segments):
+        doc["subtitle_translations"] = {}
         return []
     translations = doc.get("subtitle_translations")
     if not isinstance(translations, dict):
-        return ["영어 원문의 subtitle_translations는 객체여야 함"]
+        return ["subtitle_translations must be an object"]
     selected_ids = {
         str(segment_id)
         for cut in doc.get("cuts", [])
@@ -541,7 +531,7 @@ def validate_subtitle_translations(doc: dict[str, Any], segments: dict[str, Any]
     }
     missing = [segment_id for segment_id in sorted(selected_ids) if not str(translations.get(segment_id, "")).strip()]
     if missing:
-        return ["한국어 번역이 없는 선택 세그먼트: " + ", ".join(missing)]
+        return ["Selected segments missing an output-language translation: " + ", ".join(missing)]
     doc["subtitle_translations"] = {
         str(segment_id): str(text).strip()
         for segment_id, text in translations.items()
@@ -552,18 +542,17 @@ def validate_subtitle_translations(doc: dict[str, Any], segments: dict[str, Any]
 
 def validate_caption_completeness(doc: dict[str, Any], segments: dict[str, Any]) -> list[str]:
     """영어 인터뷰의 한국어 자막이 완결 문장으로 끝나는지 렌더 전에 검사한다."""
-    language = str(segments.get("transcript_language", "")).lower()
-    if not language.startswith("en"):
+    if not translation_required(segments):
         return []
     translations = doc.get("subtitle_translations", {})
     if not isinstance(translations, dict):
         return []
     selected_texts = [
-        str(translations.get(segment_id, "")).strip()
+        str(translations.get(segment_id, next((row["text"] for row in segments["segments"] if row["id"] == segment_id), ""))).strip()
         for cut in doc.get("cuts", [])
         if isinstance(cut, dict)
         for segment_id in cut.get("seg_ids", [])
-        if str(translations.get(segment_id, "")).strip()
+        if any(row["id"] == segment_id for row in segments["segments"])
     ]
     items = [[float(index), float(index + 1), text]
              for index, text in enumerate(selected_texts)]
@@ -584,8 +573,7 @@ def validate_caption_continuity(doc: dict[str, Any], segments: dict[str, Any]) -
     간격만으로는 생략된 맞장구·필러와 실제 맥락 누락을 구별할 수 없으므로,
     이를 기계적으로 실패 처리하지 않는다.
     """
-    language = str(segments.get("transcript_language", "")).lower()
-    if not language.startswith("en"):
+    if not translation_required(segments):
         return []
     translations = doc.get("subtitle_translations", {})
     if not isinstance(translations, dict):
@@ -602,17 +590,17 @@ def validate_caption_continuity(doc: dict[str, Any], segments: dict[str, Any]) -
         known_positions = [positions[segment_id] for segment_id in ids if segment_id in positions]
         if not known_positions:
             continue
-        first_text = str(translations.get(ids[0], "")).strip()
+        first_text = str(translations.get(ids[0], segments["segments"][known_positions[0]]["text"])).strip()
         starts_dependent = bool(_CONTEXT_DEPENDENT_OPENER_RE.match(first_text))
         starts_without_subject = bool(_CONTEXTLESS_FIRST_CAPTION_RE.match(first_text))
         if cut_index == 1 and starts_without_subject:
             errors.append(
-                f"cut {cut_index}: 첫 자막 '{first_text[:24]}'에서 주제가 빠져 무엇의 효과·"
+                f"cut {cut_index}: the first caption '{first_text[:24]}'에서 주제가 빠져 무엇의 효과·"
                 "결과·문제인지 알 수 없음 — 주제와 대상이 포함된 자립적인 첫 문장을 선택할 것"
             )
         elif cut_index == 1 and starts_dependent:
             errors.append(
-                f"cut {cut_index}: 첫 자막이 '{first_text[:24]}'로 시작해 앞에 생략된 "
+                f"cut {cut_index}: the first caption starts with '{first_text[:24]}'로 시작해 앞에 생략된 "
                 "맥락에 의존함 — 주제·주체·핵심 행동이 드러나는 독립적인 첫 문장을 선택할 것"
             )
     return errors

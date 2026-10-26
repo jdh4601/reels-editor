@@ -36,9 +36,9 @@ def test_invalid_title_lengths_are_rejected(text: str) -> None:
 
 
 def test_generated_titles_must_fill_two_lines() -> None:
-    with pytest.raises(ValueError, match="두 줄 표시를 위해 최소 12자"):
+    with pytest.raises(ValueError, match="at least 12 characters"):
         validate_generated_title("짧지만 유효한 제목")
-    with pytest.raises(ValueError, match="3어절 이상"):
+    with pytest.raises(ValueError, match="3 words"):
         validate_generated_title("가" * 12)
 
     title = validate_generated_title("마케팅은 훌륭한데 망하는 브랜드의 특징")

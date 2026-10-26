@@ -58,12 +58,12 @@ fails; they usually show the problem immediately.
 | `reels_editor/desktop/` | FastAPI server and the packaged dashboard assets |
 | `desktop/ui/` | Dashboard source (React + Vite); builds into `reels_editor/desktop/ui/` |
 | `desktop/pyinstaller/` | macOS `.app` bundling |
-| `prompts/` | Prompt templates sent to the model |
+| `reels_editor/resources/prompts/` | Prompt templates sent to the model |
 | `tests/` | Pytest suite, mirroring the module layout |
 
-`prompts/` is worth knowing about: prompt text is data, not code. If you are
+`reels_editor/resources/prompts/` is worth knowing about: prompt text is data, not code. If you are
 changing what the model writes, the edit usually belongs in a `.md` file there
-rather than in Python. `prompts/text-hook-principles.md` is shared by both the
+rather than in Python. `reels_editor/resources/prompts/text-hook-principles.md` is shared by both the
 candidate-analysis and script-generation prompts, so a change there affects
 every generated title.
 
@@ -76,7 +76,7 @@ Match the surrounding code rather than importing a new style.
 - Python is typed and formatted in the style already in the tree: type hints on
   signatures, `pathlib.Path` over `os.path`, guard clauses over deep nesting.
 - TypeScript runs under `strict`. No `any`.
-- User-facing strings in the app are Korean. Code, comments, commit messages,
+- User-facing interface strings in the app are English. Generated content follows the selected output language. Code, comments, commit messages,
   and this documentation are English.
 - New behavior needs a test. Write the failing test first when you can.
 
@@ -92,3 +92,7 @@ rendering, the three-job limit, scoped WebSocket updates, tab reset/close, and
 compact desktop layout. Screenshots go to `desktop/ui/test-results/parallel-*.png`.
 If Playwright Chromium is unavailable, use an installed Chrome with
 `REELS_TEST_BROWSER_CHANNEL=chrome npm run test:parallel`.
+
+## Verification changes
+
+Keep the fail-closed contract in [docs/verification.md](docs/verification.md). Test language propagation and cached-source reuse independently. Never add a fallback that labels unreviewed bytes ready. Package all runtime resources; tests must not depend on a sibling repository or a private font installation.

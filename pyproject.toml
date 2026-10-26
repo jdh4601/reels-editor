@@ -1,7 +1,7 @@
 [project]
 name = "reels-editor"
-version = "0.1.0"
-description = "Turn long-form founder interviews on YouTube into vertical short-form reels, on your own machine"
+version = "0.2.0"
+description = "Turn long-form YouTube videos into verified vertical reels, on your own machine"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -55,3 +55,4 @@ include = ["reels_editor*"]
 
 [tool.setuptools.package-data]
 "reels_editor.desktop" = ["ui/**/*"]
+"reels_editor" = ["resources/**/*"]

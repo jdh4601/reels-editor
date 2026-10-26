@@ -37,11 +37,11 @@ def _fetch(url: str, *, image: bool = False) -> tuple[bytes, str]:
     with build_opener(_PublicRedirect()).open(Request(url, headers={'User-Agent': 'Mozilla/5.0 ReelsEditor/0.1'}), timeout=15) as response:
         mime = response.headers.get('Content-Type', '').lower()
         if not (mime.startswith('image/') if image else 'text/html' in mime):
-            raise ValueError('사진 또는 출처 페이지의 형식이 올바르지 않습니다.')
+            raise ValueError("Invalid photo or source-page format.")
         limit = 12_000_000 if image else 2_000_000
         data = response.read(limit + 1)
         if len(data) > limit:
-            raise ValueError('사진 또는 출처 페이지가 너무 큽니다.')
+            raise ValueError("The photo or source page is too large.")
         return data, response.headers.get_content_charset() or 'utf-8'
 
 
@@ -63,7 +63,7 @@ def find_photos(speaker: dict, context: dict, directory: Path, *, runner=None, f
     try:
         entries = extract_json((runner or build_speaker_search_runner())(prompt)).get('photos', [])
         if not isinstance(entries, list):
-            raise ValueError('검색 사진 응답 형식이 올바르지 않습니다.')
+            raise ValueError("Invalid photo-search response format.")
         directory.mkdir(parents=True, exist_ok=True)
         for entry in entries[:4]:
             try:
@@ -81,11 +81,11 @@ def find_photos(speaker: dict, context: dict, directory: Path, *, runner=None, f
                 text, urls = pages[page]
                 evidence, source_name = str(entry['evidence']), str(entry['source_name'])
                 if not evidence.strip() or not source_name.strip() or _text(evidence) not in _text(text) or not _source_matches_person(source_name, text, context, speaker) or url not in urls:
-                    raise ValueError('출처에서 인물과 사진 URL을 확인하지 못했습니다.')
+                    raise ValueError("The person and photo URL could not be verified in the source.")
                 data, _ = fetch(url, image=True)
                 with Image.open(io.BytesIO(data)) as original:
                     if original.width * original.height > 30_000_000 or min(original.size) < 400:
-                        raise ValueError('썸네일용 사진 해상도가 적절하지 않습니다.')
+                        raise ValueError("The photo resolution is unsuitable for a cover.")
                     image = ImageOps.exif_transpose(original).convert('RGB')
                 path = directory / f'photo-{len(photos) + 1}.jpg'
                 image.save(path, 'JPEG', quality=95)

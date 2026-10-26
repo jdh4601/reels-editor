@@ -1,332 +1,166 @@
 <div align="center">
-
-<img src="docs/images/icon.png" alt="Reels Editor" width="128">
+<img src="docs/images/icon.png" alt="Reels Editor" width="112">
 
 # Reels Editor
 
-**Turn a one-hour founder interview into short-form reels — on your own machine.**
+**Turn long-form YouTube videos into vertical short-form reels, on your own machine.**
+
+[한국어](README.ko.md) · **English** · [简体中文](README.zh-CN.md)
 
 [![CI](https://github.com/jdh4601/reels-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/jdh4601/reels-editor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![Platform: macOS](https://img.shields.io/badge/Platform-macOS-lightgrey.svg)](#requirements)
-
-[한국어 README](README.ko.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
-
 </div>
 
----
+Paste a captioned YouTube video, review ten transcript-backed clip ideas, and generate the ones you choose. Reels Editor cuts the original footage into 1080×1920 videos, adds titles and translated subtitles, aligns them to measured speech, and checks the finished MP4 before making it available for export.
 
-Paste a YouTube interview. The app reads the transcript, proposes ten reel ideas
-that do not overlap, and renders only the ones you pick as 9:16 videos with
-Korean subtitles and a hook title across the top. A focused review workspace
-then lets you preview each reel, revise or regenerate its title, create its
-Instagram caption, and choose exactly which finished videos to export.
+It is a focused local reel generator. You do not need a private workspace, company assets, or a Google Drive account.
 
-Each reel also gets an automatic 1080×1920 JPG cover: a portrait crop of an
-interview scene, a white two-line headline, and a D.one logo. An orange
-Bold-font label above the headline shows the actual episode as `Episode 14`,
-and a black gradient fades up from the bottom. The editor
-shows the cover alongside the editing controls. Title edits update the cover,
-and exports regenerate the cover with the current template and include a matching
-JPG alongside each MP4, including previously rendered videos.
+## What changed in 0.2
 
-Video processing runs locally. Transcript text is sent to the model provider
-you configure for analysis, titles, and captions. Google Drive exports and
-iCloud Notes saves use the sync services you explicitly select.
-
-## Why this exists
-
-Cutting short-form clips out of a long interview is mostly judgment, not
-editing. You watch an hour looking for the ninety seconds that are worth
-sharing, and by the time you find them you still have to cut, subtitle, and
-title them.
-
-This tool splits that in two. It does the reading and proposes candidates with
-evidence — each one points at the exact transcript segments that back it — and
-you make the call about which ones are worth making. Then it does the cutting.
-
-## What makes it different
-
-**Nothing is paraphrased.** Subtitles are the source transcript, verbatim. The
-model may delete and reorder segments; it may not rewrite a single ending or
-particle. If a quote opens, the cut runs through the segment that closes it. Titles and Instagram captions are generated separately from the source dialogue.
-
-**Candidates carry their evidence.** Each of the ten proposals names the
-transcript segments it is built from, so a claim can be checked before you spend
-a render on it.
-
-**Titles are text hooks, not summaries.** The ten generated candidates must use
-12–24 visible characters and at least three naturally spaced Korean words, so
-they stay specific and readable instead of collapsing into short, unspaced
-phrases. The rules live in
-[`prompts/text-hook-principles.md`](prompts/text-hook-principles.md) and are
-enforced in validation — a title that misses the contract is sent back for a rewrite.
-
-**Two-line titles have a clear hierarchy.** The first line is a smaller white
-setup; the second line stays large and orange as the actual hook.
-
-**Framing stays deliberate.** On macOS, Apple Vision detects faces and mouth
-movement locally. A one-person shot always keeps the crop centered. A
-two-person shot may move toward the active speaker, but horizontal framing is
-limited to three stable anchors: left edge, center, or right edge. This avoids
-the distracting side-to-side drift of continuous face tracking.
-
-**Review is part of the workflow.** Finished reels open one at a time in a
-portrait player with keyboard navigation. You can inspect the story structure,
-edit both title lines, ask the configured model for a fresh title, regenerate
-the Instagram caption, and select only approved reels for export.
-
-**Matching covers on every export.** Single and batch exports regenerate the
-cover with the current template, including for previously rendered reels. Each
-MP4 is accompanied by a JPG with the same filename stem.
-
-**Editable founder and episode details.** Change a reel’s name, role, and episode
-number without rerunning candidate analysis. The video overlay and cover update
-together; the cover shows the episode number above its headline.
-
-**Your model, your choice.** Codex CLI, Claude Code CLI, Gemini CLI, the OpenAI API, Kimi,
-or any OpenAI-compatible server.
+- The latest speech-alignment and independent review pipeline now runs in the standalone app.
+- Opening quotations must match consecutive source captions. Original statements, numbers, negation and context must survive editing.
+- Opening zoom and a bundled wind sound follow a measured emphasis word; their application is checked in the actual output.
+- **한국어 / English / 简体中文** output options control generated titles, subtitles and captions. Language is saved per job and retained through retries; analysis caches distinguish languages. Chinese titles do not require artificial spaces.
+- Title and subtitle overlay edits require another final review. Exports check the approved MP4 hash again, including the copied file.
+- Videos and thumbnails contain no bottom logo or episode-number overlay.
+- A neutral template, an openly licensed CJK font, and self-contained package resources replace private branding and machine-specific assets.
+- Local export works without cloud storage. A failed cover does not discard a verified MP4.
 
 ## Requirements
 
-macOS, plus:
+The complete generation pipeline currently targets **Apple silicon macOS**. Local word timing uses MLX Whisper; the native desktop shell and face detection also use macOS APIs. Python tests and the UI build can run on Linux, but that does not establish Linux or Windows runtime support.
 
-| Tool | Why | Install |
-| --- | --- | --- |
-| Python 3.11+ | Runs the app | [python.org](https://www.python.org/downloads/) |
-| ffmpeg, ffprobe | Cuts and renders the video | `brew install ffmpeg` |
-| Node.js and npm | Builds the desktop UI | Required when installing from source |
-| A model provider | Reads the transcript, writes the plan | see [Model providers](#model-providers) |
+| Requirement | Purpose |
+| --- | --- |
+| Python 3.11+ | Backend and local video pipeline |
+| Node.js 22.13+ and npm | Build the React desktop UI |
+| FFmpeg and FFprobe | Decode, render and inspect media |
+| Authenticated Codex CLI | Subtitle alignment and bounded repairs |
+| Authenticated Claude Code CLI with Opus access | Independent final review |
+| Internet connection | YouTube captions/media, model requests, first ASR model download |
 
-The D.one title, subtitle, and logo assets used by the default style are bundled
-with the repository; no separate font installation is required.
+A configured generator can use Codex, Claude, Gemini, OpenAI or Kimi. **The verification layer still requires Codex and Claude/Opus**, regardless of the generation provider. Authentication, capacity and provider usage charges depend on your own accounts. Review errors are not silently bypassed or replaced with a different model.
 
-Verify before continuing:
-
-```bash
-python3 --version && ffmpeg -version | head -1 && ffprobe -version | head -1
-```
-
-## Install
+## Install and run
 
 ```bash
+brew install ffmpeg
+
 git clone https://github.com/jdh4601/reels-editor.git
 cd reels-editor
-
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 
-cd desktop/ui && npm install && npm run build && cd ../..
+npm ci --prefix desktop/ui
+npm run build --prefix desktop/ui
 ```
 
-Set up a model provider — Codex CLI is the default:
+Install and authenticate the two verification CLIs if they are not already available:
 
 ```bash
-npm install -g @openai/codex
+npm install -g @openai/codex @anthropic-ai/claude-code
 codex login
+claude
 ```
 
-Then start the app:
+Complete Claude's interactive sign-in, then launch:
 
 ```bash
 .venv/bin/reels-editor-desktop
 ```
 
-## Using it
+The app uses a loopback server protected by a random session token. No public server or separate workspace is required. Noto Sans CJK and the procedural opening sound are bundled with the package. The ASR model downloads on first use and is cached locally.
 
-Use **New tab** (`새 탭`) to process up to three different YouTube URLs in parallel. Each tab retains its URL, episode number, candidate selections, and progress. Busy tabs can be closed after processing finishes.
+## Make a reel
 
-1. Paste the YouTube link to a long-form founder interview.
-2. Pick one or more reel types: story, strategy, failure analysis, principle.
-3. Click **후보 10개 분석** (Analyze 10 candidates). The app downloads only the
-   transcript, then proposes ten non-overlapping ideas.
-4. Select the ones worth making and click **선택한 후보로 릴스 생성**
-   (Generate selected reels). After the script is finalized, only its required video/audio sections are
-   downloaded and your picks are rendered at 20–40 seconds each.
-5. Review the finished reels with the arrow buttons or keyboard. Expand
-   **제목·이름·에피소드·캡션 수정하기** to edit the two-line on-screen title, request
-   four AI title candidates ranked with the recommended title first, inspect the story beats, or generate an Instagram caption
-   grounded in that reel's actual script. You can also edit the founder’s name,
-   role, and episode number for that reel. Captions include a 270–300 character
-   summary followed by a topic-specific comment keyword and resource CTA, with the
-   video source credit on the final line. Configure
-   that keyword and resource for the post in ManyChat. Click **아이폰 메모장에 복사** to save
-   the caption body, without its first heading line, to the `릴스 캡션` folder
-   in the Mac Notes iCloud account so it syncs to the iPhone.
-6. In settings, select the local Google Drive folder where exports should be
-   stored. Press **Space** or use the selection control to mark approved reels,
-   then click **선택 영상 내보내기** (Export selected).
+1. Paste a single YouTube video URL. The video must have accessible captions.
+2. Choose **Output language**: 한국어, English or 简体中文.
+3. Analyze ten candidates and select the clips you want to make. Each candidate carries its source segment IDs and opening quote.
+4. Generate the selected clips. Only the required source sections are downloaded after the scripts are ready. Clips complete a topic rather than being forcibly trimmed to a fixed duration.
+5. Inspect the portrait preview, title, subtitles and cover. Title or metadata edits rerender the overlay and trigger a fresh independent review.
+6. Select finished reels and export. With no Drive folder configured, output goes to a local folder under `~/Movies/Reels Editor Exports/`. A configured local Google Drive folder remains an optional destination.
 
-Exported MP4 files and matching JPG covers are saved directly in Google Drive’s existing `릴스(에피소드)` folder.
-Selecting either My Drive or `릴스(에피소드)` reuses the existing folder.
-Filename collisions add `(2)`, `(3)`, and so on to both files, preserving
-existing videos and covers. If cover generation fails, the export fails instead
-of saving a video without its cover.
-App-managed render archives and Google Drive export directories are kept
-separate. Completed reels remain available from the archive for seven days, so
-they can be reopened, revised, and exported again without starting over.
+Language selection changes generated text; it does **not** dub or replace the original speech. The interface, menus, notifications and diagnostics are in English. New jobs default to English output; you can still choose Korean or Simplified Chinese. Source quotations retain their original language. Portrait framing works best when the speaker is visible. A source with insufficient identity, speech or timing evidence may fail verification instead of receiving invented details.
 
-On the first caption save, allow Reels Editor to automate Notes. Both the Mac
-and iPhone must use the same Apple Account with iCloud Notes sync enabled.
+## The verification layer
 
-The default D.one style uses smaller video titles and subtitles. Founder and
-episode details share the same 34 px A2Z Light font; subtitles are also 34 px.
-These defaults live in [`styles/done.yaml`](styles/done.yaml), and settings
-overrides take precedence. Covers use a separate portrait layout with a bold
-orange episode label above white title lines and a fixed logo position.
-
-Final reels normalize audio to −14 LUFS with a −1.5 dBTP target and encode
-48 kHz AAC audio at 192 kbps. This also applies when rerendering an overlay.
-
-The first render crops, composites the title, subtitles, and logo, and encodes
-the final MP4 in one FFmpeg pass. Title and subtitle edits reuse the downloaded
-source, crop plan, face analysis, and generated PNG assets; no intermediate
-H.264 video is encoded and decoded again.
-
-On the reference M4 Pro, the app keeps `libx264 -preset veryfast` as the default
-because the complete 1080×1920 CPU-filtered graph benchmarked faster than
-VideoToolbox. You can compare the hardware encoder on another Mac with:
-
-```bash
-REELS_EDITOR_VIDEO_ENCODER=h264_videotoolbox .venv/bin/reels-editor-desktop
+```text
+Source captions → evidence-backed candidates → selected script
+  → source/context checks → local word timing → subtitle alignment
+  → measured opening zoom + sound → final MP4
+  → final-audio analysis + programmatic checks + independent Opus review
+       ├─ pass: bind approval to the exact MP4 hash → export
+       └─ fail/uncertain: repair → retime → rerender → review (at most 2 repairs)
 ```
 
-If VideoToolbox is unavailable at runtime, rendering retries with `libx264`.
-Final hardware encodes are serialized so multiple reel analyses can still run
-in parallel without oversubscribing Apple's video encoder.
+The final review covers topic, translation, caption timing, opening audio, opening captions, readability, framing, zoom and opening sound. Missing checks, insufficient evidence, uncertainty, machine-detected problems, and changed video bytes prevent approval. The reviewer receives actual final-video frames and audio-derived timing/signal evidence. It does not directly listen to the audio, and ASR timestamps remain estimates.
 
-### Transcripts
+Each attempt preserves its evidence, raw model response, repair and review report under `jobs/<job>/sN/quality/`. Successful approval is attached to the actual file hash. Failed clips remain retryable; other completed clips are preserved. Old jobs without a complete matching approval must be regenerated before export.
 
-The app uses YouTube's own captions and will not quietly substitute speech
-recognition. English manual captions are preferred, then English auto-generated
-ones, then whatever else the video provides. A video with no captions at all is
-rejected with an explicit error rather than a silent fallback.
+See [the verification contract](docs/verification.md) for the code paths, invariants and regression checks.
 
-For English-language sources, subtitles are translated into Korean while numbers,
-proper nouns, and factual claims are preserved.
+## Local processing and model calls
 
-## Model providers
+FFmpeg rendering, media storage, face detection and ASR run on your machine. Transcript excerpts, selected scripts and timing evidence go to the configured generation/alignment providers; final frame images and derived audio evidence go to Claude/Opus. Speaker verification or optional cover search can query public sources. This is **not a fully offline model pipeline**. There is no built-in automatic publishing step.
 
-Choose a provider in settings, or edit `~/.config/reels-editor/config.yaml`:
+| Data | Default location |
+| --- | --- |
+| Jobs, source captions, downloaded sections and review evidence | `~/Library/Application Support/reels-editor/jobs/` |
+| Source/analysis cache | `jobs/.source-cache/` |
+| User settings | `~/.config/reels-editor/config.yaml` |
+| Completed local archive | `~/Movies/Reels Editor/` |
+| Selected local exports | `~/Movies/Reels Editor Exports/` |
+
+Completed archive items remain reopenable for seven days. Do not put private media, credentials, generated jobs or review evidence into source control.
+
+Example configuration:
 
 ```yaml
 provider: codex-cli
-model: gpt-5.6-sol
-style: {}
+model: ""
+output_language: en  # ko | en | zh
+style:
+  speed: 1.2
 ```
 
-| Provider | `provider` value | Authentication |
-| --- | --- | --- |
-| OpenAI Codex CLI | `codex-cli` | `codex login` |
-| Claude Code CLI | `claude-cli` | `claude` login |
-| Google Gemini CLI | `gemini-cli` | `gemini` login |
-| OpenAI API | `openai` | `OPENAI_API_KEY` |
-| Kimi | `kimi` | `MOONSHOT_API_KEY` |
-| OpenAI-compatible server | `custom` | `REELS_LLM_API_KEY` |
+The desktop selector is authoritative for each new job. Existing jobs retain their saved output language; older jobs default to Korean. The UI remembers the last selected language for a new workspace.
 
-## Build a standalone app
+## Verified rerender and development
+
+Rerender a saved EDL using the same verification pipeline:
+
+```bash
+.venv/bin/reels-editor render path/to/workdir --title 1
+```
+
+The directory must contain `edl.json`, `segments.json` and accessible source media. This command requires the same model authentication and writes attempt evidence under `.verified-jobs/`; it reports failure if the final review cannot approve the clip.
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
+npm run typecheck --prefix desktop/ui
+npm run build --prefix desktop/ui
+npm run test:dashboard --prefix desktop/ui
+```
+
+Unit/integration tests use isolated model substitutes. The dashboard test checks three window sizes, language selection/persistence, navigation and the actual creation request. Tests do not establish that every source will pass live model review.
+
+Build a macOS app with:
 
 ```bash
 .venv/bin/pyinstaller desktop/pyinstaller/reels_editor_desktop.spec --noconfirm
 open "dist/Reels Editor.app"
 ```
 
-Install it like any other Mac app:
-
-```bash
-ditto "dist/Reels Editor.app" "/Applications/Reels Editor.app"
-```
-
-The build is unsigned and un-notarized. The first time you open it, macOS will
-refuse; Control-click the app in Finder and choose **Open**.
-
-## Where files go
-
-| What | Where |
-| --- | --- |
-| Jobs, downloaded video, transcripts, render assets and local face-analysis cache | `~/Library/Application Support/reels-editor/jobs/` |
-| Configuration | `~/.config/reels-editor/config.yaml` |
-| Desktop exports: MP4 + JPG | The selected local Google Drive `릴스(에피소드)` folder |
-| Completed reel archive | `~/Movies/Reels Editor/` (reopened in the app for seven days) |
-| Service batch exports without a destination | A per-run folder under `~/Movies/Reels Editor Exports/` |
-
-Transcripts, downloaded sections and candidate analyses are shared in
-`jobs/.source-cache/`, keyed by video ID across URL variants and concurrent tabs.
-Analysis is reused only when the transcript, content types, provider, model,
-server URL and analysis prompt match. Selected scripts are generated anew.
-Previously downloaded full originals are reused without requesting sections.
-The shared cache survives job deletion; quit the app before removing
-`.source-cache/` to reclaim disk space.
-
-## CLI
-
-Re-render an existing EDL work directory after editing `edl.json` by hand:
-
-```bash
-.venv/bin/reels-editor render out/<project-date>/s1
-```
-
-The command also generates a matching JPG cover alongside the rendered MP4.
+The build is unsigned. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## Troubleshooting
 
-<details>
-<summary><b>The app cannot find Codex or ffmpeg</b></summary>
-
-Check that they work in a terminal:
-
-```bash
-codex --version && ffmpeg -version | head -1
-```
-
-When launched from Finder, the app adds `~/.npm-global/bin`, `~/.local/bin`,
-`/opt/homebrew/bin`, and `/usr/local/bin` to its `PATH` automatically. A tool
-installed somewhere else will not be found.
-</details>
-
-<details>
-<summary><b>Download or transcript extraction fails</b></summary>
-
-- Use a link to a single video. Playlist links are not supported.
-- Private, age-restricted, and login-required videos may be undownloadable.
-- Confirm the video actually has captions.
-- If YouTube changed formats, update the downloader: `pip install -U yt-dlp`.
-</details>
-
-<details>
-<summary><b>The build fails</b></summary>
-
-Reinstall both halves of the project:
-
-```bash
-.venv/bin/pip install -e ".[dev]"
-cd desktop/ui && npm install && npm run build && cd ../..
-```
-</details>
-
-## Development
-
-```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest
-
-cd desktop/ui
-npm run typecheck
-npm run build
-npm run test:dashboard
-```
-
-`npm run test:dashboard` drives the dashboard with Playwright at three window
-sizes, asserts that nothing overlaps, and writes screenshots to
-`desktop/ui/test-results/dashboard/`.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout of the codebase.
-
-## A note on the videos you process
-
-Download and publish only what you have the right to use. This tool does not
-check that for you.
+- **No source captions:** provide a captioned video. ASR verifies the selected audio; it is not a silent replacement for missing YouTube captions.
+- **CLI missing or signed out:** verify `codex --version`, `claude --version`, and both accounts' sign-in state. A selected generation provider alone does not satisfy verification requirements.
+- **Review fails:** inspect the per-clip error and preserved evidence, then retry. Incomplete or uncertain review is not a successful render.
+- **Cover fails:** the verified MP4 remains playable and exportable; retry or choose another source image.
+- **YouTube extraction changes:** update `yt-dlp` in your environment and retry. Availability of private or restricted videos is not guaranteed.
 
 ## License
 
-[MIT](LICENSE) © DongHyun Jung
+[MIT](LICENSE) © DongHyun Jung. Noto Sans CJK uses [SIL OFL 1.1](reels_editor/resources/styles/assets/fonts/OFL.txt); see [asset provenance](reels_editor/resources/styles/assets/README.md). Process and publish only media you have permission to use.

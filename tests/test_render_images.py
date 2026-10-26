@@ -5,7 +5,7 @@ from PIL import Image, ImageChops
 from reels_editor import render
 from reels_editor.style import load_style
 
-STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
+STYLE = Path(__file__).parent.parent / "reels_editor" / "resources" / "styles" / "default.yaml"
 
 
 def test_title_png_canvas_size_with_highlight(tmp_path: Path) -> None:
@@ -136,20 +136,12 @@ def test_watermark_png_in_bottom_bar(tmp_path: Path) -> None:
             episode_bbox[2],
             1350 + episode_bbox[3],
         )
-    assert logo_bbox is not None and episode_bbox is not None
-    logo_center_y = (logo_bbox[1] + logo_bbox[3]) / 2
-    episode_center_y = (episode_bbox[1] + episode_bbox[3]) / 2
-    assert abs(logo_center_y - 1555) <= 2
-    assert abs(episode_center_y - 1460) <= 2
-    assert episode_bbox[1] > style.canvas[1] - style.bottom_bar
-    assert 32 <= logo_bbox[1] - episode_bbox[3] <= 56
-    logo_region = img.crop((0, logo_region_top, style.canvas[0], style.canvas[1]))
-    assert (255, 255, 255, 255) in {
-        color for _, color in logo_region.getcolors(maxcolors=1_000_000)
-    }
+    assert logo_bbox is None
+    assert episode_bbox is None
+    assert alpha.getbbox() is None  # No logo or episode text anywhere in the public template.
 
 
-def test_watermark_accepts_job_episode_number(tmp_path: Path) -> None:
+def test_public_watermark_stays_empty_for_any_episode(tmp_path: Path) -> None:
     style = load_style(STYLE)
     default = Image.open(
         render.render_watermark_png(style, tmp_path / "episode-1.png")
@@ -162,7 +154,8 @@ def test_watermark_accepts_job_episode_number(tmp_path: Path) -> None:
         )
     ).convert("RGBA")
 
-    assert ImageChops.difference(default, episode_37).getbbox() is not None
+    assert ImageChops.difference(default, episode_37).getbbox() is None
+    assert episode_37.getbbox() is None
 
 
 def test_subtitle_position_mid_canvas(tmp_path: Path) -> None:

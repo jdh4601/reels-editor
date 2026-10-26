@@ -54,7 +54,7 @@ def test_gemini_cli_args_with_model() -> None:
 def test_build_runner_openai_without_key_raises(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cfg = AppConfig(provider="openai")
-    with pytest.raises(RuntimeError, match="API 키"):
+    with pytest.raises(RuntimeError, match="API key"):
         build_runner(cfg, credentials=tmp_path / "none.yaml")
 
 
@@ -125,7 +125,7 @@ def test_openai_chat_runner_http_error_masks_key() -> None:
         server.server_close()
 
 
-def test_openai_chat_runner_non_json_body_raises_korean_error() -> None:
+def test_openai_chat_runner_non_json_body_raises_english_error() -> None:
     class NonJson(BaseHTTPRequestHandler):
         def do_POST(self):
             length = int(self.headers.get("Content-Length", 0))
@@ -142,7 +142,7 @@ def test_openai_chat_runner_non_json_body_raises_korean_error() -> None:
         run = openai_chat_runner(base, "sk-secret-key-1234", "m")
         with pytest.raises(RuntimeError) as ei:
             run("p")
-        assert "LLM 응답 형식 오류" in str(ei.value)
+        assert "Invalid LLM response format" in str(ei.value)
         assert "upstream proxy error" in str(ei.value)
         assert "sk-secret-key-1234" not in str(ei.value)   # 키 노출 금지
     finally:
@@ -150,14 +150,14 @@ def test_openai_chat_runner_non_json_body_raises_korean_error() -> None:
         server.server_close()
 
 
-def test_claude_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> None:
+def test_claude_cli_runner_missing_binary_raises_english_error(monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         raise FileNotFoundError("[Errno 2] No such file or directory: 'claude'")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     cfg = AppConfig(provider="claude-cli")
     run = build_runner(cfg)
-    with pytest.raises(RuntimeError, match="claude CLI를 찾을 수 없습니다") as ei:
+    with pytest.raises(RuntimeError, match="Claude CLI was not found") as ei:
         run("프롬프트")
     assert "No such file or directory" in str(ei.value)
 
@@ -229,13 +229,13 @@ def test_codex_cli_runner_empty_success_includes_diagnostics(monkeypatch) -> Non
         run("프롬프트")
 
 
-def test_codex_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> None:
+def test_codex_cli_runner_missing_binary_raises_english_error(monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         raise FileNotFoundError("[Errno 2] No such file or directory: 'codex'")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     run = build_runner(AppConfig(provider="codex-cli"))
-    with pytest.raises(RuntimeError, match="Codex CLI를 찾을 수 없습니다"):
+    with pytest.raises(RuntimeError, match="Codex CLI was not found"):
         run("프롬프트")
 
 
@@ -264,19 +264,19 @@ def test_gemini_cli_runner_failure_includes_stderr(monkeypatch) -> None:
         run("프롬프트")
 
 
-def test_gemini_cli_runner_missing_binary_raises_korean_error(monkeypatch) -> None:
+def test_gemini_cli_runner_missing_binary_raises_english_error(monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         raise FileNotFoundError("[Errno 2] No such file or directory: 'gemini'")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     run = build_runner(AppConfig(provider="gemini-cli"))
-    with pytest.raises(RuntimeError, match="Gemini CLI를 찾을 수 없습니다"):
+    with pytest.raises(RuntimeError, match="Gemini CLI was not found"):
         run("프롬프트")
 
 
-def test_build_runner_unknown_provider_raises_korean_error() -> None:
+def test_build_runner_unknown_provider_raises_english_error() -> None:
     cfg = AppConfig(provider="typo")
-    with pytest.raises(RuntimeError, match="알 수 없는 프로바이더"):
+    with pytest.raises(RuntimeError, match="Unknown provider"):
         build_runner(cfg)
 
 
@@ -320,7 +320,7 @@ def test_codex_capacity_exhaustion_is_concise_and_other_errors_not_retried(monke
         calls.append(args)
         return subprocess.CompletedProcess(args, 1, '', 'Selected model is at capacity.')
     monkeypatch.setattr(llm.processes, 'run', fake_run)
-    with pytest.raises(RuntimeError, match='처리 용량이 부족'):
+    with pytest.raises(RuntimeError, match="model is at capacity"):
         build_runner(AppConfig(provider='codex-cli'))('prompt')
     assert len(calls) == 3
     calls.clear()
@@ -364,7 +364,7 @@ def test_codex_quota_429_is_not_retried(monkeypatch):
         calls.append(args)
         return subprocess.CompletedProcess(args, 1, '', 'ERROR: 429 insufficient_quota')
     monkeypatch.setattr(llm.processes, 'run', fake_run)
-    with pytest.raises(RuntimeError, match='사용 한도'):
+    with pytest.raises(RuntimeError, match="usage limit"):
         build_runner(AppConfig(provider='codex-cli'))('prompt')
     assert len(calls) == 1
 

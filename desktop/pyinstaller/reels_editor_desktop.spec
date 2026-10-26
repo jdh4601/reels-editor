@@ -6,8 +6,7 @@ from pathlib import Path
 repo = Path.cwd()
 datas = [
     (str(repo / "reels_editor" / "desktop" / "ui"), "reels_editor/desktop/ui"),
-    (str(repo / "styles"), "styles"),
-    (str(repo / "prompts"), "prompts"),
+    (str(repo / "reels_editor/resources"), "reels_editor/resources"),
 ]
 
 a = Analysis(
@@ -70,6 +69,6 @@ app = BUNDLE(
     info_plist={
         "NSHighResolutionCapable": "True",
         "NSHumanReadableCopyright": "Personal local app",
-        "NSAppleEventsUsageDescription": "생성한 Instagram 캡션을 메모 앱에 저장하기 위해 사용합니다.",
+        "NSAppleEventsUsageDescription": "Reels Editor uses Notes automation to save generated Instagram captions.",
     },
 )

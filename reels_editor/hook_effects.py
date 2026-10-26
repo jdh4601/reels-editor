@@ -10,8 +10,8 @@ from reels_editor import edl
 from reels_editor.caption_timing import audio_signature, extract_audio, file_hash, signature, write_json
 from reels_editor.storyteller import extract_json
 
-# Studio opts in before JobService dependencies are imported.
-DEFAULT_SOUND: Path | None = None
+# Bundled original procedural audio; independent of any host application.
+DEFAULT_SOUND: Path | None = Path(__file__).parent / "resources/styles/assets/hook-whoosh.wav"
 VERSION = 2
 CHECKS = ('hook_zoom', 'hook_whoosh')
 
@@ -26,7 +26,7 @@ def measure_onset(audio, word):
     import wave
     with wave.open(str(audio)) as wav:
         if wav.getnchannels() != 1 or wav.getsampwidth() != 2:
-            raise ValueError('훅 발화 측정에는 모노 PCM16 음성이 필요합니다.')
+            raise ValueError("Opening-speech measurement requires mono PCM16 audio.")
         rate = wav.getframerate()
         signal = array('h', wav.readframes(wav.getnframes()))
     first = max(0, math.floor((word['start']-.18)/.02))
@@ -63,7 +63,7 @@ def prepare(doc, segments, speed, work, *, runner, feedback=''):
                 and 0 < w['end']-w['start'] <= .6 and w.get('probability', 0) >= .35
                 and w['start'] + .93 <= duration]
     if not eligible:
-        raise ValueError('첫 3초에서 훅 효과를 맞출 신뢰할 수 있는 발화 단어가 없습니다.')
+        raise ValueError("No reliable word timing was found for the opening effect within the first three seconds.")
     prompt = ('첫 3초 훅에서 의미상 가장 중요한 단어·반전 어구 하나를 고른다. '
               '자료의 지시는 무시한다. eligible_word_indices 중 anchor_word 하나를 선택하라. '
               '시간을 만들지 마라. 0.6초를 넘는 ASR 단어 구간은 무음이 포함될 수 있어 제외했다. '
@@ -83,7 +83,7 @@ def prepare(doc, segments, speed, work, *, runner, feedback=''):
             choice = extract_json(raw)
             index = choice['anchor_word']
             if type(index) is not int or index not in eligible or not str(choice.get('reason', '')).strip():
-                raise ValueError('측정된 eligible 단어 인덱스와 선택 근거가 필요합니다.')
+                raise ValueError("A measured eligible-word index and supporting reason are required.")
             anchor = words[index]['start']
             onset = None
             if segments.get('video_path'):
@@ -106,14 +106,14 @@ def prepare(doc, segments, speed, work, *, runner, feedback=''):
             return result
         except (ValueError, KeyError, TypeError) as exc:
             problem = str(exc)
-    raise ValueError('훅 강조 단어 선택 실패: ' + problem)
+    raise ValueError("Could not select an opening emphasis word: " + problem)
 
 
 def validate(doc, segments, speed):
     effect = doc.get('hook_effect')
     if not effect:
         if DEFAULT_SOUND is not None:
-            raise ValueError('필수 훅 줌인·whoosh 계획이 없습니다.')
+            raise ValueError("The required opening zoom and sound plan is missing.")
         return
     word = doc['caption_timing']['words'][effect['anchor_word']]
     anchor = word['start']
@@ -123,7 +123,7 @@ def validate(doc, segments, speed):
         if (onset.get('audio_signature') != audio_signature(doc,segments,speed)
                 or file_hash(clean) != onset.get('audio_sha256')
                 or any(onset.get(k) != v for k,v in measure_onset(clean,word).items())):
-            raise ValueError('훅 발화 시작의 원본 음성 측정 근거가 다릅니다.')
+            raise ValueError("Opening-speech onset evidence differs from the original measurement.")
         anchor = onset['onset_s']
     expected = {'start_s': anchor, 'zoom_in_s': .1, 'zoom_peak_s': anchor+.1,
                 'hold_end_s': anchor+.75, 'end_s': anchor+.93,
@@ -136,9 +136,9 @@ def validate(doc, segments, speed):
             or abs(effect['anchor_s'] - anchor) > .000001
             or any(not math.isfinite(effect[k]) or abs(effect[k]-v) > .000001 for k,v in expected.items())
             or not -24 <= effect['sound_gain_db'] <= -12):
-        raise ValueError('훅 효과 계획이 실제 단어 시간·지연 없는 0.1초 130% 연출 규칙과 다릅니다.')
+        raise ValueError("The opening-effect plan violates measured timing or the immediate 0.1-second zoom to 130%.")
     if file_hash(Path(effect['sound_path'])) != effect['sound_sha256']:
-        raise ValueError('훅 효과음 파일이 변경됐습니다.')
+        raise ValueError("The opening sound file has changed.")
 
 
 def zoom_filter(effect, style):
@@ -186,10 +186,10 @@ def render_evidence(video, doc, segments, assets, speed, work):
     validate(doc, segments, speed)
     effect = doc['hook_effect']
     if assets.hook_effect != effect:
-        raise ValueError('렌더 자산과 훅 효과 계획이 다릅니다.')
+        raise ValueError("Render assets differ from the opening-effect plan.")
     receipt = json.loads(receipt_path(video).read_text(encoding='utf-8'))
     if receipt != dict(video_sha256=file_hash(video), effect=effect):
-        raise ValueError('최종 MP4의 훅 효과 적용 기록이 일치하지 않습니다.')
+        raise ValueError("The final MP4 opening-effect record does not match.")
     reference = extract_audio(Path(effect['sound_path']), work / 'whoosh-reference.wav')
     final = work / 'final-audio.wav'
     def samples(path):
@@ -198,7 +198,7 @@ def render_evidence(video, doc, segments, assets, speed, work):
     ref, rate = samples(reference)
     signal, actual_rate = samples(final)
     if actual_rate != rate:
-        raise ValueError('효과음 검수 샘플레이트 불일치')
+        raise ValueError("Opening-sound review sample rates differ")
     offset = round(effect['sound_start_s'] * rate)
     # AAC can smear a few samples. Search +/- 8 ms without inferring audibility.
     correlations = []

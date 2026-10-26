@@ -42,7 +42,7 @@ type SettingsSaveState = "idle" | "saving" | "saved" | "error";
 type CaptionActionState = "idle" | "generating" | "error" | "copied";
 type NoteActionState = "idle" | "saving" | "saved" | "error";
 type TitleActionState = "idle" | "generating" | "saving" | "error" | "suggested" | "saved";
-type MetadataDraft = { name: string; role: string; episode: string };
+type MetadataDraft = { name: string; role: string };
 type TitleDraft = { upper: string; lower: string };
 type AppView = "workspace" | "archive";
 type PlaybackSpeedSettings = {
@@ -130,6 +130,7 @@ type Snapshot = {
   selectedCandidateIds: string[];
   provider: ModelProvider;
   model: string;
+  outputLanguage?: "ko" | "en" | "zh";
   episodeNumber: number;
   eventSeq: number;
 };
@@ -222,6 +223,7 @@ type ApiSnapshot = {
   projectName?: string;
   source_url?: string | null;
   sourceUrl?: string | null;
+  output_language?: "ko" | "en" | "zh";
   transcript_language?: string | null;
   transcriptLanguage?: string | null;
   transcript_kind?: string | null;
@@ -267,65 +269,33 @@ type EventPayload =
   | { snapshot?: ApiSnapshot; seq?: number; event_seq?: number }
   | { event: "heartbeat"; seq?: number; event_seq?: number };
 
-const DEMO_TITLES = [
-  "숫자보다 앞선 고객의 한마디",
-  "완벽한 계획보다 빠른 첫 실행",
-  "기능을 덜어내 이탈을 막은 방법",
-];
-
-const DEMO_SUMMARIES = [
-  "대표의 판단 기준을 초반 3초에 배치하고, 중반에는 실제 문제 해결 과정을 압축합니다.",
-  "인터뷰의 실행 원칙을 질문과 답의 리듬으로 보여주며 업무 현장감을 살립니다.",
-  "고객 관점 전환을 중심으로 짧은 전개와 강한 마무리 문장을 구성합니다.",
-];
-
-const DEMO_SECTIONS: StorySection[][] = [
-  [
-    { beat: "훅", role: "첫 3초에 시선을 붙잡는 문장", text: "숫자가 아니라 고객의 한마디가 가장 중요한 판단 기준이었습니다." },
-    { beat: "맥락", role: "이야기를 이해시키는 배경", text: "빠르게 성장하던 시기에도 팀은 매일 같은 질문으로 우선순위를 확인했습니다." },
-    { beat: "갈등", role: "문제와 긴장을 선명하게 만드는 구간", text: "지표는 좋아 보였지만 실제 고객이 겪는 불편은 좀처럼 줄지 않았습니다." },
-    { beat: "전환", role: "생각이나 행동이 바뀌는 순간", text: "회의실을 나와 고객을 직접 만나자 우리가 놓친 문제가 선명하게 보였습니다." },
-    { beat: "핵심 장면", role: "변화를 증명하는 구체적인 장면", text: "그날 바로 제품 순서를 바꾸고 가장 작은 불편부터 하나씩 해결했습니다." },
-    { beat: "라스트 답", role: "영상이 남기는 결론과 메시지", text: "좋은 판단은 더 많은 숫자가 아니라 더 가까이 들은 목소리에서 시작됩니다." },
-  ],
-  [
-    { beat: "훅", role: "첫 3초에 시선을 붙잡는 문장", text: "완벽한 계획을 기다렸다면 우리는 아직도 시작하지 못했을 겁니다." },
-    { beat: "맥락", role: "이야기를 이해시키는 배경", text: "처음에는 사람도 예산도 부족해서 매일 예상하지 못한 문제가 생겼습니다." },
-    { beat: "갈등", role: "문제와 긴장을 선명하게 만드는 구간", text: "준비가 부족하다는 이유로 중요한 결정을 계속 미루고 싶어졌습니다." },
-    { beat: "전환", role: "생각이나 행동이 바뀌는 순간", text: "작게 실행하고 결과를 확인하는 편이 오래 고민하는 것보다 빠르다는 걸 배웠습니다." },
-    { beat: "핵심 장면", role: "변화를 증명하는 구체적인 장면", text: "일주일짜리 실험을 반복하자 팀이 스스로 답을 찾기 시작했습니다." },
-    { beat: "라스트 답", role: "영상이 남기는 결론과 메시지", text: "실행력은 정답을 아는 능력이 아니라 다음 답을 빨리 확인하는 습관입니다." },
-  ],
-  [
-    { beat: "훅", role: "첫 3초에 시선을 붙잡는 문장", text: "고객이 떠나는 이유는 우리가 설명하지 않은 작은 순간에 숨어 있었습니다." },
-    { beat: "맥락", role: "이야기를 이해시키는 배경", text: "기능은 계속 늘었지만 처음 방문한 고객은 어디서 시작해야 할지 어려워했습니다." },
-    { beat: "갈등", role: "문제와 긴장을 선명하게 만드는 구간", text: "팀은 더 많은 기능이 필요하다고 생각했지만 고객은 이미 충분히 복잡하다고 말했습니다." },
-    { beat: "전환", role: "생각이나 행동이 바뀌는 순간", text: "무엇을 더할지가 아니라 무엇을 덜어낼지를 기준으로 제품을 다시 보기 시작했습니다." },
-    { beat: "핵심 장면", role: "변화를 증명하는 구체적인 장면", text: "첫 화면의 선택지를 절반으로 줄이자 고객의 다음 행동이 눈에 띄게 빨라졌습니다." },
-    { beat: "라스트 답", role: "영상이 남기는 결론과 메시지", text: "고객 관점은 친절한 설명이 아니라 망설일 이유를 먼저 없애는 일입니다." },
-  ],
-];
+const DEMO_TITLES = ["Why Practice Was Not Enough", "How a Simple Note Changed Daily Practice", "Leave One Question After Reading"];
+const DEMO_SUMMARIES = ["Synthetic preview about practice.", "Synthetic preview about taking notes.", "Synthetic preview about reading habits."];
+const DEMO_SECTIONS: StorySection[][] = DEMO_TITLES.map((title) => [
+  { beat: "Hook", role: "Key question", text: title },
+  { beat: "Context", role: "Source evidence", text: "The selected original speech appears here in an actual video." },
+  { beat: "Conclusion", role: "Preview information", text: "This preview uses synthetic data, not a real interview quotation." },
+]);
 
 const STATUS_LABEL: Record<LaneStatus, string> = {
-  queued: "대기",
-  rendering: "렌더 중",
-  ready: "준비됨",
-  overlaying: "오버레이 반영",
-  failed: "실패",
+  queued: "Queued",
+  rendering: "Rendering",
+  ready: "Ready",
+  overlaying: "Updating overlay",
+  failed: "Failed",
 };
 
-const EMPTY_TITLE = "제목 준비 중";
-const INSTAGRAM_CAPTION_CTA = "다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀";
-const EMPTY_SUMMARY = "YouTube 인터뷰 링크를 넣으면 클립 후보와 후킹 제목이 여기에 표시됩니다.";
+const EMPTY_TITLE = "Title pending";
+const EMPTY_SUMMARY = "Paste a YouTube video link to see clip ideas and hook titles here.";
 const ACTIVE_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay", "exporting"]);
 const GENERATION_JOB_STATUSES = new Set<JobStatus>(["loading", "generating", "rendering_base", "rendering_overlay"]);
 const GENERATION_STAGES = [
-  { label: "자막 다운로드" },
-  { label: "자막 정리" },
-  { label: "후보·제목 생성" },
-  { label: "릴스 대본 생성" },
-  { label: "영상 렌더링" },
-  { label: "최종 검수" },
+  { label: "Download captions" },
+  { label: "Prepare captions" },
+  { label: "Generate ideas and titles" },
+  { label: "Generate reel scripts" },
+  { label: "Render video" },
+  { label: "Final review" },
 ] as const;
 const ALL_CONTENT_TYPES: ContentType[] = ["story", "strategy", "failure", "principle"];
 const MIN_PLAYBACK_SPEED = 1;
@@ -335,11 +305,11 @@ const DEFAULT_PLAYBACK_SPEED = 1.2;
 const DEFAULT_EPISODE_NUMBER = 1;
 const REELS_EDITOR_LOGO_URL = new URL("../../assets/reels-editor-icon.png", import.meta.url).href;
 const PROVIDER_OPTIONS: Array<{ value: ModelProvider; label: string; description: string }> = [
-  { value: "codex-cli", label: "Codex CLI", description: "로컬 Codex 인증으로 선택한 모델을 사용합니다." },
-  { value: "claude-cli", label: "Claude CLI", description: "설치된 Claude Code CLI를 사용합니다." },
-  { value: "gemini-cli", label: "Gemini CLI", description: "로컬 Gemini 인증과 설치된 기본 모델을 사용합니다." },
-  { value: "openai", label: "OpenAI API", description: "OPENAI_API_KEY 환경변수의 자격증명을 사용합니다." },
-  { value: "kimi", label: "Kimi API", description: "MOONSHOT_API_KEY 환경변수의 자격증명을 사용합니다." },
+  { value: "codex-cli", label: "Codex CLI", description: "Uses your local Codex sign-in and selected model." },
+  { value: "claude-cli", label: "Claude CLI", description: "Uses your installed Claude Code CLI." },
+  { value: "gemini-cli", label: "Gemini CLI", description: "Uses your local Gemini sign-in and default model." },
+  { value: "openai", label: "OpenAI API", description: "Uses credentials from OPENAI_API_KEY." },
+  { value: "kimi", label: "Kimi API", description: "Uses credentials from MOONSHOT_API_KEY." },
 ];
 const MODEL_OPTIONS: Record<ModelProvider, Array<{ value: string; label: string }>> = {
   "codex-cli": [
@@ -350,8 +320,8 @@ const MODEL_OPTIONS: Record<ModelProvider, Array<{ value: string; label: string 
     { value: "gpt-5.4", label: "5.4" },
     { value: "gpt-5.4-mini", label: "5.4 mini" },
   ],
-  "claude-cli": [{ value: "", label: "기본 모델" }],
-  "gemini-cli": [{ value: "", label: "기본 모델" }],
+  "claude-cli": [{ value: "", label: "Default model" }],
+  "gemini-cli": [{ value: "", label: "Default model" }],
   openai: [{ value: "gpt-4o", label: "GPT-4o" }],
   kimi: [{ value: "kimi-k2-0905-preview", label: "Kimi K2" }],
 };
@@ -397,7 +367,7 @@ function youtubeThumbnailUrl(sourceUrl: string | null | undefined): string | nul
 
 function titleDisplayLength(title: string): number {
   const compact = title.replace(/\s/gu, "");
-  return Array.from(new Intl.Segmenter("ko", { granularity: "grapheme" }).segment(compact)).length;
+  return Array.from(new Intl.Segmenter("en", { granularity: "grapheme" }).segment(compact)).length;
 }
 
 function combineTitleLines(draft: TitleDraft): string {
@@ -419,16 +389,16 @@ function splitTitleForEditor(title: string): TitleDraft {
       return candidateDifference < bestDifference ? candidate : best;
     });
   }
-  const graphemes = Array.from(new Intl.Segmenter("ko", { granularity: "grapheme" }).segment(normalized), (item) => item.segment);
+  const graphemes = Array.from(new Intl.Segmenter("en", { granularity: "grapheme" }).segment(normalized), (item) => item.segment);
   const midpoint = Math.ceil(graphemes.length / 2);
   return { upper: graphemes.slice(0, midpoint).join(""), lower: graphemes.slice(midpoint).join("") };
 }
 
 function titleValidationMessage(draft: TitleDraft): string | null {
-  if (!draft.lower.trim()) return "두 번째 제목을 입력하세요.";
+  if (!draft.lower.trim()) return "Enter the second title line.";
   const length = titleDisplayLength(combineTitleLines(draft));
-  if (length < 6) return "공백을 제외한 화면 제목을 6자 이상 입력하세요.";
-  if (length > 24) return "공백을 제외한 화면 제목은 24자까지 입력할 수 있습니다.";
+  if (length < 6) return "The on-screen title needs at least 6 characters, excluding spaces.";
+  if (length > 24) return "The on-screen title can have up to 24 characters, excluding spaces.";
   return null;
 }
 
@@ -440,10 +410,10 @@ function cacheBustedMediaUrl(url: string | null, revision: string | number): str
 }
 
 function formatArchiveDate(value: string | null): string {
-  if (!value) return "완료 날짜 없음";
+  if (!value) return "No completion date";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(date);
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
 function normalizeArchiveItem(item: ApiArchiveItem, index: number): ArchiveItem | null {
@@ -460,8 +430,8 @@ function normalizeArchiveItem(item: ApiArchiveItem, index: number): ArchiveItem 
     jobId,
     storylineId,
     episodeNumber: positiveInteger(item.episode_number ?? item.episodeNumber),
-    projectName: item.project_name ?? item.projectName ?? item.source_title ?? item.sourceTitle ?? "이름 없는 인터뷰",
-    reelTitle: item.reel_title ?? item.reelTitle ?? item.storyline_title ?? item.storylineTitle ?? item.title ?? "제목 없는 릴스",
+    projectName: item.project_name ?? item.projectName ?? item.source_title ?? item.sourceTitle ?? "Untitled video",
+    reelTitle: item.reel_title ?? item.reelTitle ?? item.storyline_title ?? item.storylineTitle ?? item.title ?? "Untitled reel",
     sourceUrl,
     thumbnailUrl: mediaUrl(
       item.thumbnail_url
@@ -560,7 +530,7 @@ function estimatedRemainingMinutes(
 }
 
 function remainingTimeLabel(minutes: number): string {
-  return minutes <= 1 ? "1분 이내" : `약 ${Math.ceil(minutes)}분`;
+  return minutes <= 1 ? "Less than a minute" : `About ${Math.ceil(minutes)} minutes`;
 }
 
 function isDemoMode(): boolean {
@@ -620,8 +590,8 @@ function makePlaceholderStoryline(index: number): Storyline {
     id: `placeholder-${index + 1}`,
     serverId: `placeholder-${index + 1}`,
     index: index + 1,
-    label: `릴스 ${index + 1}`,
-    hook: "대기 중",
+    label: `Reel ${index + 1}`,
+    hook: "Pending",
     summary: EMPTY_SUMMARY,
     sections: [],
     status: "queued",
@@ -647,7 +617,7 @@ function makeEmptySnapshot(connection: ConnectionState = "disconnected"): Snapsh
     sourceUrl: null,
     transcriptLanguage: null,
     transcriptKind: null,
-    sourceLabel: "YouTube 링크 없음",
+    sourceLabel: "No YouTube link",
     connection,
     generatedAt: new Date().toISOString(),
     selectedStorylineId: null,
@@ -669,19 +639,19 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
   const items = media?.length ? media : [1, 2, 3].map((number) => ({ name: `sample-${number}.mp4`, url: `/media/sample-${number}.mp4` }));
   const showGenerationProgress = new URLSearchParams(window.location.search).has("generation-progress");
   return {
-    jobId: "demo-job-kim-hyunji",
+    jobId: "demo-job-synthetic",
     jobStatus: showGenerationProgress ? "rendering_base" : "ready",
     jobPhase: showGenerationProgress ? "rendering" : "ready",
     jobProgress: showGenerationProgress ? 64 : 100,
     jobMessage: showGenerationProgress
-      ? "릴스 2: 제목·자막 오버레이와 오디오를 합성하는 중입니다. · 전체 1/3개 완료"
-      : "대표 영상 3개가 준비되었습니다.",
+      ? "Reel 2: compositing title, subtitles and audio. 1 of 3 complete."
+      : "3 videos are ready.",
     jobError: null,
-    projectName: "김현지대표인터뷰",
+    projectName: "Synthetic video preview",
     sourceUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
     transcriptLanguage: "en",
     transcriptKind: "automatic",
-    sourceLabel: "YouTube · 영어 원문 자동 자막",
+    sourceLabel: "YouTube · English automatic captions",
     connection: "connected",
     generatedAt: "2026-07-20T09:00:00+09:00",
     selectedStorylineId: "storyline-1",
@@ -699,8 +669,8 @@ function makeDemoSnapshot(media?: MediaItem[]): Snapshot {
       id: `storyline-${index + 1}`,
       serverId: `storyline-${index + 1}`,
       index: index + 1,
-      label: `릴스 ${index + 1}`,
-      hook: ["판단 기준", "실행 원칙", "고객 관점"][index],
+      label: `Reel ${index + 1}`,
+      hook: ["Practice methods", "Taking notes", "Reading questions"][index],
       summary: DEMO_SUMMARIES[index],
       sections: DEMO_SECTIONS[index],
       status: showGenerationProgress ? (["ready", "overlaying", "rendering"] as LaneStatus[])[index] : "ready",
@@ -725,8 +695,8 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
       id: serverId,
       serverId,
       index: storyline.index ?? index + 1,
-      label: storyline.label ?? `릴스 ${index + 1}`,
-      hook: storyline.hook ?? title ?? "대표 영상",
+      label: storyline.label ?? `Reel ${index + 1}`,
+      hook: storyline.hook ?? title ?? "Video",
       summary: storyline.summary ?? EMPTY_SUMMARY,
       sections: (storyline.sections ?? []).filter(
         (section) => section.beat.trim() && section.role.trim() && section.text.trim(),
@@ -761,7 +731,7 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
     sourceUrl: payload.source_url ?? payload.sourceUrl ?? null,
     transcriptLanguage: payload.transcript_language ?? payload.transcriptLanguage ?? null,
     transcriptKind: payload.transcript_kind ?? payload.transcriptKind ?? null,
-    sourceLabel: payload.source_label ?? payload.sourceLabel ?? "선택된 소스",
+    sourceLabel: payload.source_label ?? payload.sourceLabel ?? "Selected source",
     connection: payload.connection ?? "connected",
     generatedAt: payload.generated_at ?? payload.generatedAt ?? new Date().toISOString(),
     storylines,
@@ -777,14 +747,15 @@ function normalizeSnapshot(payload: ApiSnapshot): Snapshot {
     candidates: (payload.candidates ?? []).map((candidate, index) => ({
       id: candidate.id ?? `c${index + 1}`,
       contentType: candidate.content_type ?? candidate.contentType ?? "principle",
-      typeLabel: candidate.type_label ?? candidate.typeLabel ?? "원칙형",
-      title: candidate.title ?? "제목 없음",
+      typeLabel: candidate.type_label ?? candidate.typeLabel ?? "Principle",
+      title: candidate.title ?? "Untitled",
       summary: candidate.summary ?? "",
       takeaway: candidate.takeaway ?? "",
     })),
     selectedCandidateIds: payload.selected_candidate_ids ?? payload.selectedCandidateIds ?? [],
     provider: modelProvider(payload.provider),
     model: payload.model ?? "",
+    outputLanguage: payload.output_language ?? "ko",
     episodeNumber: positiveInteger(payload.episode_number ?? payload.episodeNumber),
     eventSeq: payload.event_seq ?? payload.seq ?? 0,
   };
@@ -834,9 +805,9 @@ function Thumbnail({ src, alt, className }: { src: string; alt: string; classNam
 
   if (failed) {
     return (
-      <div className={`${className} thumbnail-fallback`} role="img" aria-label={`${alt} 미리보기를 불러오지 못했습니다`}>
+      <div className={`${className} thumbnail-fallback`} role="img" aria-label={`${alt}  preview could not be loaded`}>
         <ImageOff size={18} aria-hidden="true" />
-        <span>미리보기 없음</span>
+        <span>No preview</span>
       </div>
     );
   }
@@ -848,18 +819,18 @@ const MAX_WORKSPACE_TABS = 3;
 
 type WorkspaceTab = { id: string; initialJobId?: string; label: string; status: JobStatus; busy: boolean };
 function TabbedApp() {
-  const [tabs, setTabs] = useState<WorkspaceTab[]>([{ id: "workspace-1", label: "작업 1", status: "idle", busy: false }]);
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([{ id: "workspace-1", label: "Workspace 1", status: "idle", busy: false }]);
   const [activeTab, setActiveTab] = useState("workspace-1");
   const updateTab = useCallback((id: string, next: Snapshot, busy: boolean) => {
     setTabs((current) => current.map((tab) => tab.id === id ? {
-      ...tab, label: next.sourceUrl ? next.projectName : "새 작업", status: next.jobStatus, busy,
+      ...tab, label: next.sourceUrl ? next.projectName : "New workspace", status: next.jobStatus, busy,
     } : tab));
   }, []);
   function addTab() {
     if (tabs.length >= MAX_WORKSPACE_TABS) return;
     const id = `workspace-${crypto.randomUUID()}`;
     setTabs((current) => current.length < MAX_WORKSPACE_TABS
-      ? [...current, { id, initialJobId: "empty", label: "새 작업", status: "idle", busy: false }]
+      ? [...current, { id, initialJobId: "empty", label: "New workspace", status: "idle", busy: false }]
       : current);
     setActiveTab(id);
   }
@@ -871,8 +842,8 @@ function TabbedApp() {
   }
 
   return <>
-    <nav className="workspace-tabs" aria-label="릴스 작업 탭">
-      <div role="tablist" aria-label="병렬 작업 (최대 3개)">
+    <nav className="workspace-tabs" aria-label="Reel workspaces">
+      <div role="tablist" aria-label="Parallel workspaces (up to 3)">
         {tabs.map((tab, index) => <div className="workspace-tab" key={tab.id}>
           <button type="button" role="tab" id={`${tab.id}-tab`} aria-controls={`${tab.id}-panel`}
             aria-selected={activeTab === tab.id} tabIndex={activeTab === tab.id ? 0 : -1}
@@ -886,15 +857,15 @@ function TabbedApp() {
             }}>
             {tab.busy ? <Loader2 size={14} className="spin" /> : tab.status === "ready" ? <CheckCircle2 size={14} /> : null}
             <span>{index + 1}. {tab.label}</span>
-            <small>{tab.busy ? "처리 중" : tab.status === "awaiting_selection" ? "후보 선택" : tab.status === "failed" ? "실패" : tab.status === "ready" ? "완료" : "대기"}</small>
+            <small>{tab.busy ? "Processing" : tab.status === "awaiting_selection" ? "Choose clips" : tab.status === "failed" ? "Failed" : tab.status === "ready" ? "Done" : "Queued"}</small>
           </button>
-          <button type="button" className="workspace-tab-close" aria-label={`작업 ${index + 1} 탭 닫기`}
-            disabled={tab.busy || tabs.length === 1} title={tab.busy ? "처리가 끝난 후 탭을 닫을 수 있습니다." : "탭 닫기"}
+          <button type="button" className="workspace-tab-close" aria-label={`Close workspace ${index + 1} tab`}
+            disabled={tab.busy || tabs.length === 1} title={tab.busy ? "You can close this tab when processing finishes." : " tab"}
             onClick={() => closeTab(tab)}><X size={14} /></button>
         </div>)}
       </div>
       <button type="button" className="workspace-tab-add" disabled={tabs.length >= MAX_WORKSPACE_TABS} onClick={addTab}>
-        <Plus size={16} /> 새 탭 <small>{tabs.length}/{MAX_WORKSPACE_TABS}</small>
+        <Plus size={16} /> New tab <small>{tabs.length}/{MAX_WORKSPACE_TABS}</small>
       </button>
     </nav>
     {tabs.map((tab) => <div key={tab.id} role="tabpanel" id={`${tab.id}-panel`} aria-labelledby={`${tab.id}-tab`} hidden={activeTab !== tab.id}>
@@ -925,8 +896,11 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
   const [googleDriveSettings, setGoogleDriveSettings] = useState<GoogleDriveSettings | null>(null);
   const [googleDriveConnecting, setGoogleDriveConnecting] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [outputLanguage, setOutputLanguage] = useState<"ko" | "en" | "zh">(() => {
+    const saved = localStorage.getItem("reels-output-language-v2");
+    return saved === "ko" || saved === "zh" ? saved : "en";
+  });
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
-  const [episodeInput, setEpisodeInput] = useState(String(DEFAULT_EPISODE_NUMBER));
   const [appView, setAppView] = useState<AppView>("workspace");
   const [archiveMode, setArchiveMode] = useState(false);
   const [archiveItems, setArchiveItems] = useState<ArchiveItem[]>([]);
@@ -945,7 +919,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
   const workspaceHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const pendingViewFocusRef = useRef<AppView | null>(null);
   const [eventConnectionVersion, setEventConnectionVersion] = useState(0);
-  const [liveMessage, setLiveMessage] = useState("대시보드 연결 중");
+  const [liveMessage, setLiveMessage] = useState("Connecting to the workspace");
   const [captionStates, setCaptionStates] = useState<Record<string, CaptionActionState>>({});
   const [captionErrors, setCaptionErrors] = useState<Record<string, string | null>>({});
   const [noteStates, setNoteStates] = useState<Record<string, NoteActionState>>({});
@@ -991,7 +965,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       setSelectedProvider(next.provider);
       setSelectedModel(next.model || defaultModel(next.provider));
       setYoutubeUrl(next.sourceUrl ?? "");
-      setEpisodeInput(String(next.episodeNumber));
+      if (next.jobId !== "empty" && !isDemoMode()) setOutputLanguage(next.outputLanguage ?? "ko");
       setYoutubeError(null);
       setCaptionStates({});
       setCaptionErrors({});
@@ -1008,7 +982,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     }
     setConnection(next.connection);
     eventSeqRef.current = jobChanged ? next.eventSeq : Math.max(eventSeqRef.current, next.eventSeq);
-    setLiveMessage(next.jobMessage ?? `${next.projectName} 작업 상태를 불러왔습니다.`);
+    setLiveMessage(next.jobMessage ?? `${next.projectName} Workspace loaded.`);
   }, []);
 
   useEffect(() => {
@@ -1021,7 +995,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         if (!cancelled) {
           setSnapshot(makeEmptySnapshot("disconnected"));
           setConnection("disconnected");
-          setLiveMessage("백엔드 연결이 끊겨 빈 작업 상태를 표시합니다.");
+          setLiveMessage("Disconnected from the backend. Showing an empty workspace.");
         }
       });
     return () => {
@@ -1034,7 +1008,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     let cancelled = false;
     void apiFetch("/api/settings/playback-speed")
       .then(async (response) => {
-        if (!response.ok) throw new Error("재생 배속 설정을 불러오지 못했습니다.");
+        if (!response.ok) throw new Error("Could not load playback speed settings.");
         const settings = (await response.json()) as PlaybackSpeedSettings;
         if (!cancelled) setPlaybackSpeed(normalizePlaybackSpeed(settings.speed));
       })
@@ -1046,13 +1020,13 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
   useEffect(() => {
     if (isDemoMode()) {
-      setGoogleDriveSettings({ configured: true, my_drive_path: "~/Google Drive/My Drive/릴스(에피소드)" });
+      setGoogleDriveSettings({ configured: true, my_drive_path: "~/Google Drive/My Drive/Reels" });
       return;
     }
     let cancelled = false;
     void apiFetch("/api/settings/google-drive")
       .then(async (response) => {
-        if (!response.ok) throw new Error("Google Drive 설정을 불러오지 못했습니다.");
+        if (!response.ok) throw new Error("Could not load Google Drive settings.");
         const settings = (await response.json()) as GoogleDriveSettings;
         if (!cancelled) setGoogleDriveSettings(settings);
       })
@@ -1103,7 +1077,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
           if (normalized.jobId !== connectionJobId) return;
           applySnapshot(archiveModeRef.current ? completedOnlySnapshot(normalized) : normalized);
         } catch {
-          setLiveMessage("이벤트 메시지를 해석하지 못했습니다.");
+          setLiveMessage("Could not read the event message.");
         }
       };
       events.onclose = () => {
@@ -1146,17 +1120,17 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
   const canAnalyze = Boolean(snapshot?.sourceUrl) && !jobBusy;
   const candidateSelectionActive = snapshot?.jobStatus === "awaiting_selection";
-  const generateLabel = jobBusy ? "처리 중" : "다시 분석";
+  const generateLabel = jobBusy ? "Processing" : "Analyze again";
   const generationActive = GENERATION_JOB_STATUSES.has(snapshot?.jobStatus ?? "idle");
   const activeGenerationStage = generationStageIndex(snapshot?.jobPhase, snapshot?.jobStatus ?? "idle");
   const generationProgress = snapshot?.jobProgress ?? 0;
   const downloading = snapshot?.jobPhase === "downloading";
   const download = snapshot?.downloadProgress;
-  const downloadLabel = download?.component === "audio" ? "오디오 다운로드" : "영상 다운로드";
+  const downloadLabel = download?.component === "audio" ? "Download audio" : "Download video";
   const visibleProgress = downloading
     ? (download ? progressPercent(download.component_fraction) : null)
     : generationProgress;
-  const progressLabel = downloading ? downloadLabel : "전체 영상 생성 진행률";
+  const progressLabel = downloading ? downloadLabel : "Overall generation progress";
   const estimatedStorylineCount = snapshot?.nStorylines || selectedCandidateIds.length || 3;
   const renderMinutes = estimatedRenderMinutes(estimatedStorylineCount);
   const remainingMinutes = estimatedRemainingMinutes(
@@ -1165,8 +1139,6 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     generationProgress,
     renderMinutes,
   );
-  const episodeNumber = positiveInteger(episodeInput, 0);
-  const episodeValid = Number.isInteger(Number(episodeInput)) && Number(episodeInput) > 0 && String(Number(episodeInput)) === episodeInput.trim();
   const sourceThumbnailUrl = youtubeThumbnailUrl(youtubeUrl);
 
   function updateStoryline(id: string, patch: Partial<Storyline>) {
@@ -1191,26 +1163,26 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         : current.filter((id) => id !== storyline.id);
       setLiveMessage(
         shouldSelect
-          ? `${storyline.label} 영상을 내보내기 목록에 추가했습니다.`
-          : `${storyline.label} 영상을 내보내기 목록에서 제외했습니다.`,
+          ? `${storyline.label} Video selected for export.`
+          : `${storyline.label} Video removed from export selection.`,
       );
       return next;
     });
   }
 
   function rerenderStoryline(storyline: Storyline) {
-    setLiveMessage(`${storyline.label} 대표 영상을 리렌더링합니다.`);
+    setLiveMessage(`${storyline.label} : rerendering the video.`);
     if (isDemoMode()) {
       updateStoryline(storyline.id, { status: "rendering", progress: 38, error: undefined });
       window.setTimeout(() => {
         updateStoryline(storyline.id, { status: "ready", progress: 100 });
-        setLiveMessage(`${storyline.label} 대표 영상이 준비되었습니다.`);
+        setLiveMessage(`${storyline.label} : video is ready.`);
       }, 500);
       return;
     }
     if (snapshot) {
       void apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/retry`, { method: "POST" }).catch(() =>
-        setLiveMessage("리렌더링 요청이 실패했습니다."),
+        setLiveMessage("Rerender request failed."),
       );
     }
   }
@@ -1219,12 +1191,16 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     if (storyline.status !== "ready") return;
     setCaptionStates((current) => ({ ...current, [storyline.id]: "generating" }));
     setCaptionErrors((current) => ({ ...current, [storyline.id]: null }));
-    setLiveMessage(`${storyline.label} Instagram 캡션을 생성합니다.`);
+    setLiveMessage(`${storyline.label} Generating an Instagram caption.`);
     try {
       if (isDemoMode()) {
         await new Promise((resolve) => window.setTimeout(resolve, 450));
         updateStoryline(storyline.id, {
-          instagramCaption: `Ep ${snapshot?.episodeNumber ?? DEFAULT_EPISODE_NUMBER}. ${storyline.title}\n\n이 릴스는 창업가가 고객의 문제를 먼저 확인하고, 가장 작은 실행으로 시장의 반응을 검증한 과정을 다룹니다. 제품을 완성한 뒤 알리는 것이 아니라 실제 대화에서 구매 이유를 찾았습니다.\n\n중요한 것은 더 많은 기능이 아니었습니다. 반복해서 들리는 불편 중 고객이 비용을 지불할 만큼 큰 문제 하나를 선택하고, 그 문제를 해결하는 제안을 먼저 만들었습니다.\n\n1인 창업가에게 시간과 자원은 가장 중요한 생존 조건입니다. 작은 고객 인터뷰와 유료 제안은 제품 개발과 마케팅을 동시에 검증하면서 불필요한 실행을 줄이는 방법이 될 수 있습니다.\n\n여러분은 지금 제품을 설명하고 있나요, 아니면 고객이 돈을 내고 해결하고 싶은 문제를 확인하고 있나요?\n\n${INSTAGRAM_CAPTION_CTA}`,
+          instagramCaption: `${storyline.title}
+
+This is a preview based on the selected original speech.
+
+Check the source and subtitles before exporting.`,
         });
       } else {
         if (!snapshot) return;
@@ -1240,9 +1216,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       setCaptionStates((current) => ({ ...current, [storyline.id]: "idle" }));
       setNoteStates((current) => ({ ...current, [storyline.id]: "idle" }));
       setNoteErrors((current) => ({ ...current, [storyline.id]: null }));
-      setLiveMessage(`${storyline.label} Instagram 캡션이 준비되었습니다.`);
+      setLiveMessage(`${storyline.label} Instagram caption ready.`);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "Instagram 캡션 생성에 실패했습니다.";
+      const detail = error instanceof Error ? error.message : "Could not generate the Instagram caption.";
       setCaptionStates((current) => ({ ...current, [storyline.id]: "error" }));
       setCaptionErrors((current) => ({ ...current, [storyline.id]: detail }));
       setLiveMessage(detail);
@@ -1254,13 +1230,13 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     try {
       await navigator.clipboard.writeText(storyline.instagramCaption);
       setCaptionStates((current) => ({ ...current, [storyline.id]: "copied" }));
-      setLiveMessage(`${storyline.label} 캡션을 클립보드에 복사했습니다.`);
+      setLiveMessage(`${storyline.label} Caption copied to clipboard.`);
       window.setTimeout(() => {
         setCaptionStates((current) => ({ ...current, [storyline.id]: "idle" }));
       }, 1400);
     } catch {
       setCaptionStates((current) => ({ ...current, [storyline.id]: "error" }));
-      setLiveMessage("캡션을 복사하지 못했습니다. 텍스트를 직접 선택해 복사하세요.");
+      setLiveMessage("Could not copy the caption. Select and copy the text manually.");
     }
   }
 
@@ -1268,24 +1244,24 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     if (!storyline.instagramCaption || noteStates[storyline.id] === "saving") return;
     setNoteStates((current) => ({ ...current, [storyline.id]: "saving" }));
     setNoteErrors((current) => ({ ...current, [storyline.id]: null }));
-    setLiveMessage(`${storyline.label} 캡션을 iPhone 메모와 동기화되는 Mac 메모에 저장합니다.`);
+    setLiveMessage(`${storyline.label} Saving the caption to Mac Notes for iCloud sync with your iPhone.`);
     try {
       if (isDemoMode()) {
         await new Promise((resolve) => window.setTimeout(resolve, 350));
       } else {
-        if (!snapshot) throw new Error("현재 작업을 찾을 수 없습니다.");
+        if (!snapshot) throw new Error("The current workspace could not be found.");
         await apiMutation(`/api/jobs/${snapshot.jobId}/storylines/${storyline.serverId}/caption/note`, {
           method: "POST",
           body: JSON.stringify({ caption: storyline.instagramCaption }),
         });
       }
       setNoteStates((current) => ({ ...current, [storyline.id]: "saved" }));
-      setLiveMessage(`${storyline.label} 캡션 본문을 iCloud 메모에 저장했습니다.`);
+      setLiveMessage(`${storyline.label} Caption body saved to iCloud Notes.`);
       window.setTimeout(() => {
         setNoteStates((current) => ({ ...current, [storyline.id]: "idle" }));
       }, 1800);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "iCloud 메모에 저장하지 못했습니다.";
+      const detail = error instanceof Error ? error.message : "Could not save to iCloud Notes.";
       setNoteStates((current) => ({ ...current, [storyline.id]: "error" }));
       setNoteErrors((current) => ({ ...current, [storyline.id]: detail }));
       setLiveMessage(detail);
@@ -1294,13 +1270,13 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
   async function clearProject() {
     if (!snapshot?.sourceUrl || jobBusy) return;
-    setLiveMessage("현재 인터뷰 선택을 비웁니다.");
+    setLiveMessage("Clearing the current video selection.");
     try {
       applySnapshot(makeEmptySnapshot("connected"));
       setYoutubeUrl("");
-      setLiveMessage("인터뷰 선택을 비웠습니다. 기존 작업 파일은 유지됩니다.");
+      setLiveMessage("Video selection cleared. Existing job files are preserved.");
     } catch {
-      setLiveMessage("프로젝트 선택을 비우지 못했습니다.");
+      setLiveMessage("Could not clear the project selection.");
     }
   }
 
@@ -1332,7 +1308,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         setArchiveItems((payload.items ?? []).map(normalizeArchiveItem).filter((item): item is ArchiveItem => item !== null));
       }
     } catch (error) {
-      setArchiveError(error instanceof Error ? error.message : "과거 릴스를 불러오지 못했습니다.");
+      setArchiveError(error instanceof Error ? error.message : "Could not load archived reels.");
     } finally {
       setArchiveLoading(false);
     }
@@ -1354,9 +1330,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       applySnapshot(completedOnlySnapshot(next, item.storylineId));
       setArchiveMode(true);
       setAppView("workspace");
-      setLiveMessage(`에피소드 ${item.episodeNumber}의 과거 릴스를 열었습니다.`);
+      setLiveMessage(`Archived reel opened.`);
     } catch (error) {
-      setArchiveError(error instanceof Error ? error.message : "과거 릴스를 열지 못했습니다.");
+      setArchiveError(error instanceof Error ? error.message : "Could not open the archived reel.");
     } finally {
       setOpeningArchiveId(null);
     }
@@ -1365,7 +1341,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
   async function deleteArchiveItem(item: ArchiveItem) {
     if (openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive) return;
     const confirmed = window.confirm(
-      `‘${item.reelTitle}’ 릴스를 삭제할까요?\n\n보관 영상과 작업 파일이 함께 삭제되며 되돌릴 수 없습니다.`,
+      `Delete “${item.reelTitle}”?
+
+The archived video and job files will be permanently deleted.`,
     );
     if (!confirmed) return;
     setDeletingArchiveId(item.id);
@@ -1380,9 +1358,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         );
       }
       setArchiveItems((current) => current.filter((candidate) => candidate.id !== item.id));
-      setLiveMessage(`‘${item.reelTitle}’ 릴스와 관련 작업 파일을 삭제했습니다.`);
+      setLiveMessage(`“${item.reelTitle}” and its job files were deleted.`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "과거 릴스를 삭제하지 못했습니다.";
+      const message = error instanceof Error ? error.message : "Could not delete the archived reel.";
       setArchiveError(message);
       setLiveMessage(message);
     } finally {
@@ -1394,7 +1372,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     if (archiveItems.length === 0 || openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive) return;
     const count = archiveItems.length;
     const confirmed = window.confirm(
-      `과거 릴스 ${count}개를 모두 삭제할까요?\n\n보관 영상과 작업 파일이 함께 삭제되며 되돌릴 수 없습니다.`,
+      `Delete all ${count} archived reels?
+
+The archived videos and job files will be permanently deleted.`,
     );
     if (!confirmed) return;
     setDeletingAllArchive(true);
@@ -1406,9 +1386,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         await apiMutation("/api/archive", { method: "DELETE" });
       }
       setArchiveItems([]);
-      setLiveMessage(`과거 릴스 ${count}개와 관련 작업 파일을 모두 삭제했습니다.`);
+      setLiveMessage(`${count} archived reels and their job files were deleted.`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "과거 릴스를 모두 삭제하지 못했습니다.";
+      const message = error instanceof Error ? error.message : "Could not delete all archived reels.";
       setArchiveError(message);
       setLiveMessage(message);
     } finally {
@@ -1418,14 +1398,14 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
   async function updateMetadata(storyline: Storyline, draft: MetadataDraft) {
     if (!snapshot || storyline.status !== "ready") return;
-    const episode = Number(draft.episode);
-    if (!draft.name.trim() || !Number.isSafeInteger(episode) || episode < 1) {
-      setMetadataErrors((current) => ({ ...current, [storyline.id]: "이름과 1 이상의 정수 에피소드 번호를 입력하세요." }));
+    const episode = storyline.episodeNumber ?? snapshot.episodeNumber;
+    if (!draft.name.trim()) {
+      setMetadataErrors((current) => ({ ...current, [storyline.id]: "Enter a name." }));
       return;
     }
     setMetadataStates((current) => ({ ...current, [storyline.id]: "saving" }));
     setMetadataErrors((current) => ({ ...current, [storyline.id]: null }));
-    setLiveMessage(`${storyline.label} 이름·직책과 에피소드를 영상에 반영합니다.`);
+    setLiveMessage(`${storyline.label} : updating the name and role on the video.`);
     try {
       let next: Snapshot;
       if (isDemoMode()) {
@@ -1444,9 +1424,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       applySnapshot(archiveModeRef.current ? completedOnlySnapshot(next, storyline.id) : next);
       setMetadataDrafts((current) => { const updated = { ...current }; delete updated[storyline.id]; return updated; });
       setMetadataStates((current) => ({ ...current, [storyline.id]: "saved" }));
-      setLiveMessage("이름·직책과 에피소드를 영상에 반영했습니다.");
+      setLiveMessage("Name and role updated on the video.");
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "화면 정보를 수정하지 못했습니다.";
+      const detail = error instanceof Error ? error.message : "Could not update the video information.";
       setMetadataStates((current) => ({ ...current, [storyline.id]: "error" }));
       setMetadataErrors((current) => ({ ...current, [storyline.id]: detail }));
       setLiveMessage(detail);
@@ -1464,7 +1444,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     }
     setTitleStates((current) => ({ ...current, [storyline.id]: "saving" }));
     setTitleErrors((current) => ({ ...current, [storyline.id]: null }));
-    setLiveMessage(`${storyline.label} 화면 제목을 영상에 반영합니다.`);
+    setLiveMessage(`${storyline.label} : updating the on-screen title.`);
     try {
       let next: Snapshot;
       if (isDemoMode()) {
@@ -1501,11 +1481,11 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         [storyline.id]: { upper: draft.upper.trim(), lower: draft.lower.trim() },
       }));
       setTitleStates((current) => ({ ...current, [storyline.id]: "saved" }));
-      setLiveMessage(`${storyline.label} 화면 제목과 영상 오버레이를 수정했습니다.`);
+      setLiveMessage(`${storyline.label} On-screen title and overlay updated.`);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "화면 제목을 수정하지 못했습니다.";
+      const detail = error instanceof Error ? error.message : "Could not update the on-screen title.";
       setTitleStates((current) => ({ ...current, [storyline.id]: "error" }));
-      setTitleErrors((current) => ({ ...current, [storyline.id]: `${detail} 이전 영상은 그대로 재생할 수 있습니다.` }));
+      setTitleErrors((current) => ({ ...current, [storyline.id]: `${detail} The previous video remains playable.` }));
       setLiveMessage(detail);
     }
   }
@@ -1514,16 +1494,16 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     if (!snapshot || storyline.status !== "ready") return;
     setTitleStates((current) => ({ ...current, [storyline.id]: "generating" }));
     setTitleErrors((current) => ({ ...current, [storyline.id]: null }));
-    setLiveMessage(`${storyline.label}의 제목 후보 4개를 만드는 중입니다.`);
+    setLiveMessage(`${storyline.label}: generating four title suggestions.`);
     try {
       let suggestions: TitleDraft[];
       if (isDemoMode()) {
         await new Promise((resolve) => window.setTimeout(resolve, 550));
         suggestions = [
-          { upper: "성장이 독이 된 순간", lower: "리더가 놓친 위험 신호" },
-          { upper: "회사가 커질수록", lower: "대표가 더 외로워지는 이유" },
-          { upper: "성장하는 회사에", lower: "내 자존심을 걸지 마세요" },
-          { upper: "성공을 붙잡다가", lower: "팀을 놓치는 대표들의 특징" },
+          { upper: "You Practice Every Day", lower: "Why Your Skills Do Not Improve" },
+          { upper: "The Same Time Spent", lower: "Why Learning Speeds Differ" },
+          { upper: "Record Your Mistakes", lower: "Change Your Next Practice" },
+          { upper: "Before Closing the Book", lower: "Leave Yourself One Question" },
         ];
       } else {
         const response = await apiMutation(
@@ -1531,7 +1511,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
           { method: "POST" },
         );
         const payload = await response.json() as { suggestions?: { title_upper?: string; title_lower?: string }[] };
-        if (!Array.isArray(payload.suggestions) || payload.suggestions.length !== 4) throw new Error("제목 후보 4개를 받지 못했습니다.");
+        if (!Array.isArray(payload.suggestions) || payload.suggestions.length !== 4) throw new Error("Could not get four title suggestions.");
         suggestions = payload.suggestions.map((item) => ({
           upper: String(item.title_upper ?? "").trim(),
           lower: String(item.title_lower ?? "").trim(),
@@ -1544,9 +1524,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       setTitleSuggestions((current) => ({ ...current, [storyline.id]: suggestions }));
       setTitleDrafts((current) => ({ ...current, [storyline.id]: suggestions[0] }));
       setTitleStates((current) => ({ ...current, [storyline.id]: "suggested" }));
-      setLiveMessage(`제목 후보 4개를 만들었습니다. 추천 제목을 먼저 선택했습니다. 원하는 후보를 고른 뒤 수정하기를 누르세요.`);
+      setLiveMessage(`Four title suggestions are ready. The recommended title is selected. Choose a title, then click Apply changes.`);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : "새 화면 제목을 제안받지 못했습니다.";
+      const detail = error instanceof Error ? error.message : "Could not suggest a new on-screen title.";
       setTitleStates((current) => ({ ...current, [storyline.id]: "error" }));
       setTitleErrors((current) => ({ ...current, [storyline.id]: detail }));
       setLiveMessage(detail);
@@ -1556,35 +1536,29 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
   async function startYoutubeJob(sourceUrl: string) {
     const normalized = sourceUrl.trim();
     if (!normalized) {
-      const message = "YouTube 인터뷰 링크를 입력하세요.";
+      const message = "Enter a YouTube video link.";
       setYoutubeError(message);
       setLiveMessage(message);
       return;
     }
     if (!youtubeVideoId(normalized)) {
-      const message = "지원되는 YouTube 영상 링크를 입력하세요.";
+      const message = "Enter a supported YouTube video URL.";
       setYoutubeError(message);
       setLiveMessage(message);
       return;
     }
     setYoutubeError(null);
-    if (!episodeValid) {
-      const message = "회차는 1 이상의 정수로 입력하세요.";
-      setYoutubeError(message);
-      setLiveMessage(message);
-      return;
-    }
     if (requestPendingRef.current || jobBusy) return;
     requestPendingRef.current = true;
     setRequestPending(true);
     try {
-      setLiveMessage("YouTube 영상을 읽고 콘텐츠 후보 10개를 분석합니다.");
+      setLiveMessage("Reading the YouTube video and analyzing ten clip ideas.");
       const response = await apiMutation("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           youtube_url: normalized,
-          episode_number: episodeNumber,
+          output_language: outputLanguage,
           content_types: ALL_CONTENT_TYPES,
           provider: selectedProvider,
           model: selectedModel,
@@ -1611,7 +1585,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     requestPendingRef.current = true;
     setRequestPending(true);
     try {
-      setLiveMessage(`선택한 후보 ${selectedCandidateIds.length}개의 릴스를 생성합니다.`);
+      setLiveMessage(`Generating ${selectedCandidateIds.length} selected reels.`);
       const response = await apiMutation(`/api/jobs/${snapshot.jobId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1629,11 +1603,11 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     event.preventDefault();
     if (jobBusy) return;
     if (isDemoMode()) {
-      setLiveMessage("YouTube 링크에서 콘텐츠 후보 10개를 분석합니다.");
+      setLiveMessage("Analyzing ten clip ideas from the YouTube link.");
       return;
     }
     void startYoutubeJob(youtubeUrl).catch((error) => {
-      const detail = error instanceof Error ? error.message : "YouTube 링크를 처리하지 못했습니다.";
+      const detail = error instanceof Error ? error.message : "Could not process the YouTube link.";
       setYoutubeError(detail);
       setLiveMessage(detail);
     });
@@ -1641,14 +1615,10 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
   async function exportSelected() {
     if (!readySelected || !snapshot) return;
-    if (!googleDriveSettings?.configured) {
-      setLiveMessage("설정에서 Google Drive 저장 폴더를 먼저 선택하세요.");
-      return;
-    }
     setExportState("exporting");
-    setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개 내보내기를 준비합니다.`);
+    setLiveMessage(`Preparing ${selectedExportStorylines.length} selected videos for export.`);
     try {
-      let completedPath = googleDriveSettings.my_drive_path;
+      let completedPath = googleDriveSettings?.my_drive_path || "~/Movies/Reels Editor Exports";
       if (!isDemoMode()) {
         const response = await apiMutation(`/api/jobs/${snapshot.jobId}/export-batch`, {
           method: "POST",
@@ -1662,20 +1632,20 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         completedPath = exportedPathFromPayload(payload) ?? completedPath;
       } else {
         await new Promise((resolve) => window.setTimeout(resolve, 450));
-        completedPath = `${googleDriveSettings.my_drive_path}/에피소드${snapshot.episodeNumber}_${snapshot.projectName}/`;
+        completedPath = `${completedPath}/${snapshot.projectName}/`;
       }
       setExportState("done");
-      setLiveMessage(`선택한 영상 ${selectedExportStorylines.length}개를 ${completedPath}에 저장했습니다.`);
+      setLiveMessage(`Saved ${selectedExportStorylines.length} videos to ${completedPath}.`);
     } catch (error) {
       setExportState("failed");
       const detail = error instanceof Error ? `: ${error.message}` : "";
-      setLiveMessage(`내보내기에 실패했습니다${detail}`);
+      setLiveMessage(`Export failed${detail}`);
     }
   }
 
   async function connectGoogleDrive() {
     if (isDemoMode()) {
-      setLiveMessage("Google Drive 저장 폴더를 선택했습니다.");
+      setLiveMessage("Google Drive export folder selected.");
       return;
     }
     setGoogleDriveConnecting(true);
@@ -1684,10 +1654,10 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       const settings = (await response.json()) as GoogleDriveSettings;
       setGoogleDriveSettings(settings);
       setLiveMessage(settings.cancelled
-        ? "Google Drive 폴더 선택을 취소했습니다."
-        : "Google Drive 저장 폴더를 선택했습니다.");
+        ? "Google Drive folder selection cancelled."
+        : "Google Drive export folder selected.");
     } catch (error) {
-      setLiveMessage(error instanceof Error ? error.message : "Google Drive 연결에 실패했습니다.");
+      setLiveMessage(error instanceof Error ? error.message : "Could not connect to Google Drive.");
     } finally {
       setGoogleDriveConnecting(false);
     }
@@ -1707,10 +1677,10 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       const settings = (await response.json()) as PlaybackSpeedSettings;
       setPlaybackSpeed(normalizePlaybackSpeed(settings.speed));
       setSpeedSettingsSaveState("saved");
-      setLiveMessage(`재생 배속을 ${playbackSpeedLabel(settings.speed)}배로 저장했습니다.`);
+      setLiveMessage(`Playback speed set to ${playbackSpeedLabel(settings.speed)}×.`);
     } catch (error) {
       setSpeedSettingsSaveState("error");
-      setLiveMessage(error instanceof Error ? error.message : "재생 배속 저장에 실패했습니다.");
+      setLiveMessage(error instanceof Error ? error.message : "Could not save playback speed.");
     }
   }
 
@@ -1755,7 +1725,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     if (nextEnabled) {
       void video.play().catch(() => setAudioNeedsGesture(true));
     }
-    setLiveMessage(nextEnabled ? "릴스 소리를 켰습니다." : "릴스 소리를 껐습니다.");
+    setLiveMessage(nextEnabled ? "Video sound enabled." : "Video sound muted.");
   }
 
   const selectedStorylineIndex = Math.max(0, storylines.findIndex((storyline) => storyline.id === selectedId));
@@ -1767,7 +1737,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     if (!next || next.id === selectedId) return;
     setSelectedId(next.id);
     setExpandedDetailsId(null);
-    setLiveMessage(`${next.label}로 이동했습니다. ${nextIndex + 1}/${storylines.length}`);
+    setLiveMessage(`${next.label} selected. ${nextIndex + 1}/${storylines.length}`);
   }
 
   function toggleSelectedForExport() {
@@ -1834,13 +1804,13 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
   async function reconnect() {
     setConnection("connecting");
-    setLiveMessage("백엔드에 다시 연결합니다.");
+    setLiveMessage("Reconnecting to the backend.");
     try {
       const next = await readSnapshot(activeJobIdRef.current);
       applySnapshot(archiveModeRef.current ? completedOnlySnapshot(next) : next);
     } catch {
       setConnection("disconnected");
-      setLiveMessage("재연결하지 못했습니다.");
+      setLiveMessage("Could not reconnect.");
     }
   }
 
@@ -1879,10 +1849,10 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
   function SettingsPopover() {
     return (
-      <div ref={settingsDialogRef} className="settings-popover" role="dialog" aria-label="생성 설정" tabIndex={-1}>
+      <div ref={settingsDialogRef} className="settings-popover" role="dialog" aria-label="Generation settings" tabIndex={-1}>
         <div className="settings-field">
           <div className="settings-field-heading">
-            <h3>재생 배속</h3>
+            <h3>Playback speed</h3>
             <strong>{playbackSpeedLabel(playbackSpeed)}×</strong>
           </div>
           <input
@@ -1893,8 +1863,8 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             step={PLAYBACK_SPEED_STEP}
             value={playbackSpeed}
             disabled={jobBusy}
-            aria-label="재생 배속"
-            aria-valuetext={`${playbackSpeedLabel(playbackSpeed)}배`}
+            aria-label="Playback speed"
+            aria-valuetext={`${playbackSpeedLabel(playbackSpeed)}×`}
             style={{
               "--range-progress": `${((playbackSpeed - MIN_PLAYBACK_SPEED) / (MAX_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)) * 100}%`,
             } as React.CSSProperties}
@@ -1902,24 +1872,24 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
           />
           <p className={speedSettingsSaveState === "error" ? "settings-note error" : "settings-note"}>
             {speedSettingsSaveState === "saving"
-              ? "저장 중"
+              ? "Saving"
               : speedSettingsSaveState === "saved"
-                ? "저장됨"
+                ? "Saved"
                 : speedSettingsSaveState === "error"
-                  ? "저장 실패"
+                  ? "Save failed"
                   : jobBusy
-                    ? "작업 중에는 바꿀 수 없습니다"
-                    : "다음 생성부터 적용됩니다"}
+                    ? "Cannot change while a job is running"
+                    : "Applies to the next generation"}
           </p>
         </div>
 
         <div className="settings-field">
           <div className="settings-field-heading">
-            <h3>모델</h3>
+            <h3>Model</h3>
           </div>
           <select
             id="model-provider"
-            aria-label="모델 프로바이더"
+            aria-label="Model provider"
             value={selectedProvider}
             disabled={jobBusy}
             onChange={(event) => {
@@ -1935,10 +1905,10 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
           <p className="settings-note">
             {PROVIDER_OPTIONS.find((option) => option.value === selectedProvider)?.description}
           </p>
-          <label className="settings-select-label" htmlFor="model-name">세부 모델</label>
+          <label className="settings-select-label" htmlFor="model-name">Model name</label>
           <select
             id="model-name"
-            aria-label="세부 모델"
+            aria-label="Model name"
             value={selectedModel}
             disabled={jobBusy}
             onChange={(event) => setSelectedModel(event.target.value)}
@@ -1951,11 +1921,11 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
         <div className="settings-field integration-settings-field">
           <div className="settings-field-heading">
-            <h3>Google Drive 내보내기</h3>
-            <strong>{googleDriveSettings?.configured ? "연결됨" : "미설정"}</strong>
+            <h3>Google Drive export</h3>
+            <strong>{googleDriveSettings?.configured ? "Connected" : "Not configured"}</strong>
           </div>
           <p className="drive-path" title={googleDriveSettings?.my_drive_path || undefined}>
-            {googleDriveSettings?.my_drive_path || "Google Drive 폴더를 선택하면 릴스(에피소드) 안에 저장합니다."}
+            {googleDriveSettings?.my_drive_path || "Saves to your selected Google Drive folder."}
           </p>
           <button
             type="button"
@@ -1963,9 +1933,9 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             disabled={googleDriveConnecting}
           >
             <FolderOpen size={15} aria-hidden="true" />
-            {googleDriveConnecting ? "선택 중" : googleDriveSettings?.configured ? "폴더 다시 선택" : "저장 폴더 선택"}
+            {googleDriveConnecting ? "Choosing" : googleDriveSettings?.configured ? "Choose another folder" : "Choose export folder"}
           </button>
-          <p className="settings-note">기존 릴스(에피소드) 폴더에 MP4 파일을 바로 저장합니다.</p>
+          <p className="settings-note">Save MP4 files to the selected export folder.</p>
         </div>
 
       </div>
@@ -1983,7 +1953,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     return (
       <main className="loading-shell" aria-busy="true">
         <Loader2 className="spin" aria-hidden="true" />
-        <p>대시보드 준비 중</p>
+        <p>Preparing the workspace</p>
       </main>
     );
   }
@@ -1993,20 +1963,20 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       <main className="app-shell archive-shell">
         <div className="topbar">
           <div className="project-brand">
-            <img className="brand-mark" src={REELS_EDITOR_LOGO_URL} alt="Reels Editor 로고" />
+            <img className="brand-mark" src={REELS_EDITOR_LOGO_URL} alt="Reels Editor logo" />
             <div className="project-block">
               <p className="eyebrow">Reels Editor</p>
-              <h1 ref={archiveHeadingRef} className="view-focus-target" tabIndex={-1}>과거 릴스</h1>
+              <h1 ref={archiveHeadingRef} className="view-focus-target" tabIndex={-1}>Archived reels</h1>
             </div>
           </div>
-          <div className="workbar-actions" aria-label="과거 릴스 도구">
+          <div className="workbar-actions" aria-label="Archive tools">
             <button type="button" className="ghost-button" onClick={() => {
               archiveModeRef.current = false;
               pendingViewFocusRef.current = "workspace";
               setArchiveMode(false);
               setAppView("workspace");
             }}>
-              작업으로 돌아가기
+              Back to workspace
             </button>
           </div>
         </div>
@@ -2014,12 +1984,12 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         <section className="archive-workspace" aria-labelledby="archive-title" aria-busy={archiveLoading || deletingAllArchive || deletingArchiveId !== null}>
           <header className="archive-header">
             <div>
-              <p className="eyebrow">완료된 영상만 표시</p>
-              <h2 id="archive-title">다시 꺼내 쓸 릴스</h2>
-              <p>영상을 열어 다시 활용할 수 있습니다. 완료 후 7일이 지난 릴스는 자동 삭제됩니다.</p>
+              <p className="eyebrow">Completed videos only</p>
+              <h2 id="archive-title">Your saved reels</h2>
+              <p>Open a video to reuse it. Reels are automatically removed seven days after completion.</p>
             </div>
             <div className="archive-summary">
-              <strong>{archiveItems.length}<span>개</span></strong>
+              <strong>{archiveItems.length}<span></span></strong>
               {archiveItems.length > 0 ? (
                 <button
                   type="button"
@@ -2028,25 +1998,25 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                   onClick={() => { void deleteAllArchive(); }}
                 >
                   {deletingAllArchive ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Trash2 size={15} aria-hidden="true" />}
-                  {deletingAllArchive ? "삭제 중" : "전체 삭제"}
+                  {deletingAllArchive ? "Deleting" : "Delete all"}
                 </button>
               ) : null}
             </div>
           </header>
 
           {archiveLoading ? (
-            <div className="archive-state" role="status"><Loader2 className="spin" aria-hidden="true" /> 과거 릴스를 불러오는 중입니다.</div>
+            <div className="archive-state" role="status"><Loader2 className="spin" aria-hidden="true" /> Loading archived reels.</div>
           ) : archiveError ? (
             <div className="archive-state error" role="alert">
               <CircleAlert aria-hidden="true" />
               <span>{archiveError}</span>
-              <button type="button" onClick={() => { void showArchive(); }}>다시 불러오기</button>
+              <button type="button" onClick={() => { void showArchive(); }}>Reload</button>
             </div>
           ) : archiveItems.length === 0 ? (
             <div className="archive-state empty">
               <History aria-hidden="true" />
-              <strong>완료된 릴스가 아직 없습니다.</strong>
-              <span>영상 제작이 끝나면 이곳에서 다시 열 수 있습니다.</span>
+              <strong>No completed reels yet.</strong>
+              <span>Completed videos appear here for you to reopen.</span>
             </div>
           ) : (
             <div className="archive-list" role="list">
@@ -2054,16 +2024,14 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                 <article className="archive-item" role="listitem" key={item.id}>
                   <div className="archive-preview">
                     {item.thumbnailUrl ? (
-                      <Thumbnail src={item.thumbnailUrl} alt={`${item.reelTitle} 썸네일`} className="archive-thumbnail" />
+                      <Thumbnail src={item.thumbnailUrl} alt={`${item.reelTitle}  thumbnail`} className="archive-thumbnail" />
                     ) : item.videoUrl ? (
-                      <video src={item.videoUrl} preload="metadata" muted aria-label={`${item.reelTitle} 영상 미리보기`} />
+                      <video src={item.videoUrl} preload="metadata" muted aria-label={`${item.reelTitle}  video preview`} />
                     ) : (
-                      <div className="archive-thumbnail thumbnail-fallback" role="img" aria-label="미리보기 없음"><ImageOff aria-hidden="true" /></div>
+                      <div className="archive-thumbnail thumbnail-fallback" role="img" aria-label="No preview"><ImageOff aria-hidden="true" /></div>
                     )}
-                    <span>Ep {item.episodeNumber}</span>
                   </div>
                   <div className="archive-copy">
-                    <p className="eyebrow">에피소드 {item.episodeNumber}</p>
                     <h3>{item.reelTitle}</h3>
                     <p>{item.projectName}</p>
                     <small><Clock3 size={13} aria-hidden="true" /> {formatArchiveDate(item.completedAt)}</small>
@@ -2074,20 +2042,20 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                       className="archive-open"
                       disabled={openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive}
                       onClick={() => { void openArchiveItem(item); }}
-                      aria-label={`${item.reelTitle} 열기`}
+                      aria-label={`${item.reelTitle} Open`}
                     >
                       {openingArchiveId === item.id ? <Loader2 size={16} className="spin" /> : null}
-                      {openingArchiveId === item.id ? "여는 중" : "열기"}
+                      {openingArchiveId === item.id ? "Opening" : "Open"}
                     </button>
                     <button
                       type="button"
                       className="archive-delete"
                       disabled={openingArchiveId !== null || deletingArchiveId !== null || deletingAllArchive}
                       onClick={() => { void deleteArchiveItem(item); }}
-                      aria-label={`${item.reelTitle} 삭제`}
+                      aria-label={`${item.reelTitle} Delete`}
                     >
                       {deletingArchiveId === item.id ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Trash2 size={15} aria-hidden="true" />}
-                      {deletingArchiveId === item.id ? "삭제 중" : "삭제"}
+                      {deletingArchiveId === item.id ? "Deleting" : "Delete"}
                     </button>
                   </div>
                 </article>
@@ -2104,22 +2072,22 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
     <main className="app-shell">
       <div className="topbar">
         <div className="project-brand">
-          <img className="brand-mark" src={REELS_EDITOR_LOGO_URL} alt="Reels Editor 로고" />
+          <img className="brand-mark" src={REELS_EDITOR_LOGO_URL} alt="Reels Editor logo" />
           <div className="project-block">
             <p className="eyebrow">Reels Editor</p>
             <h1 ref={workspaceHeadingRef} className="view-focus-target" tabIndex={-1}>{snapshot.projectName}</h1>
           </div>
         </div>
-        <div className="workbar-actions" aria-label="작업 도구">
+        <div className="workbar-actions" aria-label="Workspace tools">
           <button type="button" className="ghost-button archive-button topbar-tool-button" onClick={() => { void showArchive(); }}>
-            <History size={17} /> 과거 릴스
+            <History size={17} /> Archived reels
           </button>
           <div className="settings-menu" ref={settingsMenuRef}>
             <button
               ref={settingsTriggerRef}
               type="button"
               className={settingsOpen ? "ghost-button topbar-tool-button active" : "ghost-button topbar-tool-button"}
-              aria-label="설정"
+              aria-label="Settings"
               aria-haspopup="dialog"
               aria-expanded={settingsOpen}
               onClick={() => {
@@ -2131,7 +2099,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                 setSettingsOpen(true);
               }}
             >
-              <Settings2 size={17} /> 설정
+              <Settings2 size={17} /> Settings
             </button>
             {settingsOpen ? <SettingsPopover /> : null}
           </div>
@@ -2141,7 +2109,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             disabled={!snapshot.sourceUrl || jobBusy}
             onClick={clearProject}
           >
-            <FolderX size={17} /> 비우기
+            <FolderX size={17} /> Clear
           </button>
           <button
             type="button"
@@ -2150,18 +2118,18 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             onClick={() => {
               if (!isDemoMode()) {
                 if (snapshot.sourceUrl) {
-                  setLiveMessage("YouTube 인터뷰에서 콘텐츠 후보 10개를 다시 분석합니다.");
+                  setLiveMessage("Reanalyzing ten clip ideas from this YouTube video.");
                   void startYoutubeJob(snapshot.sourceUrl).catch((error) => {
-                    const detail = error instanceof Error ? error.message : "생성 요청이 실패했습니다.";
+                    const detail = error instanceof Error ? error.message : "Generation request failed.";
                     setYoutubeError(detail);
                     setLiveMessage(detail);
                   });
                   return;
                 }
-                setLiveMessage("먼저 YouTube 인터뷰 링크를 입력하세요.");
+                setLiveMessage("Enter a YouTube video link first.");
                 return;
               }
-              setLiveMessage("콘텐츠 후보 10개를 다시 분석합니다.");
+              setLiveMessage("Reanalyzing ten clip ideas.");
             }}
           >
             <RefreshCcw size={17} /> {generateLabel}
@@ -2169,12 +2137,10 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
           <button
             type="button"
             className="topbar-icon-button export-button"
-            disabled={!readySelected || exportState === "exporting" || !googleDriveSettings?.configured}
+            disabled={!readySelected || exportState === "exporting"}
             onClick={exportSelected}
-            aria-label={exportState === "done" ? "저장 완료" : archiveMode ? "보관 영상 다시 내보내기" : `선택 영상 ${selectedExportStorylines.length}개 내보내기`}
-            title={!googleDriveSettings?.configured
-              ? "설정에서 Google Drive 저장 폴더를 선택하세요"
-              : archiveMode ? "보관 영상 다시 내보내기" : `선택 영상 ${selectedExportStorylines.length}개 내보내기`}
+            aria-label={exportState === "done" ? "Export saved" : archiveMode ? "Export archived video again" : `Export ${selectedExportStorylines.length} selected videos`}
+            title={archiveMode ? "Export archived video again" : `Export ${selectedExportStorylines.length} selected videos`}
           >
             {exportState === "exporting" ? <Loader2 size={19} className="spin" /> : <Download size={19} />}
           </button>
@@ -2187,17 +2153,17 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             <div className="generation-progress-title">
               <span className="generation-progress-icon" aria-hidden="true"><Loader2 size={16} className="spin" /></span>
               <div>
-                <p>현재 단계 · {activeGenerationStage + 1}/{GENERATION_STAGES.length}</p>
-                <h2 id={`${tabId}-generation-progress-title`}>{downloading ? (download ? downloadLabel : "자막 다운로드") : GENERATION_STAGES[activeGenerationStage].label}</h2>
+                <p>Current stage · {activeGenerationStage + 1}/{GENERATION_STAGES.length}</p>
+                <h2 id={`${tabId}-generation-progress-title`}>{downloading ? (download ? downloadLabel : "Download captions") : GENERATION_STAGES[activeGenerationStage].label}</h2>
               </div>
             </div>
             <div className="generation-progress-summary">
               {!downloading ? <div className="generation-progress-eta">
-                <span>예상 시간</span>
+                <span>Estimated time</span>
                 <strong>{remainingTimeLabel(remainingMinutes)}</strong>
               </div>
               : null}
-              <strong className="generation-progress-percent">{visibleProgress === null ? "준비 중" : `${visibleProgress}%`}</strong>
+              <strong className="generation-progress-percent">{visibleProgress === null ? "Preparing" : `${visibleProgress}%`}</strong>
             </div>
           </div>
           <div
@@ -2211,17 +2177,17 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             <span style={{ width: `${visibleProgress ?? 0}%` }} />
           </div>
           {snapshot.jobMessage ? <p className="generation-progress-detail">{snapshot.jobMessage}</p> : null}
-          {downloading ? <p className="generation-progress-note">자막을 먼저 분석합니다. 영상은 후보 선택 후 필요한 구간만 다운로드합니다.</p> : null}
+          {downloading ? <p className="generation-progress-note">Captions are analyzed first. Only the necessary video sections are downloaded after you select clips.</p> : null}
         </section>
       ) : null}
 
       <form className="youtube-source" onSubmit={submitYoutube} hidden={archiveMode}>
         <div className="youtube-source-controls">
           {sourceThumbnailUrl ? (
-            <Thumbnail src={sourceThumbnailUrl} alt="입력한 YouTube 영상 썸네일" className="youtube-thumbnail" />
+            <Thumbnail src={sourceThumbnailUrl} alt="Thumbnail of the YouTube source" className="youtube-thumbnail" />
           ) : null}
           <div className="youtube-source-entry">
-            <label htmlFor={`${tabId}-youtube-url`} className="sr-only">창업가 인터뷰 YouTube 링크</label>
+            <label htmlFor={`${tabId}-youtube-url`} className="sr-only">YouTube video URL</label>
             <span aria-hidden="true"><Link size={17} /></span>
             <input
               id={`${tabId}-youtube-url`}
@@ -2238,31 +2204,22 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                 setYoutubeError(null);
               }}
             />
-            <button type="submit" disabled={jobBusy || !youtubeUrl.trim() || !episodeValid}>
+            <button type="submit" disabled={jobBusy || !youtubeUrl.trim()}>
               {jobBusy ? <Loader2 size={16} className="spin" /> : <Scissors size={16} />}
-              {jobBusy ? "분석 중" : "후보 10개 분석"}
+              {jobBusy ? "Analyzing" : "Analyze 10 ideas"}
             </button>
           </div>
-          <label className="episode-field" htmlFor={`${tabId}-episode-number`}>
-            <span>에피소드</span>
-            <input
-              id={`${tabId}-episode-number`}
-              type="number"
-              inputMode="numeric"
-              min="1"
-              step="1"
-              value={episodeInput}
-              disabled={jobBusy}
-              aria-label="에피소드 번호"
-              aria-invalid={!episodeValid}
-              aria-describedby={`${tabId}-youtube-source-help`}
+          <label className="language-field" htmlFor={`${tabId}-output-language`}>
+            <span>Output language</span>
+            <select id={`${tabId}-output-language`} value={outputLanguage} disabled={jobBusy}
               onChange={(event) => {
-                setEpisodeInput(event.target.value);
-                setYoutubeError(null);
-              }}
-            />
-            <span className="episode-total">/ 1000</span>
+                const value = event.target.value as "ko" | "en" | "zh";
+                setOutputLanguage(value); localStorage.setItem("reels-output-language-v2", value);
+              }}>
+              <option value="en">English</option><option value="ko">Korean</option><option value="zh">Simplified Chinese</option>
+            </select>
           </label>
+
         </div>
         {youtubeError ? <p id={`${tabId}-youtube-source-help`} className="youtube-source-help error">{youtubeError}</p> : null}
       </form>
@@ -2270,7 +2227,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       {snapshot.jobStatus === "failed" && snapshot.jobError ? (
         <section className="notice error" role="alert">
           <CircleAlert size={18} aria-hidden="true" />
-          <span><strong>클립 생성 실패</strong>{snapshot.jobError}</span>
+          <span><strong>Clip generation failed</strong>{snapshot.jobError}</span>
         </section>
       ) : null}
 
@@ -2278,13 +2235,13 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
         <section className="candidate-workspace" aria-labelledby={`${tabId}-candidate-workspace-title`}>
           <header className="candidate-workspace-header">
             <div>
-              <p className="eyebrow">분석 완료 · 중복 제거됨</p>
-              <h2 id={`${tabId}-candidate-workspace-title`}>만들고 싶은 릴스를 선택하세요</h2>
+              <p className="eyebrow">Analysis complete · duplicates removed</p>
+              <h2 id={`${tabId}-candidate-workspace-title`}>Choose the reels you want to make</h2>
               <p>
-                선택한 후보만 제작하며, 선택 후 대본 생성과 렌더링까지 {remainingTimeLabel(estimatedRenderMinutes(selectedCandidateIds.length || 3) + 1)} 걸립니다.
+                Only selected clips will be produced. Script generation and rendering take {remainingTimeLabel(estimatedRenderMinutes(selectedCandidateIds.length || 3) + 1)} .
               </p>
             </div>
-            <strong>{selectedCandidateIds.length}<span>개 선택</span></strong>
+            <strong>{selectedCandidateIds.length}<span> selected</span></strong>
           </header>
           <div className="candidate-list">
             {snapshot.candidates.map((candidate, index) => {
@@ -2300,7 +2257,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                   <span className="candidate-copy">
                     <strong>{candidate.title}</strong>
                     <span>{candidate.summary}</span>
-                    <small><b>핵심 도움</b>{candidate.takeaway}</small>
+                    <small><b>Takeaway</b>{candidate.takeaway}</small>
                   </span>
                   <span className="candidate-check" aria-hidden="true"><Check size={17} /></span>
                 </label>
@@ -2308,17 +2265,17 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             })}
           </div>
           <div className="candidate-action">
-            <span>{selectedCandidateIds.length > 0 ? `선택한 ${selectedCandidateIds.length}개만 제작합니다.` : "후보를 하나 이상 선택하세요."}</span>
+            <span>{selectedCandidateIds.length > 0 ? `Only ${selectedCandidateIds.length} selected clips will be produced.` : "Select at least one clip idea."}</span>
             <button
               type="button"
               disabled={jobBusy || selectedCandidateIds.length === 0}
               onClick={() => {
                 void generateSelectedCandidates().catch((error) => {
-                  setLiveMessage(error instanceof Error ? error.message : "릴스 생성 요청이 실패했습니다.");
+                  setLiveMessage(error instanceof Error ? error.message : "Could not request reel generation.");
                 });
               }}
             >
-              <Scissors size={17} /> 선택한 후보로 릴스 생성
+              <Scissors size={17} /> Generate selected reels
             </button>
           </div>
         </section>
@@ -2327,12 +2284,12 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
       {connection === "disconnected" ? (
         <section className="notice" role="status">
           <WifiOff size={18} aria-hidden="true" />
-          <span>로컬 Python 엔진과 연결이 끊겼습니다. 현재 화면은 마지막 상태입니다.</span>
-          <button type="button" onClick={reconnect}>다시 연결</button>
+          <span>Disconnected from the local Python engine. This screen shows the last known state.</span>
+          <button type="button" onClick={reconnect}>Reconnect</button>
         </section>
       ) : null}
 
-      <section className="reel-deck" aria-label="생성된 릴스 탐색" hidden={storylines.length === 0}>
+      <section className="reel-deck" aria-label="Browse generated reels" hidden={storylines.length === 0}>
         {selectedStoryline ? (() => {
           const storyline = selectedStoryline;
           const selectedForExport = selectedExportIds.includes(storyline.id);
@@ -2341,13 +2298,11 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
             ?? { upper: storyline.titleUpper, lower: storyline.titleLower };
           const metadataDraft = metadataDrafts[storyline.id] ?? {
             name: storyline.speaker?.name ?? "", role: storyline.speaker?.role ?? "",
-            episode: String(storyline.episodeNumber ?? snapshot?.episodeNumber ?? DEFAULT_EPISODE_NUMBER),
           };
           const metadataSaving = metadataStates[storyline.id] === "saving";
           const overlayBusy = metadataSaving || titleStates[storyline.id] === "saving" || titleStates[storyline.id] === "generating";
           const metadataChanged = metadataDraft.name.trim() !== (storyline.speaker?.name ?? "")
-            || metadataDraft.role.trim() !== (storyline.speaker?.role ?? "")
-            || Number(metadataDraft.episode) !== (storyline.episodeNumber ?? snapshot?.episodeNumber);
+            || metadataDraft.role.trim() !== (storyline.speaker?.role ?? "");
           const titleChanged = titleDraft.upper.trim() !== storyline.titleUpper
             || titleDraft.lower.trim() !== storyline.titleLower;
           return (
@@ -2355,7 +2310,7 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
               <h2 id={`${tabId}-${storyline.id}-title`} className="sr-only">{storyline.hook}</h2>
 
               <div className="deck-stage">
-                <button type="button" className="deck-arrow previous" aria-label="이전 릴스" disabled={selectedStorylineIndex === 0} onClick={() => moveToStoryline(-1)}>
+                <button type="button" className="deck-arrow previous" aria-label="Previous reel" disabled={selectedStorylineIndex === 0} onClick={() => moveToStoryline(-1)}>
                   <ChevronLeft size={30} />
                 </button>
                 <div className="reel-phone-frame">
@@ -2371,75 +2326,75 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                       poster={storyline.thumbnailUrl ?? undefined}
                       onClick={playSelected}
                       onPlay={() => onVideoPlay(storyline.id)}
-                      aria-label={`${storyline.label} 대표 영상. 클릭하면 재생하거나 일시정지합니다.`}
+                      aria-label={`${storyline.label}  video. Click to play or pause.`}
                     />
-                  ) : <div className="video-placeholder">렌더 대기 중</div>}
+                  ) : <div className="video-placeholder">Waiting to render</div>}
                   {storyline.videoUrl ? (
                     <button
                       type="button"
                       className={soundEnabled && !audioNeedsGesture ? "reel-sound-toggle is-on" : "reel-sound-toggle"}
-                      aria-label={soundEnabled && !audioNeedsGesture ? "릴스 소리 끄기" : "릴스 소리 켜기"}
+                      aria-label={soundEnabled && !audioNeedsGesture ? "Mute reel" : "Unmute reel"}
                       aria-pressed={soundEnabled && !audioNeedsGesture}
                       onClick={toggleSound}
                     >
                       {soundEnabled && !audioNeedsGesture ? <Volume2 size={18} /> : <VolumeX size={18} />}
-                      {audioNeedsGesture ? "소리 켜기" : soundEnabled ? "소리 켜짐" : "음소거"}
+                      {audioNeedsGesture ? "Enable sound" : soundEnabled ? "Sound on" : "Muted"}
                     </button>
                   ) : null}
                   {selectedForExport ? (
                     <div className="selection-confirmation" aria-live="polite">
                       <CheckCircle2 size={58} strokeWidth={2.4} />
-                      <strong>내보내기 선택됨</strong>
+                      <strong>Selected for export</strong>
                     </div>
                   ) : null}
                   {storyline.status !== "ready" ? (
                     <div className="render-overlay" aria-live="polite">
-                      {storyline.status === "failed" ? "클립 생성 실패" : `${storyline.progress}%`}
+                      {storyline.status === "failed" ? "Clip generation failed" : `${storyline.progress}%`}
                     </div>
                   ) : null}
-                  <span className="reel-position" aria-label={`현재 릴스 ${selectedStorylineIndex + 1}, 전체 ${storylines.length}`}>
+                  <span className="reel-position" aria-label={`Current reel ${selectedStorylineIndex + 1} of ${storylines.length}`}>
                     {selectedStorylineIndex + 1} / {storylines.length}
                   </span>
                 </div>
-                <button type="button" className="deck-arrow next" aria-label="다음 릴스" disabled={selectedStorylineIndex === storylines.length - 1} onClick={() => moveToStoryline(1)}>
+                <button type="button" className="deck-arrow next" aria-label="Next reel" disabled={selectedStorylineIndex === storylines.length - 1} onClick={() => moveToStoryline(1)}>
                   <ChevronRight size={30} />
                 </button>
               </div>
 
-              <div className="deck-shortcuts" aria-label="키보드 단축키">
-                <span><kbd>←</kbd> 이전</span>
+              <div className="deck-shortcuts" aria-label="Keyboard shortcuts">
+                <span><kbd>←</kbd> Previous</span>
                 <button type="button" className={selectedForExport ? "space-action selected" : "space-action"} disabled={storyline.status !== "ready"} onClick={toggleSelectedForExport}>
-                  {selectedForExport ? <CheckCircle2 size={17} /> : null}<kbd>Space</kbd> {selectedForExport ? "선택됨" : "내보내기 선택"}
+                  {selectedForExport ? <CheckCircle2 size={17} /> : null}<kbd>Space</kbd> {selectedForExport ? "Selected" : "Select for export"}
                 </button>
-                <span>다음 <kbd>→</kbd></span>
-                <span><kbd>Enter</kbd> 내보내기</span>
+                <span>Next <kbd>→</kbd></span>
+                <span><kbd>Enter</kbd> Export</span>
               </div>
 
               <button type="button" className="details-toggle" aria-expanded={detailsOpen} aria-controls={`${tabId}-${storyline.id}-details`} onClick={() => toggleDetails(storyline)}>
-                <Pencil size={16} /> {detailsOpen ? "수정 내용 접기" : "제목·이름·에피소드·캡션 수정하기"}
+                <Pencil size={16} /> {detailsOpen ? "Hide editing controls" : "Edit title, name and caption"}
                 {detailsOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
               </button>
 
               {detailsOpen ? (
                 <div className="reel-details" id={`${tabId}-${storyline.id}-details`}>
                   {storyline.thumbnailUrl ? (
-                    <section className="reel-cover" aria-label="자동 생성된 릴스 썸네일">
-                      <img src={storyline.thumbnailUrl} alt={`${storyline.title} 썸네일`} />
+                    <section className="reel-cover" aria-label="Automatically generated reel cover">
+                      <img src={storyline.thumbnailUrl} alt={`${storyline.title}  thumbnail`} />
                       <div>
-                        <strong>릴스 썸네일</strong>
-                        <p>영상 장면과 제목으로 자동 생성됩니다. 영상과 함께 JPG로 내보냅니다.</p>
+                        <strong>Reel cover</strong>
+                        <p>Generated from the source frame and title. Exported as a JPG alongside the video.</p>
                       </div>
                     </section>
                   ) : null}
-                  <section className="story-structure" aria-label={`${storyline.label} 시나리오`}>
+                  <section className="story-structure" aria-label={`${storyline.label} Story structure`}>
                     <div className="story-structure-heading">
-                      <strong>시나리오</strong>
-                      <span>{storyline.sections.length > 0 ? `${storyline.sections.length}개 구간` : "구성 대기"}</span>
+                      <strong>Story structure</strong>
+                      <span>{storyline.sections.length > 0 ? `${storyline.sections.length} sections` : "Structure pending"}</span>
                     </div>
                     {storyline.sections.length > 0 ? (
                       <ol className="story-beats">
                         {storyline.sections.map((section, sectionIndex) => (
-                          <li className={section.beat.includes("훅") ? "story-beat is-hook" : "story-beat"} key={`${section.beat}-${sectionIndex}`}>
+                          <li className={section.beat.includes("Hook") ? "story-beat is-hook" : "story-beat"} key={`${section.beat}-${sectionIndex}`}>
                             <span className="story-beat-index" aria-hidden="true">{String(sectionIndex + 1).padStart(2, "0")}</span>
                             <div className="story-beat-content">
                               <div className="story-beat-heading"><strong>{section.beat}</strong><span>{section.role}</span></div>
@@ -2453,10 +2408,10 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
 
                   {storyline.status === "ready" ? (
                     <div className="lane-title title-editor">
-                      <div className="title-editor-heading"><p className="eyebrow">화면 제목</p><span>{titleDisplayLength(combineTitleLines(titleDraft))}/24자</span></div>
+                      <div className="title-editor-heading"><p className="eyebrow">On-screen title</p><span>{titleDisplayLength(combineTitleLines(titleDraft))}/24 characters</span></div>
                       <div className="title-editor-controls">
                         <div className="title-editor-fields">
-                          {([{ key: "upper", label: "첫 번째 제목", tone: "흰색" }, { key: "lower", label: "두 번째 제목", tone: "주황색" }] as const).map(({ key, label, tone }) => (
+                          {([{ key: "upper", label: "First title line", tone: "White" }, { key: "lower", label: "Second title line", tone: "Orange" }] as const).map(({ key, label, tone }) => (
                             <label className={`title-editor-field ${key}`} key={key} htmlFor={`${tabId}-${storyline.id}-title-${key}`}>
                               <span><i aria-hidden="true" />{label}<small>{tone}</small></span>
                               <input id={`${tabId}-${storyline.id}-title-${key}`} type="text" value={titleDraft[key]}
@@ -2473,16 +2428,16 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                         </div>
                         <div className="title-editor-actions">
                           <button type="button" className="title-regenerate-button" disabled={overlayBusy} onClick={() => { void regenerateTitle(storyline); }}>
-                            {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{titleStates[storyline.id] === "generating" ? "4개 생성 중" : "후보 4개 생성"}
+                            {titleStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}{titleStates[storyline.id] === "generating" ? "Generating 4 titles" : "Suggest 4 titles"}
                           </button>
                           <button type="button" disabled={overlayBusy || !titleChanged} onClick={() => { void updateTitle(storyline); }}>
-                            {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{titleStates[storyline.id] === "saving" ? "반영 중" : "수정하기"}
+                            {titleStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{titleStates[storyline.id] === "saving" ? "Applying" : "Apply changes"}
                           </button>
                         </div>
                       </div>
                       {titleSuggestions[storyline.id]?.length === 4 ? (
-                        <div className="title-suggestions" role="group" aria-label="제목 후보 4개">
-                          <p className="title-editor-help">원하는 제목을 선택하세요. 선택 후 ‘수정하기’를 누르면 영상에 반영됩니다.</p>
+                        <div className="title-suggestions" role="group" aria-label="Four title suggestions">
+                          <p className="title-editor-help">Choose a title, then click Apply changes to update the video.</p>
                           {titleSuggestions[storyline.id].map((suggestion, index) => (
                             <button key={combineTitleLines(suggestion)} type="button" disabled={overlayBusy}
                               aria-pressed={suggestion.upper === titleDraft.upper && suggestion.lower === titleDraft.lower}
@@ -2491,29 +2446,28 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                                 setTitleStates((current) => ({ ...current, [storyline.id]: "suggested" }));
                                 setTitleErrors((current) => ({ ...current, [storyline.id]: null }));
                               }}>
-                              <span>{index + 1}{index === 0 ? " · AI 추천" : ""}</span>
+                              <span>{index + 1}{index === 0 ? " · AI recommendation" : ""}</span>
                               <strong>{suggestion.upper}<br />{suggestion.lower}</strong>
                             </button>
                           ))}
                         </div>
                       ) : null}
                       <p id={`${tabId}-${storyline.id}-title-help`} className={titleErrors[storyline.id] ? "title-editor-help error" : titleStates[storyline.id] === "saved" ? "title-editor-help success" : "title-editor-help"} role={titleErrors[storyline.id] ? "alert" : "status"}>
-                        {titleErrors[storyline.id] ?? (titleStates[storyline.id] === "saving" ? "제목 오버레이를 다시 렌더링합니다." : titleStates[storyline.id] === "saved" ? "수정 내용이 영상에 반영되었습니다." : "두 문구가 영상의 흰색·주황색 제목에 반영됩니다.")}
+                        {titleErrors[storyline.id] ?? (titleStates[storyline.id] === "saving" ? "Rerendering the title overlay." : titleStates[storyline.id] === "saved" ? "Changes applied to the video." : "These lines appear as the white and orange on-screen title.")}
                       </p>
                     </div>
-                  ) : <div className="lane-title"><p className="eyebrow">화면 제목</p><strong>{storyline.title}</strong></div>}
+                  ) : <div className="lane-title"><p className="eyebrow">On-screen title</p><strong>{storyline.title}</strong></div>}
 
                   {storyline.status === "ready" ? (
                     <div className="lane-title title-editor metadata-editor">
-                      <div className="title-editor-heading"><p className="eyebrow">이름·직책 및 에피소드</p></div>
+                      <div className="title-editor-heading"><p className="eyebrow">Name and role</p></div>
                       <div className="title-editor-controls">
                         <div className="title-editor-fields metadata-editor-fields">
-                          {([{ key: "name", label: "이름", placeholder: "마이클 트루엘" }, { key: "role", label: "직책", placeholder: "Anysphere CEO" }, { key: "episode", label: "에피소드 번호", placeholder: "15" }] as const).map(({ key, label, placeholder }) => (
+                          {([{ key: "name", label: "Name", placeholder: "Michael Truell" }, { key: "role", label: "Role", placeholder: "Anysphere CEO" }] as const).map(({ key, label, placeholder }) => (
                             <label className="title-editor-field" key={key} htmlFor={`${tabId}-${storyline.id}-metadata-${key}`}>
-                              <span>{label}{key === "episode" ? <small>/ 1000</small> : null}</span>
-                              <input id={`${tabId}-${storyline.id}-metadata-${key}`} type={key === "episode" ? "number" : "text"}
-                                min={key === "episode" ? 1 : undefined} step={key === "episode" ? 1 : undefined}
-                                maxLength={key === "episode" ? undefined : 100} placeholder={placeholder} value={metadataDraft[key]}
+                              <span>{label}</span>
+                              <input id={`${tabId}-${storyline.id}-metadata-${key}`} type="text"
+                                maxLength={100} placeholder={placeholder} value={metadataDraft[key]}
                                 disabled={overlayBusy} aria-describedby={`${tabId}-${storyline.id}-metadata-help`}
                                 onChange={(event) => {
                                   setMetadataDrafts((current) => ({ ...current, [storyline.id]: { ...metadataDraft, [key]: event.target.value } }));
@@ -2525,47 +2479,47 @@ function App({ tabId, active, initialJobId, onTabUpdate }: {
                         </div>
                         <div className="title-editor-actions">
                           <button type="button" disabled={overlayBusy || !metadataChanged} onClick={() => { void updateMetadata(storyline, metadataDraft); }}>
-                            {metadataSaving ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{metadataSaving ? "반영 중" : "수정하기"}
+                            {metadataSaving ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />}{metadataSaving ? "Applying" : "Apply changes"}
                           </button>
                         </div>
                       </div>
                       <p id={`${tabId}-${storyline.id}-metadata-help`} className={`title-editor-help${metadataErrors[storyline.id] ? " error" : metadataStates[storyline.id] === "saved" ? " success" : ""}`} role={metadataErrors[storyline.id] ? "alert" : "status"}>
-                        {metadataErrors[storyline.id] ?? (metadataSaving ? "영상 오버레이를 다시 렌더링합니다." : metadataStates[storyline.id] === "saved" ? "수정 내용이 영상에 반영되었습니다." : "현재 릴스의 이름·직책과 에피소드 번호에 반영됩니다. 직책은 비워둘 수 있습니다.")}
+                        {metadataErrors[storyline.id] ?? (metadataSaving ? "Rerendering the video overlay." : metadataStates[storyline.id] === "saved" ? "Changes applied to the video." : "Updates the name and role on this reel. The role can be left blank.")}
                       </p>
                     </div>
                   ) : null}
 
-                  <section className={storyline.instagramCaption ? "caption-tool has-caption" : "caption-tool"} aria-label={`${storyline.label} Instagram 캡션`}>
+                  <section className={storyline.instagramCaption ? "caption-tool has-caption" : "caption-tool"} aria-label={`${storyline.label} Instagram caption`}>
                     <div className="caption-tool-heading">
-                      <div><MessageSquareText size={16} aria-hidden="true" /><h3>Instagram 캡션</h3></div>
+                      <div><MessageSquareText size={16} aria-hidden="true" /><h3>Instagram caption</h3></div>
                     </div>
                     {storyline.instagramCaption ? (
                       <div className="caption-result">
                         <div className="caption-text" tabIndex={0}>{storyline.instagramCaption}</div>
                       </div>
-                    ) : <p>이 릴스의 실제 내용에 맞춘 Instagram 캡션을 만듭니다.</p>}
+                    ) : <p>Create an Instagram caption grounded in this reel's actual content.</p>}
                     <div className="caption-actions">
                       <button type="button" className="caption-regenerate" disabled={storyline.status !== "ready" || captionStates[storyline.id] === "generating"} onClick={() => { void generateInstagramCaption(storyline); }}>
                         {captionStates[storyline.id] === "generating" ? <Loader2 size={15} className="spin" /> : <RefreshCcw size={15} />}
-                        {captionStates[storyline.id] === "generating" ? "캡션 생성 중" : storyline.instagramCaption ? "다시 생성" : "캡션 생성하기"}
+                        {captionStates[storyline.id] === "generating" ? "Generating caption" : storyline.instagramCaption ? "Regenerate" : "Generate caption"}
                       </button>
                       {storyline.instagramCaption ? (
                         <div className="caption-result-actions">
                           <button type="button" className="caption-copy" onClick={() => { void copyInstagramCaption(storyline); }}>
-                            {captionStates[storyline.id] === "copied" ? <Check size={15} /> : <Copy size={15} />}{captionStates[storyline.id] === "copied" ? "복사됨" : "캡션 복사"}
+                            {captionStates[storyline.id] === "copied" ? <Check size={15} /> : <Copy size={15} />}{captionStates[storyline.id] === "copied" ? "Copied" : "Copy caption"}
                           </button>
                           <button type="button" className="caption-notes" disabled={noteStates[storyline.id] === "saving"} onClick={() => { void saveInstagramCaptionToNotes(storyline); }}>
                             {noteStates[storyline.id] === "saving" ? <Loader2 size={15} className="spin" /> : noteStates[storyline.id] === "saved" ? <Check size={15} /> : <NotebookPen size={15} />}
-                            {noteStates[storyline.id] === "saving" ? "저장 중" : noteStates[storyline.id] === "saved" ? "저장됨" : "아이폰 메모장에 복사"}
+                            {noteStates[storyline.id] === "saving" ? "Saving" : noteStates[storyline.id] === "saved" ? "Saved" : "Save to iPhone Notes"}
                           </button>
                         </div>
                       ) : null}
                     </div>
-                    {captionStates[storyline.id] === "error" ? <p className="caption-error" role="alert">{captionErrors[storyline.id] ?? "캡션 작업에 실패했습니다. 다시 시도해주세요."}</p> : null}
-                    {noteStates[storyline.id] === "error" ? <p className="caption-error" role="alert">{noteErrors[storyline.id] ?? "iCloud 메모에 저장하지 못했습니다."}</p> : null}
+                    {captionStates[storyline.id] === "error" ? <p className="caption-error" role="alert">{captionErrors[storyline.id] ?? "Caption operation failed. Please try again."}</p> : null}
+                    {noteStates[storyline.id] === "error" ? <p className="caption-error" role="alert">{noteErrors[storyline.id] ?? "Could not save to iCloud Notes."}</p> : null}
                   </section>
 
-                  {storyline.status === "failed" && !archiveMode ? <button type="button" disabled={jobBusy} onClick={() => rerenderStoryline(storyline)}><RefreshCcw size={15} /> 다시 시도</button> : null}
+                  {storyline.status === "failed" && !archiveMode ? <button type="button" disabled={jobBusy} onClick={() => rerenderStoryline(storyline)}><RefreshCcw size={15} /> Try again</button> : null}
                   {storyline.error ? <p className="lane-error" role="alert">{storyline.error}</p> : null}
                 </div>
               ) : null}

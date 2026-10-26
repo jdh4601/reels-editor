@@ -43,6 +43,7 @@ class SaveDialogRequest(BaseModel):
 
 class CreateJobRequest(BaseModel):
     youtube_url: str | None = Field(default=None, max_length=2048)
+    output_language: Literal["ko", "en", "zh"] = "en"
     episode_number: int = Field(default=1, ge=1)
     content_types: list[Literal["story", "strategy", "failure", "principle"]] = Field(
         default_factory=lambda: ["story", "strategy", "failure", "principle"],
@@ -221,9 +222,9 @@ def create_app(
             root = episode_export_root(Path(chosen))
             root.mkdir(exist_ok=True)
         except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail="선택한 Google Drive 폴더를 찾을 수 없습니다.") from exc
+            raise HTTPException(status_code=400, detail="The selected Google Drive folder could not be found.") from exc
         if not root.is_dir():
-            raise HTTPException(status_code=400, detail="Google Drive에서 사용할 저장 폴더를 선택하세요.")
+            raise HTTPException(status_code=400, detail="Choose a Google Drive export folder.")
 
         persisted = load_config(effective_config_path)
         save_config(replace(persisted, google_drive_root=str(root)), effective_config_path)
@@ -260,9 +261,10 @@ def create_app(
                     provider=request.provider,
                     model=request.model,
                     episode_number=request.episode_number,
+                    output_language=request.output_language,
                 )
             else:
-                raise HTTPException(status_code=422, detail="YouTube URL이 필요합니다.")
+                raise HTTPException(status_code=422, detail="A YouTube URL is required.")
         except YouTubeSourceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except JobServiceError as exc:
@@ -372,19 +374,19 @@ def create_app(
         except (JobServiceError, FileNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if job is None:
-            raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+            raise HTTPException(status_code=404, detail="The job could not be found.")
         story = next((item for item in job.storylines if item.id == storyline_id), None)
         if story is None:
-            raise HTTPException(status_code=404, detail="릴스를 찾을 수 없습니다.")
+            raise HTTPException(status_code=404, detail="The reel could not be found.")
         note_body = caption_body_for_notes(request.caption if request else story.instagram_caption)
         if not note_body.strip():
-            raise HTTPException(status_code=400, detail="메모에 저장할 캡션 본문이 없습니다.")
+            raise HTTPException(status_code=400, detail="There is no caption body to save to Notes.")
         note_title = note_body.splitlines()[0]
         try:
             notes.save_caption(note_title, note_body)
         except NotesError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"saved": True, "folder": "릴스 캡션"}
+        return {"saved": True, "folder": "Reel captions"}
 
     @app.patch("/api/jobs/{job_id}/storylines/{storyline_id}/metadata")
     def update_storyline_metadata(
@@ -476,15 +478,12 @@ def create_app(
     @app.post("/api/jobs/{job_id}/export-batch")
     def export_batch(job_id: str, request: BatchExportRequest, _auth: None = Depends(require_token)) -> dict[str, Any]:
         drive = google_drive_settings()
-        if not drive["configured"]:
-            raise HTTPException(
-                status_code=400,
-                detail="설정에서 Google Drive 저장 폴더를 먼저 선택하세요.",
-            )
         try:
-            episode_root = Path(drive["my_drive_path"])
-            episode_root.mkdir(exist_ok=True)
-            destination_dir = service.google_drive_export_directory(job_id, episode_root)
+            destination_dir = None
+            if drive["configured"]:
+                episode_root = Path(drive["my_drive_path"])
+                episode_root.mkdir(exist_ok=True)
+                destination_dir = service.google_drive_export_directory(job_id, episode_root)
             job = service.export_many(
                 job_id,
                 destination_dir,
@@ -588,7 +587,7 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
             "source_thumbnail_url": None,
             "thumbnail_url": None,
             "episode_number": 1,
-            "source_label": "YouTube 링크 없음",
+            "source_label": "No YouTube link",
             "connection": "connected",
             "generated_at": "",
             "storylines": [],
@@ -611,6 +610,7 @@ def _snapshot_from_job(job: Job | None) -> dict[str, Any]:
         "source_thumbnail_url": _source_thumbnail_url(job),
         "thumbnail_url": _source_thumbnail_url(job),
         "episode_number": job.episode_number,
+        "output_language": job.output_language,
         "transcript_language": job.transcript_language,
         "transcript_kind": job.transcript_kind,
         "source_label": _source_label(job),
@@ -671,8 +671,8 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
         "id": storyline.id,
         "storyline_id": storyline.id,
         "index": storyline.index + 1,
-        "label": f"릴스 {storyline.index + 1}",
-        "hook": storyline.angle_name or storyline.title or "대표 영상",
+        "label": f"Reel {storyline.index + 1}",
+        "hook": storyline.angle_name or storyline.title or "Video",
         "summary": content["summary"],
         "sections": content["sections"],
         "status": _ui_status(storyline.status),
@@ -696,9 +696,9 @@ def _storyline_snapshot(job: Job, storyline: Storyline) -> dict[str, Any]:
 
 def _source_label(job: Job) -> str:
     if job.transcript_language:
-        kind = "수동" if job.transcript_kind == "manual" else "자동"
-        return f"YouTube · {job.transcript_language} {kind} 자막"
-    return job.source_url or "YouTube 인터뷰"
+        kind = "Manual" if job.transcript_kind == "manual" else "Automatic"
+        return f"YouTube · {job.transcript_language} {kind} captions"
+    return job.source_url or "YouTube video"
 
 
 def _source_thumbnail_url(job: Job) -> str | None:
@@ -719,13 +719,13 @@ def _archive_items(jobs: list[Job]) -> list[dict[str, Any]]:
                     "job_id": job.id,
                     "storyline_id": storyline.id,
                     "episode_number": storyline.episode_number or job.episode_number,
-                    "project_name": job.project_name or "YouTube 인터뷰",
-                    "source_title": job.project_name or "YouTube 인터뷰",
+                    "project_name": job.project_name or "YouTube video",
+                    "source_title": job.project_name or "YouTube video",
                     "source_url": job.source_url,
                     "source_thumbnail_url": _source_thumbnail_url(job),
                     "thumbnail_url": snapshot["thumbnail_url"] or _source_thumbnail_url(job),
-                    "reel_title": storyline.title or storyline.angle_name or "대표 영상",
-                    "title": storyline.title or storyline.angle_name or "대표 영상",
+                    "reel_title": storyline.title or storyline.angle_name or "Video",
+                    "title": storyline.title or storyline.angle_name or "Video",
                     "completed_at": storyline.completed_at or job.updated_at,
                     "generated_at": job.updated_at,
                     "video_url": snapshot["video_url"],
@@ -778,16 +778,16 @@ def _placeholder_storyline(index: int) -> dict[str, Any]:
         "id": f"placeholder-{display}",
         "storyline_id": f"placeholder-{display}",
         "index": display,
-        "label": f"릴스 {display}",
-        "hook": "대기 중",
-        "summary": "YouTube 인터뷰 링크를 넣으면 클립 후보와 후킹 제목이 여기에 표시됩니다.",
+        "label": f"Reel {display}",
+        "hook": "Pending",
+        "summary": "Paste a YouTube video link to see clip ideas and hook titles here.",
         "sections": [],
         "status": "queued",
         "progress": 0,
         "video_url": None,
-        "title": "제목 준비 중",
+        "title": "Title pending",
         "title_upper": "",
-        "title_lower": "제목 준비 중",
+        "title_lower": "Title pending",
         "error": None,
         "revision": 0,
     }
@@ -808,20 +808,20 @@ def _selected_subtitles(job: Job) -> bool:
 
 
 _BEAT_ROLES = {
-    "훅": "첫 3초에 시선을 붙잡는 문장",
-    "맥락": "이야기를 이해시키는 배경",
-    "갈등": "문제와 긴장을 선명하게 만드는 구간",
-    "전환": "생각이나 행동이 바뀌는 순간",
-    "핵심 장면": "변화를 증명하는 구체적인 장면",
-    "라스트 답": "영상이 남기는 결론과 메시지",
+    "Hook": "The opening line that draws attention",
+    "Context": "Background needed to understand the story",
+    "Conflict": "The problem and tension",
+    "Turning point": "A change in thought or action",
+    "Key moment": "A concrete moment demonstrating the change",
+    "Final takeaway": "The concluding message",
 }
 
 _FIVE_LINE_BEATS = {
-    "situation": ("훅 · 상황", "첫 장면에서 맥락과 궁금증을 만드는 문장"),
-    "desire": ("목표", "주인공이 원하는 것을 보여주는 문장"),
-    "conflict": ("갈등", _BEAT_ROLES["갈등"]),
-    "change": ("전환", _BEAT_ROLES["전환"]),
-    "result": ("결론", _BEAT_ROLES["라스트 답"]),
+    "situation": ("Hook and situation", "An opening that establishes context and curiosity"),
+    "desire": ("Goal", "What the speaker wants to achieve"),
+    "conflict": ("Conflict", _BEAT_ROLES["Conflict"]),
+    "change": ("Turning point", _BEAT_ROLES["Turning point"]),
+    "result": ("Conclusion", _BEAT_ROLES["Final takeaway"]),
 }
 
 
@@ -829,7 +829,7 @@ def _story_content_for_storyline(storyline: Storyline) -> dict[str, Any]:
     if not storyline.edl_path:
         error = _storyline_error_message(storyline.error)
         return {
-            "summary": error or "릴스 생성 대기 중입니다.",
+            "summary": error or "Waiting to generate reels.",
             "sections": [],
         }
     try:
@@ -859,7 +859,9 @@ def _story_content_for_storyline(storyline: Storyline) -> dict[str, Any]:
     for cut in doc.get("cuts", []):
         if not isinstance(cut, dict):
             continue
-        beat = str(cut.get("beat", "구간")).strip() or "구간"
+        beat = str(cut.get("beat", "Section")).strip() or "Section"
+        beat = {"훅": "Hook", "맥락": "Context", "갈등": "Conflict", "전환": "Turning point",
+                "핵심 장면": "Key moment", "라스트 답": "Final takeaway", "결론": "Conclusion"}.get(beat, beat)
         text = " ".join(
             str(subtitle_translations.get(str(segment_id)) or segment_text.get(str(segment_id), ""))
             for segment_id in cut.get("seg_ids", [])
@@ -867,7 +869,7 @@ def _story_content_for_storyline(storyline: Storyline) -> dict[str, Any]:
         if text:
             sections.append({
                 "beat": beat,
-                "role": _BEAT_ROLES.get(beat, "이야기의 흐름을 이어가는 구간"),
+                "role": _BEAT_ROLES.get(beat, "A section connecting the story"),
                 "text": text,
             })
 
@@ -893,10 +895,10 @@ def _storyline_error_message(error: str | None) -> str | None:
     if not error:
         return None
     error = summarize_codex_error(error)
-    if "대본 생성 3회 실패" in error and ("마지막 응답" in error or "JSON 파싱" in error):
+    if any(value in error for value in ("Script generation failed after 3 attempts", "대본 생성 3회 실패")) and any(value in error for value in ("Last response", "JSON parsing", "마지막 응답", "JSON 파싱")):
         return (
-            "AI 응답의 JSON 따옴표 형식이 올바르지 않아 대본을 읽지 못했습니다. "
-            "작업이 끝난 뒤 다시 시도를 누르면 저장된 응답을 복구합니다."
+            "The AI response contained invalid JSON quotation marks. "
+            "After the job finishes, click Try again to recover the saved response."
         )
     return error if len(error) <= 600 else error[:597] + "..."
 

@@ -1,6 +1,8 @@
 """Generate four ranked replacement titles in one model response."""
 from __future__ import annotations
 
+from reels_editor.languages import language_instruction, output_language, translation_required
+
 import re
 import json
 from pathlib import Path
@@ -9,7 +11,7 @@ from typing import Any, Callable
 from reels_editor.storyteller import text_hook_principles
 from reels_editor.title_rules import normalize_title, validate_generated_title
 
-PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "title-suggestion.md"
+PROMPT_PATH = Path(__file__).parent / "resources" / "prompts" / "title-suggestion.md"
 MAX_RETRIES = 2
 
 
@@ -21,8 +23,8 @@ def build_prompt(
     segments: dict[str, Any],
     feedback: str | None = None,
 ) -> str:
-    feedback_block = f"\n## 수정 피드백\n{feedback}\n" if feedback else ""
-    return (
+    feedback_block = f"\n## Correction feedback\n{feedback}\n" if feedback else ""
+    return language_instruction(segments) + (
         PROMPT_PATH.read_text(encoding="utf-8")
         .replace("{current_title}", normalize_title(current_title))
         .replace("{reel_context}", _reel_context(candidate, doc, segments))
@@ -61,17 +63,22 @@ def generate_title_suggestion(
             payload = json.loads(value)
             titles = payload.get("titles") if isinstance(payload, dict) else None
             if not isinstance(titles, list) or len(titles) != 4 or not all(isinstance(title, str) for title in titles):
-                raise ValueError("titles 배열에 제목 문자열을 정확히 4개 넣을 것")
+                raise ValueError("The titles array must contain exactly four strings")
             suggestions = [validate_generated_title(title) for title in titles]
+            from reels_editor.languages import text_language_error
+            for title in suggestions:
+                problem = text_language_error(title, output_language(segments))
+                if problem:
+                    raise ValueError(problem)
             if normalized_current in suggestions:
-                raise ValueError("현재 제목과 같음 — 다른 관점과 표현으로 다시 쓸 것")
+                raise ValueError("The title matches the current one; use a different angle or wording")
             if len(set(suggestions)) != 4:
-                raise ValueError("후보 제목 4개를 중복 없이 만들 것")
+                raise ValueError("Provide four distinct title suggestions")
             return suggestions
         except ValueError as exc:
             last_error = str(exc)
             feedback = f"이전 제목 후보가 검증에 실패했다: {last_error}. 후보 4개 전체를 다시 출력할 것."
-    raise RuntimeError(f"새 화면 제목 생성 3회 실패 — {last_error}")
+    raise RuntimeError(f"Title generation failed after 3 attempts — {last_error}")
 
 
 def _reel_context(
@@ -82,7 +89,7 @@ def _reel_context(
     lines: list[str] = []
     if candidate:
         lines.extend([
-            f"- 콘텐츠 유형: {candidate.get('content_type', '')}",
+            f"- Content type: {candidate.get('content_type', '')}",
             f"- 분석 후보: {candidate.get('title', '')}",
             f"- 핵심 내용: {candidate.get('summary', '')}",
             f"- 적용점: {candidate.get('takeaway', '')}",
@@ -117,5 +124,5 @@ def _reel_context(
             original = " ".join(str(segment_map[key].get("text", "")).split())
             translated = " ".join(str(translations.get(key, "")).split())
             if translated or original:
-                lines.append(f"- 실제 발화 ({beat}): {translated or original}")
+                lines.append(f"- Original speech ({beat}): {translated or original}")
     return "\n".join(lines) or "- 저장된 릴스 대본의 제목만 새로 제안한다."

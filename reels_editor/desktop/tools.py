@@ -73,4 +73,4 @@ def probe_tool(name: str) -> ToolProbe:
 
 
 def probe_required_tools() -> dict[str, dict[str, str | bool | None]]:
-    return {name: asdict(probe_tool(name)) for name in ("ffmpeg", "ffprobe", "codex")}
+    return {name: asdict(probe_tool(name)) for name in ("ffmpeg", "ffprobe", "codex", "claude")}

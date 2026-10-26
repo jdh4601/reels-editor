@@ -41,7 +41,7 @@ _BOUND_NOUNS = {"것", "수", "때", "점", "만큼", "듯", "데", "바", "줄"
 _DEPENDENT_NOUNS = (_BOUND_NOUNS - {"바", "리"}) | {"중", "수준", "정도"}
 _SPATIAL_NOUNS = {"위", "아래", "안", "밖", "앞", "뒤", "옆", "사이", "가운데", "내부"}
 _COUNTERS = {
-    "명", "개", "번", "원", "년", "개월", "주", "일", "시간", "분", "초", "퍼센트"
+    "명", "개", "번", "원", "년", "개월", "주", "일", "시간", "분", " seconds", "퍼센트"
 }
 _PARTICLES = {
     "은", "는", "이", "가", "을", "를", "도", "만", "와", "과", "의", "에", "에서",
@@ -189,9 +189,9 @@ def completeness_errors(groups: list[list[Any]]) -> list[str]:
     for index, (_start, _end, text) in enumerate(groups, start=1):
         normalized = " ".join(str(text).split())
         if not double_quotes_balanced(normalized):
-            errors.append(f"자막 {index}: 큰따옴표가 닫히지 않음")
+            errors.append(f"Caption {index}: quotation marks are not closed")
         elif not is_complete_sentence(normalized):
-            errors.append(f"자막 {index}: 문장이 중간에서 끊김")
+            errors.append(f"Caption {index}: the sentence ends mid-utterance")
     return errors
 
 

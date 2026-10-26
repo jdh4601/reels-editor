@@ -32,6 +32,7 @@ class AppConfig:
     n_storylines: int = 3
     style: dict[str, Any] = field(default_factory=dict)
     google_drive_root: str = ""
+    output_language: str = "en"
 
 
 def user_config_path() -> Path:
@@ -40,13 +41,15 @@ def user_config_path() -> Path:
 
 
 def _validate(cfg: AppConfig) -> AppConfig:
+    from reels_editor.languages import validate_language
+    validate_language(cfg.output_language)
     if cfg.provider not in PROVIDERS:
-        raise ValueError(f"provider는 {PROVIDERS} 중 하나여야 함: {cfg.provider!r}")
+        raise ValueError(f"Provider must be one of {PROVIDERS}: {cfg.provider!r}")
     if not 1 <= cfg.n_storylines <= MAX_STORYLINES:
-        raise ValueError(f"n_storylines는 1~{MAX_STORYLINES}: {cfg.n_storylines}")
+        raise ValueError(f"n_storylines must be between 1 and {MAX_STORYLINES}: {cfg.n_storylines}")
     unknown = set(cfg.style) - set(STYLE_OVERRIDE_KEYS)
     if unknown:
-        raise ValueError(f"알 수 없는 style 키: {sorted(unknown)}")
+        raise ValueError(f"Unknown style keys: {sorted(unknown)}")
     if "speed" in cfg.style:
         speed = cfg.style["speed"]
         if (
@@ -55,7 +58,7 @@ def _validate(cfg: AppConfig) -> AppConfig:
             or not MIN_PLAYBACK_SPEED <= float(speed) <= MAX_PLAYBACK_SPEED
         ):
             raise ValueError(
-                f"style.speed는 {MIN_PLAYBACK_SPEED:.1f}~{MAX_PLAYBACK_SPEED:.1f} 사이의 숫자여야 함: {speed!r}"
+                f"style.speed must be a number between {MIN_PLAYBACK_SPEED:.1f}~{MAX_PLAYBACK_SPEED:.1f}: {speed!r}"
             )
     return cfg
 
@@ -67,14 +70,14 @@ def load_config(path: Path | None = None) -> AppConfig:
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError(
-            f"설정 파일 형식이 올바르지 않습니다 (key: value 형태여야 함): {p}"
+            f"Invalid configuration format; expected key: value pairs: {p}"
         )
     defaults = AppConfig()
     try:
         n_storylines = int(raw.get("n_storylines", defaults.n_storylines))
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            f"n_storylines 값이 올바르지 않습니다 (정수여야 함): {raw.get('n_storylines')!r}"
+            f"Invalid n_storylines; expected an integer: {raw.get('n_storylines')!r}"
         ) from exc
     return _validate(AppConfig(
         provider=raw.get("provider", defaults.provider),
@@ -83,6 +86,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         n_storylines=n_storylines,
         style={k: v for k, v in (raw.get("style") or {}).items()},
         google_drive_root=str(raw.get("google_drive_root") or ""),
+        output_language=raw.get("output_language", defaults.output_language),
     ))
 
 

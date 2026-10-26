@@ -14,7 +14,7 @@ def episode_label(episode_number: int) -> str:
     """Return the product's job-level episode label."""
     if isinstance(episode_number, bool) or int(episode_number) < 1:
         raise ValueError("episode_number must be a positive integer")
-    return f"에피소드 {int(episode_number)} / {EPISODE_TOTAL}"
+    return f"Episode {int(episode_number)}"
 
 
 @dataclass(frozen=True)
@@ -66,20 +66,27 @@ class StylePreset:
     episode_gap: int = 18
     episode_y: int | None = None
     episode_font: Path | None = None
+    output_language: str = "ko"
+    show_episode: bool = False
 
     def video_area(self) -> tuple[int, int]:
         return self.canvas[0], self.canvas[1] - self.top_bar - self.bottom_bar
 
     def for_episode(self, episode_number: int) -> "StylePreset":
         """Create a render-ready copy carrying one job's episode number."""
-        return replace(self, episode_text=episode_label(episode_number))
+        label = episode_label(episode_number)
+        if self.output_language == "en":
+            label = f"Episode {episode_number}"
+        elif self.output_language == "zh":
+            label = f"第 {episode_number} 集"
+        return replace(self, episode_text=label)
 
 
 def _font(font_dir: Path, name: str) -> Path:
     p = (font_dir / name).expanduser()
     if not p.is_file():
         raise FileNotFoundError(
-            f"폰트 없음: {p}\nPretendard를 설치하거나 style yaml의 font_dir를 수정하세요.")
+            f"Missing font: {p}\nCheck the bundled fonts or update font_dir in the style YAML.")
     return p
 
 
@@ -91,7 +98,7 @@ def _asset(style_dir: Path, name: str | None) -> Path | None:
         p = style_dir / p
     p = p.resolve()
     if not p.is_file():
-        raise FileNotFoundError(f"스타일 이미지 없음: {p}")
+        raise FileNotFoundError(f"Missing style image: {p}")
     return p
 
 
@@ -148,4 +155,5 @@ def load_style(path: Path) -> StylePreset:
         episode_gap=int(w.get("episode_gap", 18)),
         episode_y=int(w["episode_y"]) if "episode_y" in w else None,
         episode_font=_font(font_dir, w["episode_font"]) if "episode_font" in w else None,
+        show_episode=bool(w.get("show_episode", False)),
     )

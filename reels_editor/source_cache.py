@@ -34,7 +34,7 @@ def locked(path: Path, cancelled: Callable[[], bool]) -> Iterator[None]:
     with path.open("a") as handle:
         while True:
             if cancelled():
-                raise youtube.YouTubeSourceError("캐시 준비가 취소되었습니다.")
+                raise youtube.YouTubeSourceError("Cache preparation cancelled.")
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
@@ -78,7 +78,7 @@ def download_section(url: str, output_dir: Path, start_us: int, end_us: int,
     output = output_dir / "source.mp4"
     for attempt in range(3):
         if cancelled():
-            raise youtube.YouTubeSourceError("구간 다운로드가 취소되었습니다.")
+            raise youtube.YouTubeSourceError("Video-section download cancelled.")
         # Refresh signed stream URLs on each retry. Run FFmpeg through our
         # process registry so cancellation and stderr work in the desktop app.
         with youtube._default_ydl_factory(options) as ydl:
@@ -104,7 +104,7 @@ def download_section(url: str, output_dir: Path, start_us: int, end_us: int,
             result = processes.run(args, capture_output=True, text=True, timeout=180)
             if result.returncode == 0:
                 if cancelled():
-                    raise youtube.YouTubeSourceError("구간 다운로드가 취소되었습니다.")
+                    raise youtube.YouTubeSourceError("Video-section download cancelled.")
                 os.replace(temp, output)
                 return output
             # Never persist signed URLs or headers in diagnostics.
@@ -117,9 +117,9 @@ def download_section(url: str, output_dir: Path, start_us: int, end_us: int,
         if attempt < 2:
             for _ in range(10 * (attempt + 1)):
                 if cancelled():
-                    raise youtube.YouTubeSourceError("구간 다운로드가 취소되었습니다.")
+                    raise youtube.YouTubeSourceError("Video-section download cancelled.")
                 time.sleep(0.1)
-    raise youtube.YouTubeSourceError(f"영상 구간 다운로드 3회 실패 — {problem}")
+    raise youtube.YouTubeSourceError(f"Video-section download failed after 3 attempts — {problem}")
 
 
 def _duration_us(path: Path) -> int:
@@ -166,14 +166,14 @@ def prepare_selected_source(url: str, segments: dict, doc: dict, cache_dir: Path
                         section = downloader(url, section_dir, start, end, cancelled=cancelled)
                         duration = _duration_us(section)
                         if duration < end - start - US // 10:
-                            raise youtube.YouTubeSourceError("다운로드한 구간이 요청한 컷보다 짧습니다.")
+                            raise youtube.YouTubeSourceError("The downloaded section is shorter than the requested cut.")
                         write_json(done, {"duration_us": duration})
                     duration = _duration_us(section)
                 parts.append(section)
                 offsets.append([start, end, cursor])
                 cursor += duration
             if cancelled():
-                raise youtube.YouTubeSourceError("구간 다운로드가 취소되었습니다.")
+                raise youtube.YouTubeSourceError("Video-section download cancelled.")
             # Paths are controlled hash directories; ffmpeg concat escaping still
             # matters when the user's home directory contains an apostrophe.
             listing = bundle / "concat.txt"

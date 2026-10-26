@@ -29,23 +29,23 @@ def trim_topic_edges(doc: dict, segments: dict, *, title: str, runner: Callable[
     review = extract_json(runner(prompt))
     entries = review.get('segments', [])
     if not review.get('core_topic') or not isinstance(entries, list):
-        raise ValueError('앞뒤 주제 검수 응답이 올바르지 않습니다.')
+        raise ValueError("The topic-boundary review response is invalid.")
     verdicts = {}
     for item in entries:
         if not isinstance(item, dict) or item.get('id') in verdicts or item.get('id') not in ids:
-            raise ValueError('주제 검수의 자막 id가 올바르지 않습니다.')
+            raise ValueError("Invalid caption ID in topic review.")
         if item.get('verdict') not in {'relevant', 'context', 'off_topic'} or not str(item.get('reason', '')).strip():
-            raise ValueError('주제 검수에 판단 근거가 없습니다.')
+            raise ValueError("The topic review contains no supporting evidence.")
         verdicts[item['id']] = item['verdict']
     if set(verdicts) != set(ids):
-        raise ValueError('주제 검수에서 누락된 자막이 있습니다.')
+        raise ValueError("The topic review omitted captions.")
     first, last = 0, len(ids)
     while first < last and verdicts[ids[first]] == 'off_topic':
         first += 1
     while last > first and verdicts[ids[last - 1]] == 'off_topic':
         last -= 1
     if first == last:
-        raise ValueError('핵심 주제에 해당하는 자막이 없습니다. 다시 생성하세요.')
+        raise ValueError("No captions remain for the main topic. Generate again.")
     # A transcript cue is not a sentence. Never remove only the last cue of a
     # translated sentence/quotation, even if the topic classifier mislabels it.
     units, begin, text = [], 0, ''
@@ -107,7 +107,7 @@ def trim_topic_edges(doc: dict, segments: dict, *, title: str, runner: Callable[
         removed = ids[:first] + ids[last:]
         errors = edl.validate_edl(result, segments) + validate_caption_completeness(result, segments) + validate_caption_continuity(result, segments)
         if errors:
-            raise ValueError('주제 이탈 구간 제거 후 문장 검증 실패: ' + '; '.join(errors))
+            raise ValueError("Sentence validation failed after removing off-topic content: " + '; '.join(errors))
     remaining_rows = [row for row in rows if row['id'] in set(ids[first:last])]
     review['fingerprint'] = hashlib.sha256(json.dumps([3, title, remaining_rows], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     review['removed_seg_ids'] = removed

@@ -6,7 +6,7 @@ from typing import Any
 
 from reels_editor.title_rules import editor_title_lines, normalize_title
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class Status(StrEnum):
@@ -325,6 +325,7 @@ class Job:
     source_url: str | None = None
     source_thumbnail_url: str | None = None
     episode_number: int = 1
+    output_language: str = "en"
     transcript_language: str | None = None
     transcript_kind: str | None = None
     work_dir: str | None = None
@@ -362,6 +363,7 @@ class Job:
             "source_url": self.source_url,
             "source_thumbnail_url": self.source_thumbnail_url,
             "episode_number": self.episode_number,
+            "output_language": self.output_language,
             "transcript_language": self.transcript_language,
             "transcript_kind": self.transcript_kind,
             "work_dir": self.work_dir,
@@ -408,6 +410,7 @@ class Job:
             source_url=data.get("source_url"),
             source_thumbnail_url=data.get("source_thumbnail_url"),
             episode_number=_positive_int(data.get("episode_number"), default=1),
+            output_language=data.get("output_language", "ko"),
             transcript_language=data.get("transcript_language"),
             transcript_kind=data.get("transcript_kind"),
             work_dir=data.get("work_dir"),

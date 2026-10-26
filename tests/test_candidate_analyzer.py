@@ -36,7 +36,7 @@ def test_selected_candidate_with_missing_evidence_is_rejected():
     from reels_editor.jobs import ContentCandidate
     candidate = ContentCandidate(id='c1', content_type='story', title='title', summary='summary',
                                  takeaway='lesson', segment_ids=['missing'])
-    with pytest.raises(ValueError, match='근거 자막'):
+    with pytest.raises(ValueError, match="source evidence"):
         candidate_analyzer.candidate_segments({'segments': []}, candidate)
 
 import json
@@ -64,7 +64,7 @@ def _payload(content_types: list[str]) -> dict:
             {
                 "content_type": content_types[index % len(content_types)],
                 "title": topic,
-                "summary": f"{topic}에서 실제로 확인한 구체적인 과정 {index}",
+                "summary": f'도입 훅: “저는 원래 대기업에 합격했어요” {topic}에서 실제로 확인한 구체적인 과정 {index}',
                 "takeaway": f"{topic}에 적용할 독립적인 행동 원칙 {index}",
                 "segment_ids": ["t0"],
             }
@@ -79,9 +79,9 @@ def test_candidate_prompt_contains_only_selected_types(segments: dict) -> None:
         ["strategy", "failure"],
     )
 
-    assert "strategy (전략형)" in prompt
-    assert "failure (실패 분석형)" in prompt
-    assert "story (스토리형)" not in prompt
+    assert "strategy (Strategy)" in prompt
+    assert "failure (Failure analysis)" in prompt
+    assert "story (Story)" not in prompt
     assert "정확히 10개" in prompt
 
 
@@ -120,7 +120,7 @@ def test_generate_candidates_retries_when_candidates_are_duplicates(segments: di
     )
 
     assert len(calls) == 2
-    assert "내용이 너무 비슷" in calls[1]
+    assert "too similar" in calls[1]
     assert len(candidates) == 10
 
 
@@ -159,7 +159,7 @@ def test_candidate_title_that_is_too_short_is_rejected(segments: dict) -> None:
     candidate_analyzer.generate_candidates(segments, ["strategy"], runner=runner)
 
     assert len(calls) == 2
-    assert "너무 짧음" in calls[1]
+    assert "too short" in calls[1]
 
 
 def test_candidate_title_without_natural_spacing_is_rejected(segments: dict) -> None:
@@ -174,7 +174,7 @@ def test_candidate_title_without_natural_spacing_is_rejected(segments: dict) -> 
     candidate_analyzer.generate_candidates(segments, ["strategy"], runner=runner)
 
     assert len(calls) == 2
-    assert "띄어쓰기가 부족" in calls[1]
+    assert "natural spacing" in calls[1]
 
 
 def test_candidate_titles_all_declarative_are_rejected(segments: dict) -> None:
@@ -189,13 +189,13 @@ def test_candidate_titles_all_declarative_are_rejected(segments: dict) -> None:
     candidate_analyzer.generate_candidates(segments, ["strategy"], runner=runner)
 
     assert len(calls) == 2
-    assert "명사구" in calls[1]
+    assert "noun phrase" in calls[1]
 
 
 def test_candidate_prompt_carries_text_hook_principles(segments: dict) -> None:
     prompt = candidate_analyzer.build_candidate_prompt(segments, ["strategy"])
 
-    assert "스타카토" in prompt
+    assert "근거 없는 수치를 만들지 않는다" in prompt
     assert "12~24자" in prompt
     assert "3어절 이상" in prompt
 

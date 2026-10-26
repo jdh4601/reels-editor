@@ -97,12 +97,12 @@ def title_length_error(text: str) -> str | None:
         return None
     if length < MIN_TITLE_CHARS:
         return (
-            f"공백 제외 {length}자로 최소 {MIN_TITLE_CHARS}자보다 짧음 — "
-            "핵심 사실을 더 구체적으로 적을 것"
+            f"Excluding spaces: {length} characters is below the minimum {MIN_TITLE_CHARS} characters; "
+            "make the main point more specific"
         )
     return (
-        f"공백 제외 {length}자로 최대 {MAX_TITLE_CHARS}자를 초과함 — "
-        "조사와 수식어를 덜어내고 명사구로 줄일 것"
+        f"Excluding spaces: {length} characters exceeds the maximum {MAX_TITLE_CHARS} characters; "
+        "shorten unnecessary words"
     )
 
 
@@ -111,22 +111,22 @@ def generated_title_length_error(text: str) -> str | None:
     length = title_char_count(text)
     if length < TWO_LINE_MIN_CHARS:
         return (
-            f"공백 제외 {length}자로 너무 짧음 — 생성 제목의 두 줄 표시를 위해 최소 "
-            f"{TWO_LINE_MIN_CHARS}자가 필요함 — 맥락과 반전을 더 구체화할 것"
+            f"Excluding spaces: {length} characters is too short for a two-line title; at least "
+            f"{TWO_LINE_MIN_CHARS} characters are required; add concrete context"
         )
     return title_length_error(text)
 
 
-def generated_title_error(text: str) -> str | None:
+def generated_title_error(text: str, *, language: str = "ko") -> str | None:
     """Return an error when a newly generated title breaks the hook contract."""
     normalized = normalize_title(text)
     length_error = generated_title_length_error(normalized)
     if length_error:
         return length_error
-    if len(normalized.split()) < MIN_GENERATED_TITLE_WORDS:
+    if language != "zh" and not any("\u4e00" <= c <= "\u9fff" for c in normalized) and len(normalized.split()) < MIN_GENERATED_TITLE_WORDS:
         return (
-            "띄어쓰기가 부족함 — 두 의미 덩어리로 나뉘도록 자연스럽게 띄어쓴 "
-            f"{MIN_GENERATED_TITLE_WORDS}어절 이상으로 쓸 것"
+            "Use natural spacing with at least "
+            f"{MIN_GENERATED_TITLE_WORDS} words (Chinese titles do not require spaces)"
         )
     return None
 
@@ -196,7 +196,7 @@ def validate_editor_title_lines(upper: str, lower: str) -> tuple[str, str, str]:
     normalized_upper = normalize_title(upper)
     normalized_lower = normalize_title(lower)
     if not normalized_lower:
-        raise ValueError("두 번째 제목을 입력하세요.")
+        raise ValueError("Enter the second title line.")
     combined = validate_title(" ".join(part for part in (normalized_upper, normalized_lower) if part))
     return normalized_upper, normalized_lower, combined
 

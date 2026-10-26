@@ -32,7 +32,7 @@ def test_mac_notes_provider_passes_escaped_caption_to_icloud_notes() -> None:
     assert command[0:2] == ["osascript", "-e"]
     assert command[-3] == "에피소드3_성장"
     assert command[-2] == "<div>A &amp; B<br>두 번째 줄</div>"
-    assert command[-1] == "릴스 캡션"
+    assert command[-1] == "Reel captions"
     assert captured["kwargs"] == {
         "capture_output": True,
         "text": True,
@@ -45,5 +45,5 @@ def test_mac_notes_provider_explains_automation_permission_failure() -> None:
     def runner(command, **_kwargs):
         return subprocess.CompletedProcess(command, 1, stdout="", stderr="Not authorized (-1743)")
 
-    with pytest.raises(NotesError, match="자동화 권한"):
+    with pytest.raises(NotesError, match="automate Notes"):
         MacNotesProvider(runner=runner).save_caption("제목", "캡션")

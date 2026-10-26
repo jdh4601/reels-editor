@@ -76,7 +76,7 @@ def test_modified_mp4_cannot_inherit_an_old_review(monkeypatch,tmp_path):
     def reviewer(*_args):
         video.write_bytes(b'different mp4')
         return json.dumps(passed())
-    with pytest.raises(ValueError,match='검수 중 영상'):
+    with pytest.raises(ValueError,match="video changed during review"):
         quality.review_render_output(video,doc,segments,assets,1,'제목',tmp_path/'review',reviewer=reviewer)
 
 
@@ -112,7 +112,7 @@ def test_review_separates_bundle_handle_from_trim_inside_original_cue(monkeypatc
 def test_renderer_cannot_silently_fall_back_to_old_char_based_timing(monkeypatch,tmp_path):
     video,doc,segments,assets,_=setup_review(monkeypatch,tmp_path)
     assets.groups[0][0]=0
-    with pytest.raises(ValueError,match='렌더 자막'):
+    with pytest.raises(ValueError,match="Rendered captions"):
         quality.review_render_output(video,doc,segments,assets,1,'제목',tmp_path/'review')
 
 
@@ -120,7 +120,7 @@ def test_codex_repair_cannot_invent_source_ids_or_change_speaker(tmp_path):
     doc,segments,_=fixture();doc['speaker']={'name':'원래 화자'}
     original=deepcopy(doc)
     bad={'cuts':[{'seg_ids':['invented']}],'subtitle_translations':doc['subtitle_translations']}
-    with pytest.raises(ValueError,match='자동 수정 실패'):
+    with pytest.raises(ValueError,match="Automatic review repair failed"):
         quality.repair_document(doc,segments,runner=lambda _:json.dumps(bad),feedback={},speed=1,maximum_s=5,work=tmp_path)
     good={'cuts':doc['cuts'],'subtitle_translations':doc['subtitle_translations'],'speaker':{'name':'조작'}}
     result=quality.repair_document(doc,segments,runner=lambda _:json.dumps(good),feedback={},speed=1,maximum_s=5,work=tmp_path)
@@ -141,7 +141,7 @@ def test_opus_receives_image_bytes_and_has_no_mutation_tools(monkeypatch,tmp_pat
         assert base64.b64decode(content[-1]['source']['data'])==b'actual screenshot'
         return SimpleNamespace(returncode=0,stderr='',stdout=json.dumps({'type':'result','result':'{"checks":{}}'})+'\n')
     monkeypatch.setattr(quality.processes,'run',run)
-    assert run_opus_review('검수',[image])=='{"checks":{}}'
+    assert run_opus_review("Review",[image])=='{"checks":{}}'
 
 
 def test_edge_trim_uses_only_measured_words_and_stays_inside_source_segment():
@@ -154,7 +154,7 @@ def test_edge_trim_uses_only_measured_words_and_stays_inside_source_segment():
     assert ordered[0]['source_start_us']==10_120_000  # measured 200ms minus 80ms headroom
     assert ordered[0]['source_end_us']==13_550_000  # measured 3.4s plus 150ms tailroom
     assert result['source_trim_us']['s1']=={'start':120_000,'end':450_000}
-    with pytest.raises(ValueError,match='시간 근거'):
+    with pytest.raises(ValueError,match='timing evidence'):
         quality.apply_edge_trim(result,doc,segments,1,{'start_word':0,'end_word':3},{})
 
 
@@ -162,10 +162,10 @@ def test_unknown_crop_direction_or_source_boundary_is_rejected():
     from reels_editor.edl import validate_edl
     doc,segments,_=fixture()
     doc['focus_overrides']={'s1':'guess'}
-    assert any('크롭' in e for e in validate_edl(doc,segments))
+    assert any('speaker-crop' in e for e in validate_edl(doc,segments))
     doc.pop('focus_overrides')
     doc['source_trim_us']={'s1':{'start':-100000,'end':0}}
-    assert any('원문 구간' in e for e in validate_edl(doc,segments))
+    assert any('original segment' in e for e in validate_edl(doc,segments))
 
 
 def test_edge_trim_can_use_old_audio_anchors_after_removing_earlier_cuts():
@@ -186,7 +186,7 @@ def test_edge_trim_can_use_old_audio_anchors_after_removing_earlier_cuts():
     assert result['source_trim_us'] == {'s3': {'start': 420_000, 'end': 2_350_000}}
     for ids in [['s3', 's1'], ['unmeasured']]:
         result['cuts'] = [{'seg_ids': ids}]
-        with pytest.raises(ValueError, match='edge_trim 키를 삭제'):
+        with pytest.raises(ValueError, match='Remove edge_trim'):
             quality.apply_edge_trim(result, doc, segments, 1, {'start_word': 0, 'end_word': 0}, feedback)
 
 
@@ -256,7 +256,7 @@ def test_trim_uses_verified_audio_even_when_timing_plan_failed_validation():
     quality.apply_edge_trim(result, doc, segments, 1,
                             {'start_word': 0, 'end_word': 3}, feedback)
     assert result['source_trim_us']['s1'] == {'start': 120_000, 'end': 450_000}
-    with pytest.raises(ValueError, match='시간 근거'):
+    with pytest.raises(ValueError, match='timing evidence'):
         quality.apply_edge_trim(deepcopy(doc), doc, segments, 1,
             {'start_word': 0, 'end_word': 3}, {**feedback, 'signature': 'different-audio'})
 
@@ -270,7 +270,7 @@ def test_audio_repair_can_restore_source_instead_of_trimming_more(tmp_path):
         feedback=feedback, speed=1, maximum_s=None, work=tmp_path)
     assert result['source_trim_us'] == {'s1': {'start':0,'end':300_000}}
     assert doc['source_trim_us']['s1']['start'] == 200_000
-    with pytest.raises(ValueError, match='검수 근거'):
+    with pytest.raises(ValueError, match="review evidence"):
         quality.repair_document(doc, segments, runner=lambda _:json.dumps(patch),
             feedback={}, speed=1, maximum_s=None, work=tmp_path/'unsupported')
 
@@ -283,7 +283,7 @@ def test_repair_protects_actual_negative_phrase_and_rejects_invented_unit(tmp_pa
         feedback={'issues':[{'kind':'translation'}]}, speed=1, maximum_s=None, work=tmp_path)
     assert result['caption_keep_together'] == [text]
     patch['caption_keep_together'] = ['원문에 없는 부정입니다.']
-    with pytest.raises(ValueError, match='실제 번역'):
+    with pytest.raises(ValueError, match="actual translation"):
         quality.repair_document(doc, segments, runner=lambda _:json.dumps(patch),
             feedback={}, speed=1, maximum_s=None, work=tmp_path/'invalid')
 
@@ -366,7 +366,7 @@ def test_repair_can_shorten_measured_end_padding_and_apply_bounded_fade(tmp_path
     assert result['source_trim_us']['s1']['end']==580_000
     assert result['audio_fade_out_s']==.04
     patch['audio_fade_out_s']=.5
-    with pytest.raises(ValueError,match='최대 0.06초'):
+    with pytest.raises(ValueError,match="at most 0.06 seconds"):
         quality.repair_document(doc,segments,runner=lambda _:json.dumps(patch),
             feedback=feedback,speed=1,maximum_s=None,work=tmp_path/'invalid')
 
@@ -412,3 +412,9 @@ def test_second_pass_cannot_remove_a_real_following_phrase():
     full['words'].append(dict(word='Next',start=1.8,end=2,probability=.99))
     result=quality.recover_measured_words(full,[supplement])
     assert result['words'][-1]['word']=='Next'
+
+
+@pytest.fixture(autouse=True)
+def isolate_optional_effect_tests(monkeypatch):
+    from reels_editor import hook_effects
+    monkeypatch.setattr(hook_effects, "DEFAULT_SOUND", None)

@@ -1,4 +1,4 @@
-"""영상 장면 위에 제목, 에피소드 번호, D.one 로고를 합성한다."""
+"""영상 장면 위에 제목, 에피소드 번호, 선택적 워터마크를 합성한다."""
 from __future__ import annotations
 
 import os
@@ -20,10 +20,12 @@ def thumbnail_path(video: Path) -> Path:
 
 
 def metadata_label(style: StylePreset, speaker_text: str) -> str:
+    if not style.show_episode:
+        return ""
     number = re.search(r"\d+", style.episode_text)
     if number is None:
-        raise ValueError("썸네일에 표시할 에피소드 번호가 없습니다.")
-    return f"Episode {int(number.group())}"
+        raise ValueError("No internal sequence number is available for the cover.")
+    return f"第 {int(number.group())} 集" if style.output_language == "zh" else f"Episode {int(number.group())}"
 
 
 def compose_thumbnail(frame: Image.Image, title: str, style: StylePreset, *,
@@ -89,7 +91,7 @@ def compose_thumbnail(frame: Image.Image, title: str, style: StylePreset, *,
         line_height = round(size * 1.25)
         last_bbox = draw.textbbox((0, 0), lines[-1], font=font, anchor="mt")
         title_height = (len(lines) - 1) * line_height + last_bbox[3] - last_bbox[1]
-    gap = round(height * 0.018) if lines else 0
+    gap = round(height * 0.018) if lines and label else 0
     group_height = info_height + gap + title_height
     group_top = round(height * 0.73 + offset_y - 20 * height / 1920 - group_height / 2)
     draw.text((width // 2, group_top), label,
@@ -169,7 +171,7 @@ def _raw_interview_filter(assets: render.RenderAssets) -> str | None:
 def choose_cover_frame(paths: list[Path], *, require_open_eyes: bool = True, exclude_shots: list[dict] | None = None, face_cache: dict | None = None) -> tuple[Path, speaker_focus.FaceSignal | None]:
     available = speaker_focus.vision_available()
     if require_open_eyes and not available:
-        raise RuntimeError("눈 개폐 확인 기능을 사용할 수 없습니다. macOS Vision 설치를 확인하세요.")
+        raise RuntimeError("Eye-state detection is unavailable. Check the macOS Vision installation.")
     candidates = []
     face_cache = {} if face_cache is None else face_cache
     for path in paths:
@@ -197,7 +199,7 @@ def choose_cover_frame(paths: list[Path], *, require_open_eyes: bool = True, exc
         score = (min(face.eye_open, 0.4) + min(clarity, 1000) / 1000 * 0.03 - face.mouth_open * 0.01) if face else clarity
         candidates.append((score, path, face))
     if not candidates:
-        raise RuntimeError("눈을 뜬 선명한 단독 장면을 찾지 못했습니다. 다른 장면이나 검색 사진으로 다시 시도하세요.")
+        raise RuntimeError("No clear single-person shot with open eyes was found. Try another scene or photo.")
     _, path, face = max(candidates, key=lambda item: item[0])
     return path, face
 
@@ -264,7 +266,7 @@ def render_thumbnail(assets: render.RenderAssets, *, title_text: str,
                         out_path.with_suffix('.shot.json').write_text(json.dumps(shot_descriptor(frame_path, face)), encoding='utf-8')
                     return
                 remaining.remove(frame_path)
-            raise RuntimeError("최종 썸네일에서 단독 얼굴을 확인하지 못했습니다.")
+            raise RuntimeError("A single face could not be verified in the final cover.")
 
         paths = sorted(sample_dir.glob("frame-*.png"))
         try:

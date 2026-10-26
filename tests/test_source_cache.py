@@ -79,7 +79,7 @@ def test_exact_sections_pack_remap_and_reuse_with_real_ffmpeg(tmp_path: Path, tr
 
 def test_cancelled_cache_wait_does_not_download(tmp_path: Path):
     doc, segments = sample()
-    with pytest.raises(RuntimeError, match="취소"):
+    with pytest.raises(RuntimeError, match="cancelled"):
         prepare_selected_source("https://youtu.be/abc123", segments, doc, tmp_path,
                                 cancelled=lambda: True)
 
@@ -116,7 +116,7 @@ def test_section_download_refreshes_streams_and_saves_redacted_diagnostics(tmp_p
 def test_cancelled_section_download_does_not_extract(tmp_path, monkeypatch):
     from reels_editor import source_cache
     monkeypatch.setattr(source_cache.youtube, '_default_ydl_factory', lambda _opts: pytest.fail('must not extract'))
-    with pytest.raises(RuntimeError, match='취소'):
+    with pytest.raises(RuntimeError, match="cancelled"):
         source_cache.download_section('https://youtu.be/abc123', tmp_path, 0, US, cancelled=lambda: True)
 
 

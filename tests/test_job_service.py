@@ -115,6 +115,14 @@ def _candidates() -> list[ContentCandidate]:
     ]
 
 
+def _approved(video, **extra):
+    from reels_editor import quality_review, hook_effects
+    return {"passed": True, "video_sha256": __import__("hashlib").sha256(video.read_bytes()).hexdigest(),
+        "review_version": quality_review.REVIEW_VERSION, "issues": [], "machine_issues": [],
+        "checks": {key: {"verdict": "pass", "evidence": "test evidence"}
+                   for key in (*quality_review.CHECKS, *hook_effects.CHECKS)}, **extra}
+
+
 def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = None) -> JobServiceDeps:
     video = tmp_path / "source.mp4"
     video.write_bytes(b"source")
@@ -186,7 +194,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
 
     def generate_caption(**kwargs: Any) -> str:
         calls.caption_requests.append(kwargs)
-        return f"Ep {kwargs['episode_number']}. 첫 고객을 만든 방법\n\n맥락\n\n전략\n\n교훈\n\n여러분은 무엇을 먼저 검증하고 있나요?\n\n다음 이야기가 궁금하다면 디원을 팔로우해주세요 🚀"
+        return f"Ep {kwargs['episode_number']}. 첫 고객을 만든 방법\n\n맥락\n\n전략\n\n교훈\n\n여러분은 무엇을 먼저 검증하고 있나요?\n\n원문 출처를 확인하세요."
 
     def render_thumbnail(_assets, *, out_path, title_text, style, speaker_text="", **_kwargs):
         from reels_editor.thumbnail import metadata_label
@@ -196,8 +204,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
 
     return JobServiceDeps(
         prepare_caption_timing=lambda _video, doc, *_args, **_kwargs: doc,
-        review_render_output=lambda video, *_args, **_kwargs: {
-            'passed': True, 'video_sha256': __import__('hashlib').sha256(video.read_bytes()).hexdigest()},
+        review_render_output=lambda video, *_args, **_kwargs: _approved(video),
         trim_topic_edges=lambda doc, *_args, **_kwargs: doc,
         enrich_speakers=lambda *_args, **_kwargs: None,
         analyze_candidates=lambda _segments, _types, **_kwargs: _candidates(),
@@ -277,7 +284,7 @@ def test_job_service_marks_partial_success_as_failed_and_limits_base_parallelism
 
     assert job.status is Status.FAILED
     assert job.phase == "partial-failure"
-    assert job.error == "선택한 릴스 2/3개만 준비되었습니다. 원인: LLM failed"
+    assert job.error == "Rendering 2/3 reels are ready. Reason: LLM failed"
     assert [story.status for story in job.storylines] == [Status.READY, Status.FAILED, Status.READY]
     assert calls.generate == 1
     assert calls.base == 2
@@ -295,9 +302,9 @@ def test_topic_review_429_reports_stage_and_cause_before_render(tmp_path: Path) 
         _deps(tmp_path, calls), trim_topic_edges=fail_review))
     job = _run_ready(service)
     assert job.status is Status.FAILED
-    assert '렌더 전 주제 검수 실패' in job.error
+    assert "Pre-render topic review failed" in job.error
     assert '429' in job.error
-    assert all('렌더 전 주제 검수 실패' in story.error for story in job.storylines)
+    assert all("Pre-render topic review failed" in story.error for story in job.storylines)
     assert calls.base == calls.overlay == 0
 
 
@@ -309,7 +316,7 @@ def test_candidate_analysis_failure_reports_stage(tmp_path: Path) -> None:
         _deps(tmp_path, Calls()), analyze_candidates=fail_analysis))
     job = service.run_youtube_job_sync('https://youtu.be/dQw4w9WgXcQ')
     assert job.status is Status.FAILED
-    assert job.error.startswith('후보 분석 실패:')
+    assert job.error.startswith("Candidate analysis failed:")
     assert '429' in job.error
     assert job.candidates == []
 
@@ -395,8 +402,8 @@ def test_job_service_notifies_after_candidates_and_final_renders(tmp_path: Path)
 
     assert ready.status is Status.READY
     assert notifications == [
-        ("후보 분석 완료", "만들 릴스를 선택하세요."),
-        ("릴스 생성 완료", "2개가 준비됐습니다."),
+        ("Clip analysis complete", "Choose the reels to make."),
+        ("Reel generation complete", "2 reels are ready."),
     ]
 
 
@@ -454,7 +461,7 @@ def test_episode_number_is_job_level_for_render_caption_and_archive(tmp_path: Pa
 
     assert ready.episode_number == 37
     assert set(calls.base_episode_numbers) == {37}
-    assert set(calls.episode_texts) == {"에피소드 37 / 1000"}
+    assert set(calls.episode_texts) == {"Episode 37"}
     assert captioned.storylines[1].instagram_caption.startswith("Ep 37. ")
     assert all(
         Path(story.archive_path or "").parent.name.startswith("Ep-37_")
@@ -842,7 +849,7 @@ def test_failed_title_render_preserves_previous_playable_and_archive_mp4(tmp_pat
     assert failed.title == before_story.title
     assert failed.active_variant_path == str(active_path)
     assert failed.status is Status.READY
-    assert "다시 시도" in (failed.error or "")
+    assert "Try again" in (failed.error or "")
     assert active_path.read_bytes() == active_bytes
     assert archive_path.read_bytes() == archive_bytes
 
@@ -972,7 +979,7 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     assert download_args["transcript_only"] is True
     assert download_args["progress_snapshot"]["progress"] == pytest.approx(0.085)
     assert download_args["progress_snapshot"]["message"] == (
-        "YouTube 영상 다운로드 중 · 50% · 50MB / 100MB"
+        "YouTube Video download in progress · 50% · 50MB / 100MB"
     )
     assert download_args["progress_snapshot"]["download_progress"]["component_fraction"] == 0.5
     audio = download_args["audio_snapshot"]["download_progress"]
@@ -980,7 +987,7 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     assert audio["component_fraction"] == 0.81
     assert audio["downloaded_bytes"] == 81 * 1024 * 1024
     assert download_args["slow_snapshot"]["download_progress"]["component_fraction"] == 0.811
-    assert "3KB/s · 전송 속도가 느립니다" in download_args["slow_snapshot"]["message"]
+    assert "3KB/s · Transfer is slow" in download_args["slow_snapshot"]["message"]
     assert calls.durations == [35]
     assert calls.base == 3
 
@@ -1061,7 +1068,7 @@ def test_job_service_persists_and_uses_selected_codex_model(tmp_path: Path) -> N
 def test_job_service_rejects_unknown_codex_model(tmp_path: Path) -> None:
     service = JobService(store=JobStore(tmp_path / "jobs"))
 
-    with pytest.raises(JobServiceError, match="지원하지 않는 Codex CLI 모델"):
+    with pytest.raises(JobServiceError, match="Unsupported Codex CLI model"):
         service.run_youtube_job_sync(
             TEST_URL,
             provider="codex-cli",
@@ -1102,8 +1109,8 @@ def test_job_service_reports_detailed_progress_during_rendering(tmp_path: Path) 
         current = service.store.load(job.id)
         assert current.phase == "rendering"
         assert current.progress > 0.28
-        assert "릴스 1" in (current.message or "")
-        assert "세로 영상" in (current.message or "")
+        assert "Reel 1" in (current.message or "")
+        assert "vertical video" in (current.message or "")
     finally:
         release_render.set()
 
@@ -1202,8 +1209,8 @@ def test_batch_export_writes_each_selected_storyline_to_one_folder(tmp_path: Pat
     )
 
     assert sorted(path.name for path in destination.glob("*.mp4")) == [
-        "에피소드 1 - C 제목 1.mp4",
-        "에피소드 1 - https youtu.be A 제목 1.mp4",
+        "Reels 1 - C 제목 1.mp4",
+        "Reels 1 - https youtu.be A 제목 1.mp4",
     ]
     assert list(destination.glob("*.json")) == []
     assert all(b":False" in path.read_bytes() for path in destination.glob("*.mp4"))
@@ -1222,10 +1229,10 @@ def test_google_drive_export_reuses_existing_folder_and_keeps_file_collisions_sa
     exported = service.export_many(job.id, destination, storyline_ids=["s1"])
     repeated_destination = service.google_drive_export_directory(job.id, my_drive)
 
-    assert destination == episode_folder / "에피소드 11"
+    assert destination == episode_folder / "Reels 11"
     assert destination.is_dir()
     assert [path.name for path in destination.glob("*.mp4")] == [
-        "에피소드 11 - https youtu.be A 제목 1.mp4"
+        "Reels 11 - https youtu.be A 제목 1.mp4"
     ]
     assert exported.export.output_path == str(destination)
     assert repeated_destination == destination
@@ -1233,10 +1240,10 @@ def test_google_drive_export_reuses_existing_folder_and_keeps_file_collisions_sa
 
     service.export_many(job.id, repeated_destination, storyline_ids=["s1"])
     assert sorted(path.name for path in destination.iterdir()) == [
-        "에피소드 11 - https youtu.be A 제목 1 (2).jpg",
-        "에피소드 11 - https youtu.be A 제목 1 (2).mp4",
-        "에피소드 11 - https youtu.be A 제목 1.jpg",
-        "에피소드 11 - https youtu.be A 제목 1.mp4",
+        "Reels 11 - https youtu.be A 제목 1 (2).jpg",
+        "Reels 11 - https youtu.be A 제목 1 (2).mp4",
+        "Reels 11 - https youtu.be A 제목 1.jpg",
+        "Reels 11 - https youtu.be A 제목 1.mp4",
     ]
     assert service.google_drive_export_directory(job.id, episode_folder) == destination
 
@@ -1254,10 +1261,10 @@ def test_default_batch_export_groups_selection_in_episode_folder(tmp_path: Path)
     destination = Path(exported.export.output_path or "")
 
     assert [path.name for path in destination.glob("*.mp4")] == [
-        "에피소드 1 - https youtu.be B 제목 1.mp4"
+        "Reels 1 - https youtu.be B 제목 1.mp4"
     ]
     assert list(destination.glob("*.json")) == []
-    assert destination == tmp_path / "exports" / "에피소드 1"
+    assert destination == tmp_path / "exports" / "Reels 1"
 
 
 def test_export_filename_uses_episode_number_and_sanitized_reel_title(tmp_path: Path) -> None:
@@ -1269,7 +1276,7 @@ def test_export_filename_uses_episode_number_and_sanitized_reel_title(tmp_path: 
     service.store.save(job)
 
     assert service.suggested_export_filename(job.id, "s3") == (
-        "에피소드 37 - 고객 Build Ship 첫 성장.mp4"
+        "Reels 37 - 고객 Build Ship 첫 성장.mp4"
     )
 
 
@@ -1283,7 +1290,7 @@ def test_export_filename_stays_within_filesystem_component_limit(tmp_path: Path)
 
     filename = service.suggested_export_filename(job.id, "s1")
 
-    assert filename.startswith("에피소드 1 - ")
+    assert filename.startswith("Reels 1 - ")
     assert filename.endswith(".mp4")
     assert len(filename.encode("utf-8")) <= 255
 
@@ -1362,6 +1369,7 @@ def test_retry_recovers_failed_generation_with_structural_smart_quote(tmp_path: 
     video.write_bytes(b"cached-video")
     job = Job(
         id="recover-job",
+        output_language="ko",
         input_path=str(video),
         duration_s=30,
         n_storylines=1,
@@ -1426,7 +1434,7 @@ def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_pat
     (source / "segments.json").write_text(json.dumps(segments))
     if cached:
         (work / "llm_raw_s1.txt").write_text("invalid cached JSON")
-    job = Job(id="recover-fresh", input_path=str(video), duration_s=35,
+    job = Job(id="recover-fresh", output_language="ko", input_path=str(video), duration_s=35,
               n_storylines=1, status=Status.FAILED, error='previous failure', selected_candidate_ids=["c1"],
               storylines=[Storyline(id="s1", index=0, angle_name="원칙형",
                           title="투자 손실보다 더 위험한 남 탓", status=Status.FAILED)])
@@ -1434,7 +1442,7 @@ def test_retry_requests_fresh_response_when_cached_generation_is_invalid(tmp_pat
     recovered = service.retry_storyline(job.id, "s1")
     assert len(fresh_prompts) == 1
     if cached:
-        assert "JSON 파싱" in fresh_prompts[0]
+        assert "previous response was not valid JSON" in fresh_prompts[0]
     assert recovered.status is Status.READY
     assert recovered.storylines[0].title == job.storylines[0].title
 
@@ -1445,12 +1453,12 @@ def test_retry_missing_source_does_not_leave_job_generating(tmp_path: Path) -> N
     job = Job(id='missing-retry-source', status=Status.FAILED,
               storylines=[Storyline(id='s1', index=0, status=Status.FAILED)])
     store.save(job)
-    with pytest.raises(JobServiceError, match='원본 자막'):
+    with pytest.raises(JobServiceError, match="Original captions"):
         service.retry_storyline(job.id, 's1')
     failed = store.load(job.id)
     assert failed.status is Status.FAILED
     assert failed.storylines[0].status is Status.FAILED
-    assert '대본 생성 실패' in failed.error
+    assert "Script generation failed" in failed.error
 
 
 def test_retry_same_clip_while_generating_is_rejected_without_mutation(tmp_path: Path) -> None:
@@ -1460,7 +1468,7 @@ def test_retry_same_clip_while_generating_is_rejected_without_mutation(tmp_path:
               storylines=[Storyline(id='s1', index=0, status=Status.GENERATING, progress=0.4)])
     store.save(job)
     before = store.load(job.id)
-    with pytest.raises(JobServiceError, match='이미 생성 중'):
+    with pytest.raises(JobServiceError, match="already being generated"):
         service.retry_storyline(job.id, 's1')
     assert store.load(job.id) == before
 
@@ -1768,7 +1776,7 @@ def test_three_urls_analyze_and_render_in_parallel_with_capacity_limit(tmp_path:
         workers = list(service._workers.values())
         analysis_barrier.wait(timeout=5)  # All three analysis threads must arrive simultaneously.
         assert len(service._active_job_ids) == 3
-        with pytest.raises(JobServiceError, match="최대 3개"):
+        with pytest.raises(JobServiceError, match="Up to 3"):
             service.start_youtube_job("https://youtu.be/fourth")
         with pytest.raises(JobServiceError, match="this job is already active"):
             service.start_selected_generation(jobs[0].id, ["c1"])
@@ -1783,7 +1791,7 @@ def test_three_urls_analyze_and_render_in_parallel_with_capacity_limit(tmp_path:
         workers = list(service._workers.values())
         render_barrier.wait(timeout=5)  # Real generation pipeline reaches all three renderers together.
         assert len(service._active_job_ids) == 3
-        with pytest.raises(JobServiceError, match="최대 3개"):
+        with pytest.raises(JobServiceError, match="Up to 3"):
             service.start_youtube_job("https://youtu.be/fourth")
         release.set()
         for worker in workers:
@@ -1951,15 +1959,15 @@ def test_metadata_edit_persists_and_survives_title_and_subtitle_changes(tmp_path
     assert (calls.generate, calls.base) == before[:2]
     assert calls.overlay == before[2] + 1
     assert calls.speaker_texts[-1] == "새 이름 (회사 CEO)"
-    assert calls.episode_texts[-1] == "에피소드 15 / 1000"
-    assert calls.thumbnail_labels[-1] == "Episode 15"
+    assert calls.episode_texts[-1] == "Episode 15"
+    assert calls.thumbnail_labels[-1] == ""
     assert Path(story.archive_path).read_bytes() == Path(story.active_variant_path).read_bytes()
     assert service.store.load(ready.id).storylines[0].speaker_override == story.speaker_override
     service.update_storyline_title(ready.id, "s1", "새로운 제목입니다")
     service.select_variant(ready.id, "s1", subtitles_on=False)
     assert calls.speaker_texts[-1] == "새 이름 (회사 CEO)"
-    assert calls.episode_texts[-1] == "에피소드 15 / 1000"
-    assert calls.thumbnail_labels[-1] == "Episode 15"
+    assert calls.episode_texts[-1] == "Episode 15"
+    assert calls.thumbnail_labels[-1] == ""
     service.generate_instagram_caption(ready.id, "s1")
     assert calls.caption_requests[-1]["episode_number"] == 15
 
@@ -2048,7 +2056,7 @@ def test_export_regenerates_current_thumbnail_for_existing_video(tmp_path: Path,
         video = Path(exported.export.output_path)
     assert exported.export.status is Status.READY
     assert len(calls.thumbnail_labels) == before + 1
-    assert calls.thumbnail_labels[-1] == "Episode 14"
+    assert calls.thumbnail_labels[-1] == ""
     assert video.with_suffix(".jpg").read_text() == story.title
     assert video.read_bytes() == Path(story.active_variant_path).read_bytes()
 
@@ -2090,12 +2098,12 @@ def test_thumbnail_candidates_selection_and_export_preserve_chosen_photo(tmp_pat
     service.export_selected(job.id, destination, storyline_id=story.id)
     assert destination.with_suffix('.jpg').read_bytes() == b'chosen search photo'
     assert len(calls.thumbnail_labels) == before
-    with pytest.raises(JobServiceError, match='이 릴스'):
+    with pytest.raises(JobServiceError, match='this reel'):
         service.select_thumbnail_candidate(job.id, job.storylines[1].id, selected['artifact_id'])
     current = service.store.load(job.id)
     current.storylines[0].revision += 1
     service.store.save(current)
-    with pytest.raises(JobServiceError, match='수정 전'):
+    with pytest.raises(JobServiceError, match='predates'):
         service.select_thumbnail_candidate(job.id, story.id, selected['artifact_id'])
 
 
@@ -2125,7 +2133,7 @@ def test_opus_failure_triggers_codex_repair_and_new_render_before_ready(tmp_path
         if len(attempts) == 1:
             return {'passed': False, 'issues': [{'kind':'hook', 'start_s':0, 'end_s':1,
                 'evidence':'첫 훅에 주어가 없음', 'correction':'독립적인 첫 문장 선택'}]}
-        return {'passed':True,'video_sha256':sha256(video.read_bytes()).hexdigest(), 'report_path':'review.json'}
+        return _approved(video, report_path='review.json')
     def repair(doc, *_args, **kwargs):
         repairs.append(kwargs['feedback'])
         return {**doc,'subtitle_translations':{'seg1':'훅의 맥락을 복구했습니다.'}}
@@ -2159,8 +2167,8 @@ def test_persistent_quality_failure_stops_after_two_repairs_without_publishing(t
     assert job.storylines[0].variants==[]
     assert job.storylines[0].active_variant_path is None
     assert not job.artifacts
-    assert '자동 수정 2회' in job.storylines[0].error
-    assert job.storylines[0].review_message == '자동 수정 후에도 확인이 필요합니다.'
+    assert '2 automatic repairs' in job.storylines[0].error
+    assert job.storylines[0].review_message == "Review is still required after automatic repairs."
     assert Path(job.storylines[0].edl_path).is_file()
     assert Path(job.storylines[0].segments_path).is_file()
 
@@ -2174,7 +2182,7 @@ def test_layout_repair_overrides_legacy_absolute_subtitle_position(tmp_path):
     def review(video,*_a,**_k):
         reviews.append(1)
         return ({'passed':False,'issues':[{'kind':'layout','evidence':'자막이 입을 가림'}]}
-            if len(reviews)==1 else {'passed':True,'video_sha256':sha256(video.read_bytes()).hexdigest()})
+            if len(reviews)==1 else _approved(video))
     deps=replace(base_deps,
         load_style=lambda path:replace(base_deps.load_style(path),sub_y=-420),
         render_base_and_assets=render_base,review_render_output=review,
@@ -2283,7 +2291,7 @@ def test_pre_render_validation_can_repair_before_rendering(tmp_path):
     service=JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
     job=_run_ready(service,candidate_count=1)
     assert job.status is Status.READY and calls.overlay==1
-    assert len(repairs)==1 and repairs[0]['stage']=='렌더 전 주제 검수'
+    assert len(repairs)==1 and repairs[0]['stage']=="Pre-render topic review"
 
 
 def test_final_review_context_repairs_are_not_cut_again_by_initial_topic_pass(tmp_path):
@@ -2296,7 +2304,7 @@ def test_final_review_context_repairs_are_not_cut_again_by_initial_topic_pass(tm
     def review(video, *_a, **_k):
         review_calls.append(1)
         return ({'passed':False,'issues':[{'kind':'hook','evidence':'restore source subject'}]}
-            if len(review_calls)==1 else {'passed':True,'video_sha256':sha256(video.read_bytes()).hexdigest()})
+            if len(review_calls)==1 else _approved(video))
     service = JobService(store=JobStore(tmp_path/'jobs'), deps=replace(_deps(tmp_path,calls),
         trim_topic_edges=trim, review_render_output=review,
         repair_document=lambda doc,*_a,**_k:doc))
@@ -2321,7 +2329,7 @@ def test_google_drive_batch_export_places_all_videos_and_jpgs_in_episode_folder(
     my_drive.mkdir()
     destination = service.google_drive_export_directory(job.id, my_drive)
     exported = service.export_many(job.id, destination, storyline_ids=['s1', 's2', 's3'])
-    assert destination == my_drive / '릴스(에피소드)' / '에피소드 20'
+    assert destination == my_drive / '릴스(에피소드)' / "Reels 20"
     assert exported.export.output_path == str(destination)
     videos = list(destination.glob('*.mp4'))
     assert len(videos) == 3
@@ -2337,7 +2345,7 @@ def test_google_drive_episode_folder_cannot_escape_through_symlink(tmp_path):
     root.mkdir()
     outside = tmp_path / 'outside'
     outside.mkdir()
-    (root / '에피소드 20').symlink_to(outside, target_is_directory=True)
+    (root / 'Reels 20').symlink_to(outside, target_is_directory=True)
     with pytest.raises(JobServiceError):
         service.google_drive_export_directory(job.id, root)
     assert list(outside.iterdir()) == []
@@ -2375,7 +2383,7 @@ def test_identity_failure_does_not_claim_final_review_or_automatic_repairs(tmp_p
     assert job.status is Status.FAILED
     assert calls.base == 0
     for story in job.storylines:
-        assert '화자 정보 확인 실패' in story.error
+        assert "Speaker verification failed" in story.error
         assert story.review_message is None
 
 
@@ -2435,7 +2443,7 @@ def test_thumbnail_generation_returns_four_distinct_shots_and_passes_previous_sh
     assert counts == [0, 1, 2, 3]
     assert len(result['candidates']) == 4
     assert len({c['artifact_id'] for c in result['candidates']}) == 4
-    assert [c['label'] for c in result['candidates']] == [f'인터뷰 구도 {i}' for i in range(1, 5)]
+    assert [c['label'] for c in result['candidates']] == [f'Source shot {i}' for i in range(1, 5)]
     assert not result['warnings']
 
 
@@ -2464,3 +2472,31 @@ def test_failed_thumbnail_keeps_video_playable_and_can_be_retried(tmp_path):
     assert updated.storylines[0].thumbnail_error is None
     assert _snapshot_from_job(updated)["storylines"][0]["thumbnail_url"]
     assert (calls.base, calls.overlay) == (base_calls, overlay_calls)
+
+
+@pytest.mark.parametrize('provider, expected', [
+    ('claude-cli', 'READY'),
+    ('codex-cli', 'FAILED'),
+])
+def test_caption_alignment_falls_back_to_job_provider_when_codex_quota_is_exhausted(tmp_path, provider, expected):
+    from reels_editor.llm import _CodexFailure
+    calls = Calls()
+    used = []
+    def build_runner(cfg):
+        def run(prompt):
+            used.append(cfg.provider)
+            if cfg.provider == 'codex-cli':
+                raise _CodexFailure('ERROR: usage_limit_reached')
+            return prompt
+        return run
+    def prepare(_video, doc, *_a, runner, **_k):
+        runner('align')
+        return doc
+    deps = replace(_deps(tmp_path, calls), build_runner=build_runner, prepare_caption_timing=prepare)
+    service = JobService(store=JobStore(tmp_path/'jobs'), deps=deps)
+    job = _run_ready(service, candidate_count=1, provider=provider)
+    assert job.status.name == expected
+    if provider == 'claude-cli':
+        assert used[-2:] == ['codex-cli', 'claude-cli']
+    else:
+        assert 'usage limit' in job.storylines[0].error

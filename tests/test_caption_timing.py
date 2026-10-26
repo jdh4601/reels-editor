@@ -66,7 +66,7 @@ def test_render_audio_matches_timing_audio_despite_video_focus_splits(tmp_path,f
                           {'id':'b','text':'b','source_start_us':2_000_000,'source_end_us':2_095_000}]}
     doc={'cuts':[{'seg_ids':['a','b']}],'audio_fade_out_s':fade}
     reference=timing.extract_audio(source,tmp_path/'timing.wav',doc=doc,segments=segments,speed=1.15)
-    style=replace(load_style(Path(__file__).resolve().parents[1]/'styles/done.yaml'),
+    style=replace(load_style(Path(__file__).resolve().parents[1]/'reels_editor/resources/styles/default.yaml'),
                   canvas=(320,568),top_bar=44,bottom_bar=44)
     slices=[FocusSlice(0,0,.7,FocusPoint()),FocusSlice(0,.7,2,FocusPoint(x=0)),
             FocusSlice(1,2,2.095,FocusPoint(x=1))]
@@ -88,7 +88,7 @@ def test_render_audio_matches_timing_audio_despite_video_focus_splits(tmp_path,f
 def test_previous_audio_recipe_cannot_reuse_a_timing_plan():
     doc,segments,plan=fixture()
     plan['version']=timing.VERSION-1
-    with pytest.raises(ValueError,match='수정 전 대본'):
+    with pytest.raises(ValueError,match="earlier script"):
         timing.plan_groups(plan,doc,segments,1)
 
 
@@ -153,7 +153,7 @@ def test_zero_duration_asr_token_is_preserved_as_point_without_inventing_duratio
     assert clean[0]['start']==clean[0]['end']==.4
     assert clean[0]['timing_kind']=='point'
     assert clean[1]['timing_kind']=='interval'
-    with pytest.raises(ValueError,match='유효한 단어 시간'):
+    with pytest.raises(ValueError,match="valid word-time"):
         timing.validate_words({'words':words[:1]},2)
 
 
@@ -166,7 +166,7 @@ def test_short_acknowledgement_can_share_a_readable_caption_with_a_complete_sent
     plan['captions'] = [{'text': '네.', 'start_word': 0, 'end_word': 0},
                         {'text': '먼저 고객층을 만드세요.', 'start_word': 1, 'end_word': 3}]
     plan['words'][0]['end'] = .4
-    with pytest.raises(ValueError, match='표시 0.20초'):
+    with pytest.raises(ValueError, match="displayed for 0.20 seconds"):
         timing.plan_groups(plan, doc, segments, 1)
 
 
@@ -176,7 +176,7 @@ def test_combining_sentence_tail_and_next_incomplete_clause_is_still_rejected():
     doc['subtitle_translations']['s1'] = text
     plan['signature'] = timing.signature(doc, segments, 1)
     plan['captions'] = [{'text': text, 'start_word': 0, 'end_word': 3}]
-    with pytest.raises(ValueError, match='이전 문장 끝과 다음 문장 시작'):
+    with pytest.raises(ValueError, match="end of one sentence with the start of another"):
         timing.plan_groups(plan, doc, segments, 1)
 
 
@@ -201,7 +201,7 @@ def test_negation_meaning_unit_cannot_be_split_across_screens():
     plan['signature'] = timing.signature(doc, segments, 1)
     plan['captions'] = [{'text':'저희 판단을','start_word':0,'end_word':1},
                         {'text':'고집하지 않아요.','start_word':2,'end_word':3}]
-    with pytest.raises(ValueError, match='보호된 의미 단위'):
+    with pytest.raises(ValueError, match="protected meaning units"):
         timing.plan_groups(plan, doc, segments, 1)
     plan['captions'] = [{'text':text,'start_word':0,'end_word':3}]
     assert timing.plan_groups(plan, doc, segments, 1) == [[.2,3.4,text]]
@@ -235,3 +235,9 @@ def test_saved_timing_still_prepares_required_hook_effect(monkeypatch,tmp_path):
     assert result['hook_effect']=={'prepared':True}
     assert calls==[(segments,1,tmp_path/'hook')]
     assert 'hook_effect' not in doc
+
+
+@pytest.fixture(autouse=True)
+def isolate_optional_effect_tests(monkeypatch):
+    from reels_editor import hook_effects
+    monkeypatch.setattr(hook_effects, "DEFAULT_SOUND", None)

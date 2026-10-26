@@ -17,3 +17,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 .superpowers/
+
+# Verified CLI rerender attempts contain private media and evidence
+.verified-jobs/

@@ -16,9 +16,9 @@ from reels_editor.config import AppConfig, load_config, merged_style
 from reels_editor.storyteller import StorylineResult
 from reels_editor.style import StylePreset, load_style
 
-app = typer.Typer(help="창업가 인터뷰 릴스 재렌더 도구")
+app = typer.Typer(help="Verified local reel rendering")
 console = Console()
-DEFAULT_STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
+DEFAULT_STYLE = Path(__file__).parent / "resources" / "styles" / "default.yaml"
 MAX_PARALLEL_RENDERS = 2
 
 
@@ -184,26 +184,20 @@ def render_cmd(workdir: Path,
     if errors:
         console.print("[red]✗ EDL 검증 실패:[/]\n" + "\n".join(errors))
         raise typer.Exit(1)
-    video = Path(segments["video_path"])
-    assets = render.render_base_and_assets(
-        video, segments, edl_doc, preset, workdir / ".render", selected_speed,
-    )
-    selected_title = edl_doc["title_candidates"][title - 1]
-    output = workdir / f"reel-t{title}.mp4"
-    render.render_with_title(
-        assets,
-        selected_title["text"],
-        selected_title.get("keyword", ""),
-        preset,
-        output,
-        speaker_text=render.speaker_label(edl_doc),
-    )
-    cover = thumbnail.render_thumbnail(
-        assets, title_text=selected_title["text"], style=preset,
-        out_path=thumbnail.thumbnail_path(output),
-        speaker_text=render.speaker_label(edl_doc),
-    )
-    console.print(f"[green]✅ 완료:[/] {output}\n썸네일: {cover}")
+    if not 1 <= title <= len(edl_doc.get("title_candidates", [])):
+        console.print("[red]Invalid title index[/]")
+        raise typer.Exit(1)
+    from reels_editor.jobs import JobService, JobStore
+    service = JobService(store=JobStore(workdir / ".verified-jobs"), config=cfg, style_path=style)
+    try:
+        output = service.render_workdir(edl_doc, segments, workdir / f"reel-t{title}.mp4",
+            title=edl_doc["title_candidates"][title - 1]["text"], style=preset, speed=selected_speed)
+        console.print(f"[green]Verified:[/] {output}")
+    except (OSError, ValueError, RuntimeError) as exc:
+        console.print(f"[red]Quality gate failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    finally:
+        service.shutdown()
 
 
 if __name__ == "__main__":

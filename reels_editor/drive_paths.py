@@ -19,7 +19,7 @@ def _child(root: Path, name: str) -> Path:
 def episode_export_root(selected: Path) -> Path:
     root = selected.expanduser().resolve(strict=True)
     if not root.is_dir():
-        raise ValueError("선택한 Google Drive 저장 경로가 폴더가 아닙니다.")
+        raise ValueError("The selected Google Drive path is not a folder.")
     if _normalized(root.name) == EPISODE_FOLDER:
         return root
     if root.name.startswith("GoogleDrive-"):
@@ -31,7 +31,7 @@ def episode_export_root(selected: Path) -> Path:
     target = _child(root, EPISODE_FOLDER)
     resolved = target.resolve()
     if not resolved.is_relative_to(root):
-        raise ValueError("릴스(에피소드) 저장 폴더가 선택 경로 밖에 있습니다.")
+        raise ValueError("The export folder is outside the selected path.")
     if target.exists() and not target.is_dir():
-        raise ValueError("릴스(에피소드) 경로가 폴더가 아닙니다.")
+        raise ValueError("The export path is not a folder.")
     return target

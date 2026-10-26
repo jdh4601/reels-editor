@@ -57,6 +57,8 @@ def load_desktop_config() -> AppConfig:
         model=cfg.model if cfg.provider == "codex-cli" else "",
         n_storylines=3,
         style=dict(cfg.style),
+        google_drive_root=cfg.google_drive_root,
+        output_language=cfg.output_language,
     )
 
 

@@ -99,13 +99,13 @@ def test_cover_prefers_single_person_edl_window(tmp_path):
     assert thumbnail._closeup_window(assets) is None
 
 
-def test_thumbnail_metadata_uses_actual_episode_without_speaker(style_preset):
-    assert thumbnail.metadata_label(style_preset.for_episode(14), "아이반 자오 (Notion CEO)") == "Episode 14"
-    assert thumbnail.metadata_label(style_preset.for_episode(27), "다른 창업자 (다른 회사 CEO)") == "Episode 27"
-    assert thumbnail.metadata_label(style_preset.for_episode(27), "직책 없는 창업자") == "Episode 27"
+def test_thumbnail_metadata_has_no_episode_label(style_preset):
+    assert thumbnail.metadata_label(style_preset.for_episode(14), "아이반 자오 (Notion CEO)") == ""
+    assert thumbnail.metadata_label(style_preset.for_episode(27), "다른 창업자 (다른 회사 CEO)") == ""
+    assert thumbnail.metadata_label(style_preset.for_episode(27), "직책 없는 창업자") == ""
 
 
-def test_thumbnail_orange_episode_sits_above_lowered_title_and_bottom_fades_to_black(style_preset):
+def test_thumbnail_has_no_episode_ink_and_bottom_fades_to_black(style_preset):
     frame = Image.new("RGB", style_preset.canvas, (200, 200, 200))
     cover = thumbnail.compose_thumbnail(frame, "회사를 만드는 건 스포츠를 하는 것과 같다",
                                         style_preset.for_episode(14), speaker_text="아이반 자오 (Notion CEO)")
@@ -113,21 +113,19 @@ def test_thumbnail_orange_episode_sits_above_lowered_title_and_bottom_fades_to_b
     orange = Image.new("L", cover.size)
     orange.putdata([255 if pixel == (240, 100, 0) else 0 for pixel in cover.get_flattened_data()])
     bbox = orange.getbbox()
-    assert bbox is not None
-    assert h * 0.64 < bbox[1] < bbox[3] < h * 0.73
+    assert bbox is None
     white = Image.new("L", cover.size)
     white.putdata([255 if pixel == (255, 255, 255) else 0 for pixel in cover.get_flattened_data()])
     title_bbox = white.crop((0, 0, w, round(h * 0.82))).getbbox()
-    assert title_bbox is not None and bbox[3] < title_bbox[1]
+    assert title_bbox is not None
     assert h * 0.71 < (title_bbox[1] + title_bbox[3]) / 2 < h * 0.82
-    assert bbox[0] > w * 0.07 and bbox[2] < w * 0.93
     assert cover.getpixel((0, round(h * 0.45))) == (200, 200, 200)
     assert cover.getpixel((0, round(h * 0.70)))[0] < 150
     assert cover.getpixel((0, h - 1))[0] < 3
     assert cover.getpixel((0, round(h * 0.85)))[0] < 120
 
 
-def test_cover_headline_has_no_outline_and_episode_is_larger(style_preset, monkeypatch):
+def test_cover_headline_has_no_outline_or_episode(style_preset, monkeypatch):
     calls = []
     original = PILImageDraw.ImageDraw.text
     def record(self, xy, text, **kwargs):
@@ -136,8 +134,7 @@ def test_cover_headline_has_no_outline_and_episode_is_larger(style_preset, monke
     monkeypatch.setattr(PILImageDraw.ImageDraw, 'text', record)
     thumbnail.compose_thumbnail(Image.new('RGB', style_preset.canvas, 'gray'), '', style_preset.for_episode(20),
                                 title_upper='아이디어는 좋은데', title_lower='투자받지 못하는 이유')
-    label = next(kw for text, kw in calls if text == 'Episode 20')
-    assert label['font'].size == 52
+    assert not any('Episode' in text or '에피소드' in text for text, _ in calls)
     for text, kwargs in calls:
         if text in {'아이디어는 좋은데', '투자받지 못하는 이유'}:
             assert kwargs.get('stroke_width', 0) == 0
@@ -164,7 +161,7 @@ def test_best_frame_uses_open_eyes_instead_of_first_frame(tmp_path, monkeypatch)
     monkeypatch.setattr(speaker_focus, '_detect_faces', lambda path: [
         speaker_focus.FaceSignal(.5, .3, .1, y=.5, height=.3, eye_open=.03 if path == closed else .25)])
     assert thumbnail.choose_cover_frame([closed, opened])[0] == opened
-    with pytest.raises(RuntimeError, match='눈을 뜬'):
+    with pytest.raises(RuntimeError, match="open eyes"):
         thumbnail.choose_cover_frame([closed])
 
 

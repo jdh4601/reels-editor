@@ -77,14 +77,14 @@ def test_load_config_rejects_storyline_count_above_max(tmp_path: Path) -> None:
 def test_load_config_rejects_non_mapping_yaml(tmp_path: Path) -> None:
     p = tmp_path / "config.yaml"
     p.write_text("- 1\n- 2\n", encoding="utf-8")  # YAML 리스트
-    with pytest.raises(ValueError, match="설정 파일 형식"):
+    with pytest.raises(ValueError, match="configuration format"):
         load_config(p)
 
 
 def test_load_config_rejects_scalar_yaml(tmp_path: Path) -> None:
     p = tmp_path / "config.yaml"
     p.write_text("just-a-string\n", encoding="utf-8")  # YAML 스칼라
-    with pytest.raises(ValueError, match="설정 파일 형식"):
+    with pytest.raises(ValueError, match="configuration format"):
         load_config(p)
 
 

@@ -66,13 +66,13 @@ def validate_youtube_url(url: str) -> str:
     try:
         parsed = urlparse(normalized)
     except ValueError as exc:
-        raise YouTubeSourceError("올바른 YouTube 링크를 입력하세요.") from exc
+        raise YouTubeSourceError("Enter a valid YouTube URL.") from exc
     hostname = (parsed.hostname or "").lower().rstrip(".")
     is_youtube = hostname in YOUTUBE_HOSTS or hostname.endswith(".youtube.com")
     if parsed.scheme not in {"http", "https"} or not is_youtube:
-        raise YouTubeSourceError("youtube.com 또는 youtu.be 영상 링크만 사용할 수 있습니다.")
+        raise YouTubeSourceError("Only youtube.com or youtu.be video URLs are supported.")
     if not parsed.path or parsed.path == "/":
-        raise YouTubeSourceError("영상이 포함된 YouTube 링크를 입력하세요.")
+        raise YouTubeSourceError("Enter a YouTube URL containing a video ID.")
     return normalized
 
 
@@ -226,10 +226,7 @@ def select_caption_track(
     for kind, languages in sources:
         if languages:
             return CaptionTrack(languages[0], kind)
-    raise YouTubeSourceError(
-        "이 영상에는 YouTube에서 제공하는 자막이 없습니다. "
-        "YouTube 스튜디오에서 자막을 만든 뒤 다시 시도하세요."
-    )
+    raise YouTubeSourceError('This video has no accessible YouTube captions. Add captions in YouTube Studio and try again.')
 
 
 def parse_json3_transcript(
@@ -251,7 +248,7 @@ def parse_json3_transcript(
         cues.append((start_ms, start_ms + duration_ms, text))
 
     if not any(text for _start, _end, text in cues):
-        raise YouTubeSourceError("YouTube 자막 파일에서 읽을 수 있는 대사를 찾지 못했습니다.")
+        raise YouTubeSourceError("No readable speech was found in the YouTube caption file.")
 
     video_end_ms = round(duration_s * 1000) if duration_s and duration_s > 0 else None
     segments: list[dict[str, Any]] = []
@@ -279,7 +276,7 @@ def parse_json3_transcript(
         })
 
     if not segments:
-        raise YouTubeSourceError("YouTube 자막의 타임코드를 영상 구간으로 변환하지 못했습니다.")
+        raise YouTubeSourceError("Could not convert caption timestamps to video sections.")
     return {
         "video_material_id": "youtube-source",
         "video_path": str(video_path),
@@ -309,10 +306,10 @@ def download_youtube_source(
     except YouTubeSourceError:
         raise
     except Exception as exc:  # noqa: BLE001 - yt-dlp errors are normalized at this boundary
-        raise YouTubeSourceError(f"YouTube 영상 정보를 가져오지 못했습니다: {exc}") from exc
+        raise YouTubeSourceError(f"Could not retrieve YouTube video information: {exc}") from exc
 
     if info.get("_type") == "playlist":
-        raise YouTubeSourceError("재생목록이 아닌 YouTube 영상 한 개의 링크를 입력하세요.")
+        raise YouTubeSourceError("Enter a single video URL rather than a playlist.")
     track = select_caption_track(info)
     title = str(info.get("title") or "YouTube 인터뷰").strip()
     video_id = str(info.get("id") or "youtube").strip()
@@ -320,7 +317,7 @@ def download_youtube_source(
 
     def progress_hook(event: dict[str, Any]) -> None:
         if cancelled and cancelled():
-            raise YouTubeSourceError("YouTube 다운로드가 취소되었습니다.")
+            raise YouTubeSourceError("YouTube download cancelled.")
         if not progress_cb and not progress_detail_cb:
             return
         component = _download_component(event)
@@ -381,14 +378,14 @@ def download_youtube_source(
     except YouTubeSourceError:
         raise
     except Exception as exc:  # noqa: BLE001 - yt-dlp errors are normalized at this boundary
-        raise YouTubeSourceError(f"YouTube 영상 또는 자막 다운로드에 실패했습니다: {exc}") from exc
+        raise YouTubeSourceError(f"Could not download the YouTube video or captions: {exc}") from exc
 
     video_path = output_dir / "source.mp4" if transcript_only else _find_downloaded_video(output_dir)
     transcript_path = _find_transcript(output_dir, track.language)
     try:
         transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise YouTubeSourceError(f"다운로드한 YouTube 자막을 읽지 못했습니다: {exc}") from exc
+        raise YouTubeSourceError(f"Could not read the downloaded YouTube captions: {exc}") from exc
     segments = parse_json3_transcript(transcript, video_path=video_path, duration_s=duration_s)
     segments["transcript_language"] = track.language
     segments["transcript_kind"] = track.kind
@@ -420,7 +417,7 @@ def _default_ydl_factory(options: dict[str, Any]) -> _YoutubeDL:
     try:
         from yt_dlp import YoutubeDL
     except ImportError as exc:  # pragma: no cover - dependency packaging failure
-        raise YouTubeSourceError("yt-dlp가 설치되지 않았습니다. 앱을 다시 설치하거나 업데이트하세요.") from exc
+        raise YouTubeSourceError("yt-dlp is not installed. Reinstall or update the app.") from exc
     return YoutubeDL(options)
 
 
@@ -468,7 +465,7 @@ def _find_downloaded_video(output_dir: Path) -> Path:
         if path.is_file() and path.suffix.lower() in _MEDIA_SUFFIXES
     )
     if not candidates:
-        raise YouTubeSourceError("다운로드가 끝났지만 로컬 영상 파일을 찾지 못했습니다.")
+        raise YouTubeSourceError("Download finished, but the local video file was not found.")
     return candidates[0]
 
 
@@ -478,7 +475,7 @@ def _find_transcript(output_dir: Path, language: str) -> Path:
         return exact
     candidates = sorted(output_dir.glob("source.*.json3"))
     if not candidates:
-        raise YouTubeSourceError("다운로드가 끝났지만 YouTube 자막 파일을 찾지 못했습니다.")
+        raise YouTubeSourceError("Download finished, but the caption file was not found.")
     return candidates[0]
 
 

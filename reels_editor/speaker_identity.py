@@ -30,10 +30,10 @@ def _text(value: str) -> str:
 def _check_public_url(url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise ValueError("직책 출처는 공개 HTTPS URL이어야 합니다.")
+        raise ValueError("Role sources must use public HTTPS URLs.")
     addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
-        raise ValueError("직책 출처의 내부 네트워크 주소는 허용하지 않습니다.")
+        raise ValueError("Private network addresses are not allowed for role sources.")
 
 
 class _PublicRedirect(HTTPRedirectHandler):
@@ -66,10 +66,10 @@ def fetch_source_text(url: str) -> str:
     request = Request(url, headers={"User-Agent": "Mozilla/5.0 ReelsEditor/0.1"})
     with build_opener(_PublicRedirect()).open(request, timeout=15) as response:
         if "text/html" not in response.headers.get("Content-Type", ""):
-            raise ValueError("직책 출처는 읽을 수 있는 HTML 페이지여야 합니다.")
+            raise ValueError("Role sources must be readable HTML pages.")
         data = response.read(2_000_001)
         if len(data) > 2_000_000:
-            raise ValueError("직책 출처 페이지가 너무 큽니다.")
+            raise ValueError("The role-source page is too large.")
         parser = _PageText()
         parser.feed(data.decode(response.headers.get_content_charset() or "utf-8", errors="replace"))
         return " ".join(parser.parts)
@@ -206,7 +206,7 @@ def enrich_speakers(
         elif format_speaker_label(speaker) == name:
             missing[name] = speaker
     if required and unidentified:
-        raise ValueError("화자 이름을 확인하지 못해 직책을 검색할 수 없습니다. 이름을 수정한 뒤 다시 시도하세요.")
+        raise ValueError("The speaker name could not be verified for role lookup. Correct the name and try again.")
     if not missing:
         return
     context = {key: str(segments.get(key) or "") for key in
@@ -260,7 +260,7 @@ def enrich_speakers(
                 payload = extract_json((runner or build_speaker_search_runner())(prompt + feedback))
                 entries = payload.get("speakers", [])
                 if not isinstance(entries, list):
-                    raise ValueError("직책 검색 결과 형식이 올바르지 않습니다.")
+                    raise ValueError("Invalid role-search response format.")
                 for entry in entries:
                     if not isinstance(entry, dict) or entry.get("name") not in unresolved:
                         continue
@@ -273,14 +273,14 @@ def enrich_speakers(
                         speaker = normalize_speaker_data(entry)
                         evidence = speaker.get("evidence", "")
                         if not url or not source_name or not evidence:
-                            raise ValueError("직책 출처를 확인하지 못했습니다.")
+                            raise ValueError("Could not verify the role source.")
                         if url not in pages:
                             pages[url] = fetch(url)
                         if (_text(evidence) not in _text(pages[url])
                                 or not _source_matches_person(source_name, pages[url], context, missing[name])
                                 or not _speaker_evidence_supports_identity(speaker, evidence)
                                 or format_speaker_label(speaker) == name):
-                            raise ValueError("출처 원문이 인물·회사·직책을 뒷받침하지 않습니다.")
+                            raise ValueError("The source text does not support this person, organization and role.")
                         speaker["name"] = str(entry.get("display_name") or name).strip()
                         speaker["source_name"] = source_name
                         speaker["source_url"] = url
@@ -313,4 +313,4 @@ def enrich_speakers(
         unresolved = [name for name in missing if name not in cache["speakers"]]
         if unresolved:
             reasons = "; ".join(f"{name}: {cache['errors'].get(name, '근거 없음')}" for name in unresolved)
-            raise ValueError("웹 검색으로 직책·역할을 확인하지 못했습니다. 이름과 회사 정보를 확인한 뒤 다시 시도하세요. " + reasons)
+            raise ValueError("Could not verify the role using web sources. Check the name and organization, then try again. " + reasons)

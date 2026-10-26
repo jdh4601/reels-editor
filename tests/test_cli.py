@@ -6,7 +6,7 @@ from typer.testing import CliRunner
 from reels_editor import cli
 
 runner = CliRunner()
-STYLE = Path(__file__).parent.parent / "styles" / "done.yaml"
+STYLE = Path(__file__).parent.parent / "reels_editor" / "resources" / "styles" / "default.yaml"
 
 
 def test_preflight_ok() -> None:
@@ -20,65 +20,39 @@ def test_help_exposes_only_rerender_command() -> None:
     assert "make" not in result.output
 
 
-def test_render_command_rerenders_workdir(
-    tmp_path: Path,
-    segments: dict,
-    edl_doc: dict,
-    monkeypatch,
-) -> None:
-    (tmp_path / "edl.json").write_text(json.dumps(edl_doc, ensure_ascii=False))
-    (tmp_path / "segments.json").write_text(json.dumps(segments, ensure_ascii=False))
-    calls: dict = {}
+def test_render_command_rerenders_workdir(tmp_path, segments, edl_doc, monkeypatch):
+    _check_cli_delegate(tmp_path, segments, edl_doc, monkeypatch, 1)
 
-    class FakeAssets:
-        pass
 
-    def fake_base(video_path, segs, doc, style, work_dir, speed, progress_cb=None):
-        calls["base"] = (video_path, work_dir, speed)
-        return FakeAssets()
+def test_render_command_respects_title_option(tmp_path, segments, edl_doc, monkeypatch):
+    _check_cli_delegate(tmp_path, segments, edl_doc, monkeypatch, 2)
 
-    def fake_with_title(assets, title_text, keyword, style, out_path, **kwargs):
-        calls["title"] = (title_text, keyword, out_path)
-        Path(out_path).write_bytes(b"")
-        return out_path
 
-    monkeypatch.setattr(cli.render, "render_base_and_assets", fake_base)
-    monkeypatch.setattr(cli.render, "render_with_title", fake_with_title)
-    monkeypatch.setattr(cli.thumbnail, "render_thumbnail", lambda *_a, **kw: kw["out_path"].write_bytes(b"cover") or kw["out_path"])
+def _check_cli_delegate(tmp_path, segments, edl_doc, monkeypatch, title_index):
+    from reels_editor.jobs import JobService
+    (tmp_path / "edl.json").write_text(json.dumps(edl_doc))
+    (tmp_path / "segments.json").write_text(json.dumps(segments))
+    calls = []
+    def verified(self, doc, source, destination, **kwargs):
+        calls.append((doc, source, destination, kwargs))
+        destination.write_bytes(b"verified")
+        return destination
+    monkeypatch.setattr(JobService, "render_workdir", verified)
+    result = runner.invoke(cli.app, ["render", str(tmp_path), "--title", str(title_index)])
+    assert result.exit_code == 0, result.output
+    assert calls[0][0] == edl_doc and calls[0][1] == segments
+    assert calls[0][3]["title"] == edl_doc["title_candidates"][title_index - 1]["text"]
+    assert (tmp_path / f"reel-t{title_index}.mp4").read_bytes() == b"verified"
 
+
+def test_cli_review_failure_does_not_claim_success(tmp_path, segments, edl_doc, monkeypatch):
+    from reels_editor.jobs import JobService
+    (tmp_path / "edl.json").write_text(json.dumps(edl_doc))
+    (tmp_path / "segments.json").write_text(json.dumps(segments))
+    def fail(*args, **kwargs):
+        raise ValueError("Independent review unavailable")
+    monkeypatch.setattr(JobService, "render_workdir", fail)
     result = runner.invoke(cli.app, ["render", str(tmp_path)])
-
-    assert result.exit_code == 0, result.output
-    assert calls["title"][2] == tmp_path / "reel-t1.mp4"
-    assert calls["title"][0] == edl_doc["title_candidates"][0]["text"]
-    assert calls["base"][1] == tmp_path / ".render"
-
-
-def test_render_command_respects_title_option(
-    tmp_path: Path,
-    segments: dict,
-    edl_doc: dict,
-    monkeypatch,
-) -> None:
-    (tmp_path / "edl.json").write_text(json.dumps(edl_doc, ensure_ascii=False))
-    (tmp_path / "segments.json").write_text(json.dumps(segments, ensure_ascii=False))
-    calls: dict = {}
-
-    class FakeAssets:
-        pass
-
-    monkeypatch.setattr(cli.render, "render_base_and_assets", lambda *args, **kwargs: FakeAssets())
-
-    def fake_with_title(assets, title_text, keyword, style, out_path, **kwargs):
-        calls["title"] = title_text
-        Path(out_path).write_bytes(b"")
-        return out_path
-
-    monkeypatch.setattr(cli.render, "render_with_title", fake_with_title)
-    monkeypatch.setattr(cli.thumbnail, "render_thumbnail", lambda *_a, **kw: kw["out_path"].write_bytes(b"cover") or kw["out_path"])
-
-    result = runner.invoke(cli.app, ["render", str(tmp_path), "--title", "2"])
-
-    assert result.exit_code == 0, result.output
-    assert calls["title"] == edl_doc["title_candidates"][1]["text"]
-    assert (tmp_path / "reel-t2.mp4").exists()
+    assert result.exit_code == 1
+    assert "Quality gate failed" in result.output
+    assert not (tmp_path / "reel-t1.mp4").exists()

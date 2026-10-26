@@ -252,53 +252,6 @@ h2 {
   padding-inline: 15px;
 }
 
-.episode-field {
-  align-items: center;
-  background: #fbfaf6;
-  border: 1px solid #bdb7ac;
-  border-radius: 9px;
-  display: grid;
-  gap: 1px;
-  grid-template-columns: auto minmax(34px, 1fr) auto;
-  padding: 5px 8px 5px 10px;
-}
-
-.episode-field:focus-within {
-  border-color: #ff7a00;
-  box-shadow: 0 0 0 3px rgba(255, 122, 0, 0.12);
-}
-
-.episode-field span {
-  color: #756e66;
-  font-size: 11px;
-  font-weight: 760;
-}
-
-.episode-field .episode-total {
-  color: #21362f;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.episode-field input {
-  appearance: textfield;
-  background: transparent;
-  border: 0;
-  color: #21362f;
-  font-size: 16px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  min-width: 0;
-  outline: 0;
-  padding: 0 2px;
-  text-align: right;
-  width: 100%;
-}
-
-.episode-field input::-webkit-inner-spin-button,
-.episode-field input::-webkit-outer-spin-button { appearance: none; margin: 0; }
-.episode-field:has(input[aria-invalid="true"]) { border-color: #b74d3e; }
 
 .youtube-source-help {
   color: #6b746f;
@@ -1650,7 +1603,7 @@ kbd {
 .workspace-tabs button:focus-visible { outline: 2px solid #244fbe; outline-offset: -2px; }
 @media (max-width: 700px) { .workspace-tabs { padding: 0 12px; flex-wrap: wrap; } .workspace-tabs [role="tablist"] { overflow-x: auto; } .workspace-tab { flex-shrink: 0; } .workspace-tab span { max-width: 100px; } }
 
-.metadata-editor-fields { display: grid; grid-template-columns: 1fr 1.3fr 0.7fr; gap: 12px; }
+.metadata-editor-fields { display: grid; grid-template-columns: 1fr 1.3fr; gap: 12px; }
 @media (max-width: 700px) { .metadata-editor-fields { grid-template-columns: 1fr; } }
 
 .reel-cover {
@@ -1674,3 +1627,7 @@ kbd {
   font-size: 12px;
   line-height: 1.6;
 }
+
+.language-field { display:flex; flex-direction:column; gap:6px; font-size:11px; color:var(--text-secondary, #aaa); flex-shrink:0; }
+.language-field select { font:inherit; font-size:13px; background:#171717; color:#eee; border:1px solid #444; border-radius:6px; padding:8px; }
+.youtube-source-controls { flex-wrap:wrap; }

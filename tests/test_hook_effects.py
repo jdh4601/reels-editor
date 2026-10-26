@@ -10,7 +10,7 @@ from reels_editor.caption_timing import extract_audio
 from reels_editor.style import load_style
 from test_caption_timing import fixture
 
-SOUND = Path(__file__).resolve().parents[2] / 'd-one-studio/public/assets/audio/hook-whoosh.wav'
+SOUND = Path(__file__).resolve().parents[1] / 'reels_editor/resources/styles/assets/hook-whoosh.wav'
 
 
 def prepared(monkeypatch, tmp_path):
@@ -30,10 +30,10 @@ def test_selects_real_word_and_invalidates_changed_cuts_or_sound(monkeypatch, tm
     assert effect['hold_end_s'] == 1.75 and effect['end_s'] == 1.93
     changed = deepcopy(doc)
     changed['source_trim_us'] = {'s1': {'start': 100000}}
-    with pytest.raises(ValueError, match='계획'):
+    with pytest.raises(ValueError, match="plan"):
         hook.validate(changed, segments, 1)
     doc['hook_effect']['sound_sha256'] = 'changed'
-    with pytest.raises(ValueError, match='파일이 변경'):
+    with pytest.raises(ValueError, match='file has changed'):
         hook.validate(doc, segments, 1)
 
 
@@ -42,7 +42,7 @@ def test_selects_real_word_and_invalidates_changed_cuts_or_sound(monkeypatch, tm
 def test_rejects_old_zoom_or_added_delay(monkeypatch, tmp_path, field, value):
     doc, segments = prepared(monkeypatch, tmp_path)
     doc['hook_effect'][field] = value
-    with pytest.raises(ValueError, match='연출 규칙'):
+    with pytest.raises(ValueError, match="opening-effect plan"):
         hook.validate(doc, segments, 1)
 
 
@@ -68,7 +68,7 @@ def test_clean_onset_evidence_cannot_be_changed(monkeypatch,tmp_path):
     result=hook.prepare(doc,segments,1,tmp_path,runner=lambda _:json.dumps({'anchor_word':1,'reason':'핵심어'}))
     assert result['hook_effect']['anchor_s'] == .9
     result['hook_effect']['clean_voice_onset']['onset_s']=.8
-    with pytest.raises(ValueError,match='측정 근거'):
+    with pytest.raises(ValueError,match="original measurement"):
         hook.validate(result,segments,1)
 
 
@@ -78,7 +78,7 @@ def test_no_fallback_to_fabricated_or_late_word(monkeypatch, tmp_path, index):
     doc, segments, plan = fixture()
     plan['words'][3]['start'] = 3.1
     doc['caption_timing'] = plan
-    with pytest.raises(ValueError, match='선택 실패'):
+    with pytest.raises(ValueError, match="select an opening emphasis word"):
         hook.prepare(doc, segments, 1, tmp_path,
             runner=lambda _: json.dumps({'anchor_word': index, 'reason': '선택'}))
 
@@ -86,7 +86,7 @@ def test_no_fallback_to_fabricated_or_late_word(monkeypatch, tmp_path, index):
 def test_opus_cannot_omit_effect_checks():
     result = {'checks': {key: {'verdict': 'pass', 'evidence': '시간과 영상 근거'}
                         for key in quality.CHECKS}, 'issues': []}
-    with pytest.raises(ValueError, match='누락'):
+    with pytest.raises(ValueError, match="missing"):
         quality.parse_review(json.dumps(result), 4, quality.CHECKS + hook.CHECKS)
     result['checks'].update({key: {'verdict': 'pass', 'evidence': '확대 전후·파형 근거'} for key in hook.CHECKS})
     assert quality.parse_review(json.dumps(result), 4, quality.CHECKS + hook.CHECKS)
@@ -168,7 +168,7 @@ def test_real_mp4_zoom_keeps_bars_fixed_and_detects_actual_whoosh(monkeypatch, t
     render._ffmpeg(['-f','lavfi','-i',f'testsrc2=s=320x480:r={source_fps}:d=4',
                     '-f','lavfi','-i','sine=frequency=220:sample_rate=48000:duration=4',
                     '-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac',str(source)])
-    style = replace(load_style(Path(__file__).resolve().parents[1] / 'styles/done.yaml'), canvas=(320,568), top_bar=44, bottom_bar=44)
+    style = replace(load_style(Path(__file__).resolve().parents[1] / 'reels_editor/resources/styles/default.yaml'), canvas=(320,568), top_bar=44, bottom_bar=44)
     # Freeze source imagery so visual differences measure the animation only.
     graph = ('[0:v]trim=0:4,setpts=PTS-STARTPTS,loop=loop=-1:size=1:start=0,trim=duration=4,'
              'scale=320:480,pad=320:568:0:44:black[v];[0:a]atrim=0:4,asetpts=PTS-STARTPTS[a]')
@@ -201,5 +201,5 @@ def test_real_mp4_zoom_keeps_bars_fixed_and_detects_actual_whoosh(monkeypatch, t
     # A stale receipt cannot approve a different final file.
     with out.open('ab') as stream:
         stream.write(b'changed')
-    with pytest.raises(ValueError,match='기록'):
+    with pytest.raises(ValueError,match="record"):
         hook.render_evidence(out,doc,segments,assets,1,work)

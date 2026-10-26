@@ -53,4 +53,4 @@ def edl_doc() -> dict:
 
 @pytest.fixture
 def style_preset():
-    return load_style(Path(__file__).parent.parent / "styles" / "done.yaml")
+    return load_style(Path(__file__).parent.parent / "reels_editor" / "resources" / "styles" / "default.yaml")

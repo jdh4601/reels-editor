@@ -76,7 +76,7 @@ def test_summary_length_and_polite_voice_are_checked():
 
 
 def test_source_credit_still_enforces_total_guardrail():
-    with pytest.raises(ValueError, match="출처 포함"):
+    with pytest.raises(ValueError, match="including source credit"):
         instagram_caption.append_source_credit("가"*998, channel_name="채널", source_url="https://youtu.be/abc123")
 
 

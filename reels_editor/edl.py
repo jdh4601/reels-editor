@@ -14,15 +14,15 @@ def validate_edl(edl_doc: dict, segments: dict) -> list[str]:
     cuts = edl_doc.get("cuts", [])
     selected_ids: list[str] = []
     if not cuts:
-        errors.append("cuts가 비어 있음 — 최소 1개 비트 필요")
+        errors.append("cuts is empty; at least one beat is required")
     for c, cut in enumerate(cuts):
         ids = cut.get("seg_ids", [])
         selected_ids.extend(str(sid) for sid in ids)
         if not ids:
-            errors.append(f"cut {c}: seg_ids 비어있음")
+            errors.append(f"cut {c}: seg_ids is empty")
         for sid in ids:
             if sid not in idx:
-                errors.append(f"cut {c}: 알 수 없는 seg_id '{sid}'")
+                errors.append(f"cut {c}: unknown seg_id '{sid}'")
         # text가 명시됐으면 참조 세그먼트 원문 이어붙임과 문자 단위 일치해야 함
         if "text" in cut and all(sid in idx for sid in ids):
             joined = " ".join(idx[sid]["text"] for sid in ids)
@@ -32,24 +32,24 @@ def validate_edl(edl_doc: dict, segments: dict) -> list[str]:
     known_ids = [sid for sid in selected_ids if sid in idx]
     trims = edl_doc.get('source_trim_us', {})
     if not isinstance(trims, dict):
-        errors.append('source_trim_us는 객체여야 함')
+        errors.append("source_trim_us must be an object")
     else:
         for sid, trim in trims.items():
             if sid not in known_ids or not isinstance(trim, dict):
-                errors.append('컷 경계 수정의 seg_id가 선택 구간에 없음')
+                errors.append("The cut-boundary segment ID is not selected")
                 continue
             a, b = trim.get('start', 0), trim.get('end', 0)
             if (type(a) is not int or type(b) is not int or a < 0 or b < 0 or
                 a + b >= idx[sid]['source_end_us'] - idx[sid]['source_start_us']):
-                errors.append('컷 경계 수정이 원문 구간을 벗어남')
+                errors.append("The cut-boundary repair exceeds the original segment")
     focus = edl_doc.get('focus_overrides', {})
     if not isinstance(focus, dict) or any(sid not in known_ids or side not in ('left','center','right')
                                           for sid,side in focus.items()):
-        errors.append('화자 크롭 수정 근거 구간·방향 오류')
+        errors.append("Invalid speaker-crop evidence segment or direction")
     for previous_id, current_id in zip(known_ids, known_ids[1:]):
         if idx[current_id]["source_start_us"] < idx[previous_id]["source_start_us"]:
             errors.append(
-                f"선택 seg_id가 원문 시간 순서를 거슬렀음: "
+                f"Selected segment IDs are not in source order: "
                 f"{previous_id} → {current_id}"
             )
             break
@@ -60,7 +60,7 @@ def ordered_segments(edl_doc: dict, segments: dict) -> list[dict]:
     """EDL 순서대로 세그먼트를 펼친다. 영어 원문은 한국어 번역을 자막으로 쓴다."""
     errs = validate_edl(edl_doc, segments)
     if errs:
-        raise ValueError("EDL 검증 실패:\n" + "\n".join(errs))
+        raise ValueError("EDL validation failed:\n" + "\n".join(errs))
     idx = _seg_index(segments)
     translations = edl_doc.get("subtitle_translations", {})
     if not isinstance(translations, dict):

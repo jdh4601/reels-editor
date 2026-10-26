@@ -1,13 +1,15 @@
 """Generate a grounded Korean Instagram caption for one finished reel."""
 from __future__ import annotations
 
+from reels_editor.languages import language_instruction, output_language, translation_required
+
 import re
 from pathlib import Path
 from typing import Any, Callable
 
 from reels_editor.storyteller import format_speaker_label, normalize_speaker_data
 
-PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "instagram-caption.md"
+PROMPT_PATH = Path(__file__).parent / "resources" / "prompts" / "instagram-caption.md"
 MAX_RETRIES = 2
 MAX_CAPTION_CHARS = 1000
 MIN_SUMMARY_CHARS = 270
@@ -27,8 +29,8 @@ def build_prompt(
     output_budget: int = MAX_CAPTION_CHARS,
 ) -> str:
     context = _reel_context(selected_title, candidate, doc, segments)
-    feedback_block = f"# 수정 피드백\n\n{feedback}\n" if feedback else ""
-    return (
+    feedback_block = f"# Correction feedback\n\n{feedback}\n" if feedback else ""
+    return language_instruction(segments) + (
         PROMPT_PATH.read_text(encoding="utf-8")
         .replace("{reel_context}", context)
         .replace("{output_budget}", str(output_budget))
@@ -66,7 +68,8 @@ def generate_caption(
         ))
         caption = _normalize(last_raw)
         errors = validate_caption(caption, episode_number, max_chars=output_budget, selected_title=selected_title,
-                                  thumbnail_title=" ".join(str(doc.get(k) or "") for k in ("title_upper", "title_lower")))
+                                  thumbnail_title=" ".join(str(doc.get(k) or "") for k in ("title_upper", "title_lower")),
+                                  language=output_language(segments))
         speaker = normalize_speaker_data(doc.get("speaker"))
         paragraphs = caption.split("\n\n")
         if speaker["name"] and speaker["name"] not in {"창업자", "화자"}:
@@ -77,7 +80,7 @@ def generate_caption(
             introduction = paragraphs[1] if len(paragraphs) > 1 else ""
             if speaker["company"] and speaker["company"] not in introduction:
                 errors.append("첫 문단에 확인된 기업명이 빠짐")
-            if speaker["role"] and speaker["role"] not in introduction:
+            if output_language(segments) == "ko" and speaker["role"] and speaker["role"] not in introduction:
                 errors.append("첫 문단에 확인된 화자 직책이 빠짐")
         if not errors:
             return caption
@@ -89,40 +92,40 @@ def generate_caption(
     if raw_dump is not None:
         raw_dump.parent.mkdir(parents=True, exist_ok=True)
         raw_dump.write_text(last_raw, encoding="utf-8")
-    raise RuntimeError("Instagram 캡션 생성 3회 실패 — " + "; ".join(last_errors))
+    raise RuntimeError("Instagram caption generation failed after 3 attempts — " + "; ".join(last_errors))
 
 
 def validate_caption(caption: str, episode_number: int, *, max_chars: int = MAX_CAPTION_CHARS,
                      selected_title: str = "",
-                     thumbnail_title: str = "") -> list[str]:
+                     thumbnail_title: str = "", language: str = "ko") -> list[str]:
     errors: list[str] = []
     if re.search(r"(?i)(?:\bep(?:isode)?\.?\s*\d+|에피소드\s*\d+|제\s*\d+\s*화)", caption.split("\n", 1)[0]):
-        errors.append("제목에 에피소드 번호를 넣으면 안 됨")
+        errors.append("Do not include sequence numbers in the heading")
     if len(caption) > max_chars:
-        errors.append(f"캡션이 {max_chars}자를 초과함 (현재 {len(caption)}자)")
+        errors.append(f"Caption exceeds {max_chars} characters (currently {len(caption)} characters)")
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", caption) if part.strip()]
     if len(paragraphs) != 3:
-        errors.append("제목 한 줄과 인사이트 정확히 2문단이 필요함")
+        errors.append("Provide one heading line and exactly two insight paragraphs")
     else:
         if "\n" in paragraphs[0]:
-            errors.append("제목은 첫 줄에만 쓰고 본문과 빈 줄로 구분해야 함")
+            errors.append("Use one heading line separated from the body by a blank line")
         title_key = lambda value: re.sub(r"[^\w]", "", value).casefold()
         if any(title_key(paragraphs[0]) == title_key(title) for title in (selected_title, thumbnail_title) if title_key(title)):
-            errors.append("캡션 제목은 썸네일·화면 제목과 다른 문장이어야 함")
+            errors.append("The caption heading must differ from the cover and video title")
         for paragraph in paragraphs[1:]:
-            if not paragraph.endswith("다.") or re.search(r"(?:[습합입]니다|해요|네요|세요)[.!?]", paragraph):
-                errors.append("설명 문장은 '~한다.', '~이다.'의 평서체로 써야 함")
+            if language == "ko" and (not paragraph.endswith("다.") or re.search(r"(?:[습합입]니다|해요|네요|세요)[.!?]", paragraph)):
+                errors.append("Use plain declarative Korean sentences ending in da.")
         summary = "\n\n".join(paragraphs[1:])
         if not MIN_SUMMARY_CHARS <= len(summary) <= MAX_SUMMARY_CHARS:
-            errors.append(f"요약 본문은 {MIN_SUMMARY_CHARS}~{MAX_SUMMARY_CHARS}자여야 함 (현재 {len(summary)}자)")
-    if re.search(r"댓글|팔로우|구독|(?:보내|제공해|드|드리|드립|받아|받으|받을|증정)[가-힣]*(?:니다|세요|게요)|DM|디엠", caption, re.I):
-        errors.append("댓글·팔로우 유도나 자료·보상 제공 약속을 넣으면 안 됨")
+            errors.append(f"Summary body must be {MIN_SUMMARY_CHARS}~{MAX_SUMMARY_CHARS} characters (currently {len(summary)} characters)")
+    if re.search(r"\bfollow\b|\bsubscribe\b|\bDM\b|关注|订阅|私信|댓글|팔로우|구독|(?:보내|제공해|드|드리|드립|받아|받으|받을|증정)[가-힣]*(?:니다|세요|게요)|DM|디엠", caption, re.I):
+        errors.append("Do not solicit comments or follows, or promise rewards or resources")
     if "창업자 창업자" in caption:
-        errors.append("창업자 직책을 중복해서 쓰면 안 됨")
+        errors.append("Do not duplicate the speaker role")
     if "원본 출처:" in caption or re.search(r"(?m)^🎥\s", caption):
-        errors.append("출처는 앱이 붙이므로 직접 출력하면 안 됨")
+        errors.append("The app adds source credit; do not generate it")
     if "```" in caption or re.search(r"(?m)^\s*#{1,6}\s", caption):
-        errors.append("Markdown 또는 해시태그를 포함함")
+        errors.append("Markdown or hashtags are not allowed")
     return errors
 
 
@@ -137,7 +140,7 @@ def append_source_credit(
     normalized_channel = " ".join(str(channel_name or "").split()) or UNKNOWN_CHANNEL
     normalized_url = "".join(str(source_url or "").split())
     if not normalized_url:
-        raise ValueError("원본 YouTube URL을 찾지 못했습니다.")
+        raise ValueError("The original YouTube URL could not be found.")
 
     # Keep the trusted video source as the last line, including on regeneration.
     normalized_caption = re.sub(
@@ -148,7 +151,7 @@ def append_source_credit(
     credit = f"{SOURCE_CREDIT_PREFIX} {normalized_channel}"
     result = f"{normalized_caption}\n\n{credit}"
     if len(result) > MAX_CAPTION_CHARS:
-        raise ValueError(f"출처 포함 캡션이 {MAX_CAPTION_CHARS}자를 초과합니다 (현재 {len(result)}자).")
+        raise ValueError(f"Caption including source credit exceeds {MAX_CAPTION_CHARS} characters (currently {len(result)} characters).")
     return result
 
 
@@ -170,20 +173,20 @@ def _reel_context(
     doc: dict[str, Any],
     segments: dict[str, Any],
 ) -> str:
-    lines = [f"- 선택된 릴스 제목: {selected_title}",
-             f"- 썸네일·화면 제목 (캡션 제목과 다르게 쓸 것): {doc.get('title_upper', '')} {doc.get('title_lower', '')}"]
+    lines = [f"- Selected reel title: {selected_title}",
+             f"- Cover and on-screen title (write a different caption heading): {doc.get('title_upper', '')} {doc.get('title_lower', '')}"]
     if candidate:
         lines.extend([
-            f"- 콘텐츠 유형: {candidate.get('content_type', '')}",
-            f"- 분석 후보 제목: {candidate.get('title', '')}",
-            f"- 분석 요약: {candidate.get('summary', '')}",
-            f"- 1인 창업가를 위한 핵심 도움: {candidate.get('takeaway', '')}",
+            f"- Content type: {candidate.get('content_type', '')}",
+            f"- Selected idea title: {candidate.get('title', '')}",
+            f"- Analysis summary: {candidate.get('summary', '')}",
+            f"- Key takeaway for the viewer: {candidate.get('takeaway', '')}",
         ])
     speaker = doc.get("speaker")
     if isinstance(speaker, dict):
-        lines.append(f"- 검증된 화자 소개: {format_speaker_label(speaker)}")
+        lines.append(f"- Verified speaker introduction: {format_speaker_label(speaker)}")
         if speaker.get("source_url"):
-            lines.append(f"- 화자 직책 확인 출처 (캡션에 URL 출력하지 않음): {speaker['source_url']}")
+            lines.append(f"- Speaker verification source (do not include the URL in the caption): {speaker['source_url']}")
     story = doc.get("story")
     if isinstance(story, dict):
         five_lines = story.get("five_lines")
@@ -191,10 +194,10 @@ def _reel_context(
             for key, value in five_lines.items():
                 text = " ".join(str(value).split())
                 if text:
-                    lines.append(f"- 구성 {key}: {text}")
+                    lines.append(f"- Structure {key}: {text}")
         lens = " ".join(str(story.get("lens", "")).split())
         if lens:
-            lines.append(f"- 핵심 관점: {lens}")
+            lines.append(f"- Main perspective: {lens}")
 
     segment_map = {
         str(item.get("id")): item
@@ -218,5 +221,5 @@ def _reel_context(
             translated = " ".join(str(translations.get(key, "")).split())
             evidence = translated or original
             if evidence:
-                lines.append(f"- 실제 발화 ({beat}): {evidence}")
+                lines.append(f"- Original speech ({beat}): {evidence}")
     return "\n".join(lines)

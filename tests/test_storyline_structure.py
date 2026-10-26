@@ -41,13 +41,13 @@ def test_storyline_snapshot_returns_complete_role_labeled_sections(tmp_path: Pat
     assert snapshot["summary"] == f"{hook.strip()} {ending}"
     assert snapshot["sections"] == [
         {
-            "beat": "훅",
-            "role": "첫 3초에 시선을 붙잡는 문장",
+            "beat": "Hook",
+            "role": "The opening line that draws attention",
             "text": hook.strip(),
         },
         {
-            "beat": "라스트 답",
-            "role": "영상이 남기는 결론과 메시지",
+            "beat": "Final takeaway",
+            "role": "The concluding message",
             "text": ending,
         },
     ]
@@ -90,6 +90,6 @@ def test_storyline_snapshot_hides_raw_llm_response_from_user() -> None:
 
     snapshot = _storyline_snapshot(Job(id="job-1"), storyline)
 
-    assert "JSON 따옴표 형식" in snapshot["error"]
+    assert "JSON quotation marks" in snapshot["error"]
     assert "raw-json" not in snapshot["error"]
     assert snapshot["summary"] == snapshot["error"]

@@ -26,16 +26,16 @@ def openai_chat_runner(base_url: str, api_key: str,
         except urllib.error.HTTPError as e:
             detail = e.read()[:300].decode(errors="replace")
             raise RuntimeError(
-                f"LLM API 오류 {e.code} ({model}): {detail}") from e
+                f"LLM API error {e.code} ({model}): {detail}") from e
         except (urllib.error.URLError, TimeoutError) as e:
-            raise RuntimeError(f"LLM API 연결 실패 ({url}): {e}") from e
+            raise RuntimeError(f"Could not connect to the LLM API ({url}): {e}") from e
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
             detail = raw[:300].decode(errors="replace")
-            raise RuntimeError(f"LLM 응답 형식 오류: {detail}") from e
+            raise RuntimeError(f"Invalid LLM response format: {detail}") from e
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as e:
-            raise RuntimeError(f"LLM 응답 형식 오류: {str(data)[:300]}") from e
+            raise RuntimeError(f"Invalid LLM response format: {str(data)[:300]}") from e
     return run

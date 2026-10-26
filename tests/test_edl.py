@@ -33,7 +33,7 @@ def test_validate_rejects_segments_that_reverse_source_time(
 
     errs = edl.validate_edl(edl_doc, segments)
 
-    assert any("원문 시간 순서" in error for error in errs)
+    assert any("source order" in error for error in errs)
 
 
 def test_ordered_segments_flattens_in_edl_order(edl_doc: dict, segments: dict) -> None:

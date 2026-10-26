@@ -39,27 +39,30 @@ class _CodexFailure(RuntimeError):
             "insufficient_quota", "usage_limit_reached", "usage limit",
             "quota exceeded", "exceeded your current quota", "billing hard limit",
         ))
+        self.quota_exhausted = quota
         self.rate_limited = not quota and any(marker in lowered for marker in (
             "429", "too many requests", "rate_limit_exceeded", "rate limit",
         ))
         self.at_capacity = "selected model is at capacity" in lowered
         self.retryable = not quota and (self.rate_limited or self.at_capacity)
         if quota:
-            detail = "Codex 사용 한도에 도달했습니다. 계정의 사용량·한도 초기화 시점을 확인한 뒤 다시 시도하세요."
+            detail = "Codex usage limit reached. Check your account usage and reset time, then try again."
         elif self.rate_limited:
-            detail = "Codex 요청이 제한되었습니다(429 Too Many Requests). 잠시 후 다시 시도하세요."
+            detail = "Codex is rate limited (429 Too Many Requests). Try again shortly."
         elif self.at_capacity:
-            detail = "AI 모델의 처리 용량이 부족합니다. 잠시 후 이 클립만 다시 시도하세요."
+            detail = "The model is at capacity. Retry this clip shortly."
         else:
             # Human CLI output echoes the entire input transcript before ERROR.
             # Surface diagnostics, never thousands of characters of source text.
-            detail = "codex exec 실패:\n" + (diagnostics[-1000:] or "오류 출력 없음")
+            detail = "codex exec failed:\n" + (diagnostics[-1000:] or "no error output")
         super().__init__(detail)
 
 
 def summarize_codex_error(error: str) -> str:
     """Also format failures persisted by older engines, without changing history."""
-    prefix, marker, _ = error.partition("codex exec 실패:")
+    prefix, marker, _ = error.partition("codex exec failed:")
+    if not marker:
+        prefix, marker, _ = error.partition("codex exec 실패:")
     if marker:
         return (prefix if len(prefix) < 150 else "") + str(_CodexFailure(error))
     return error
@@ -105,18 +108,18 @@ def run_opus_review(prompt: str, images: list[Path]) -> str:
             result = next((event for event in reversed(events) if event.get('type') == 'result'), None)
             if not response.returncode and result and not result.get('is_error') and str(result.get('result','')).strip():
                 return result['result']
-            detail=(response.stderr or (result or {}).get('result') or '유효한 최종 응답 없음')[-500:]
+            detail=(response.stderr or (result or {}).get('result') or "no valid final response")[-500:]
             lowered=detail.lower()
             transient=any(marker in lowered for marker in ('429','rate_limit_error','overloaded','503','529'))
             quota=any(marker in lowered for marker in ('usage limit','quota','credit balance','billing'))
             if attempt==2 or not transient or quota:
-                raise RuntimeError('Opus 영상 검수 호출 실패: '+detail)
+                raise RuntimeError("Opus video review request failed: "+detail)
             for _ in range(50 * (attempt+1)):
                 if registry and registry.cancelled:raise RuntimeError('job was cancelled')
                 time.sleep(.1)
         raise AssertionError('unreachable')
     except FileNotFoundError as exc:
-        raise RuntimeError('Opus 검수에 필요한 Claude CLI를 찾을 수 없습니다.') from exc
+        raise RuntimeError("Claude CLI required for Opus review was not found.") from exc
     finally:
         _REVIEW_SLOT.release()
 
@@ -158,17 +161,14 @@ def _claude_cli_runner(model: str) -> Callable[[str], str]:
             r = processes.run([*claude_cli_args(model), prompt],
                               capture_output=True, text=True, timeout=TIMEOUT_S)
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"claude -p 타임아웃({TIMEOUT_S}초): {e}") from e
+            raise RuntimeError(f"claude -p timed out ({TIMEOUT_S} seconds): {e}") from e
         except FileNotFoundError as e:
-            raise RuntimeError(
-                "claude CLI를 찾을 수 없습니다 — Claude Code CLI가 설치되어 있고 "
-                "PATH에 등록되어 있는지 확인하거나, 설정 패널에서 다른 프로바이더로 "
-                f"전환하세요: {e}") from e
+            raise RuntimeError(f'Claude CLI was not found. Install Claude Code CLI and add it to PATH, or choose another generation provider: {e}') from e
         if r.returncode != 0:
             detail = (r.stderr or r.stdout).strip()[-2000:]
             if not detail:
-                detail = f"종료 코드 {r.returncode} (오류 출력 없음)"
-            raise RuntimeError(f"claude -p 실패:\n{detail}")
+                detail = f"Exit code {r.returncode} (no error output)"
+            raise RuntimeError(f"claude -p failed:\n{detail}")
         return r.stdout
     return run
 
@@ -189,11 +189,9 @@ def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str]
                     timeout=180 if web_search else TIMEOUT_S,
                 )
             except subprocess.TimeoutExpired as e:
-                raise RuntimeError(f"codex exec 타임아웃({TIMEOUT_S}초): {e}") from e
+                raise RuntimeError(f"codex exec timed out ({TIMEOUT_S} seconds): {e}") from e
             except FileNotFoundError as e:
-                raise RuntimeError(
-                    "Codex CLI를 찾을 수 없습니다 — OpenAI Codex CLI가 설치되어 있고 "
-                    f"PATH에 등록되어 있는지 확인하세요: {e}") from e
+                raise RuntimeError(f'Codex CLI was not found. Install OpenAI Codex CLI and add it to PATH: {e}') from e
             if result.returncode != 0:
                 raise _CodexFailure("\n".join((result.stderr or "", result.stdout or "")))
             output = (
@@ -212,8 +210,8 @@ def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str]
 
             detail = result.stderr.strip()[-2000:]
             if not detail:
-                detail = "종료 코드 0 (응답 및 오류 출력 없음)"
-            raise RuntimeError(f"codex exec가 최종 응답을 생성하지 않았습니다.\n{detail}")
+                detail = "Exit code 0 (no response or error output)"
+            raise RuntimeError(f"codex exec did not produce a final response.\n{detail}")
 
     def run(prompt: str) -> str:
         registry = processes.current_registry()
@@ -256,14 +254,12 @@ def _gemini_cli_runner(model: str) -> Callable[[str], str]:
                     timeout=TIMEOUT_S,
                 )
             except subprocess.TimeoutExpired as e:
-                raise RuntimeError(f"gemini 타임아웃({TIMEOUT_S}초): {e}") from e
+                raise RuntimeError(f"Gemini timed out ({TIMEOUT_S} seconds): {e}") from e
             except FileNotFoundError as e:
-                raise RuntimeError(
-                    "Gemini CLI를 찾을 수 없습니다 — Google Gemini CLI가 설치되어 있고 "
-                    f"PATH에 등록되어 있는지 확인하세요: {e}") from e
+                raise RuntimeError(f'Gemini CLI was not found. Install Google Gemini CLI and add it to PATH: {e}') from e
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()[-2000:]
-                raise RuntimeError(f"gemini 실패:\n{detail}")
+                raise RuntimeError(f"Gemini failed:\n{detail}")
             return result.stdout
     return run
 
@@ -279,20 +275,20 @@ def build_runner(cfg: AppConfig,
     if cfg.provider == "custom":
         base_url, model = cfg.base_url, cfg.model
         if not base_url or not model:
-            raise RuntimeError("custom 프로바이더는 base_url과 model이 필요합니다.")
+            raise RuntimeError("The custom provider requires base_url and model.")
     else:
         try:
             default_url, default_model = PROVIDER_DEFAULTS[cfg.provider]
         except KeyError as e:
             raise RuntimeError(
-                f"알 수 없는 프로바이더 {cfg.provider!r} — "
-                f"사용 가능한 프로바이더: {', '.join(PROVIDERS)}") from e
+                f"Unknown provider {cfg.provider!r} — "
+                f"available providers: {', '.join(PROVIDERS)}") from e
         base_url = cfg.base_url or default_url
         model = cfg.model or default_model
     key = resolve_api_key(cfg.provider, credentials)
     if not key:
         raise RuntimeError(
-            f"{cfg.provider} API 키가 없습니다 — 환경변수 또는 게이트 설정에서 입력하세요.")
+            f"{cfg.provider} API key is missing. Set the environment variable or app credentials.")
     from reels_editor.llm_http import openai_chat_runner  # Task 4
     return openai_chat_runner(base_url, key, model)
 

@@ -95,7 +95,7 @@ def test_required_role_retries_recent_failure_and_raises_if_still_unverified(tmp
         raise RuntimeError('search unavailable')
     for required in [False, True]:
         if required:
-            with pytest.raises(ValueError, match='직책·역할을 확인하지 못했습니다'):
+            with pytest.raises(ValueError, match="verify the role using web sources"):
                 speaker_identity.enrich_speakers([_result()], {}, cache_path=tmp_path / 'lookup.json', runner=fail, required=True)
         else:
             speaker_identity.enrich_speakers([_result()], {}, cache_path=tmp_path / 'lookup.json', runner=fail)
@@ -196,7 +196,7 @@ def test_unidentified_names_never_reach_person_search(tmp_path):
         result.doc['speaker']['name'] = name
         def fail(_):
             raise AssertionError('A placeholder is not a searchable person')
-        with pytest.raises(ValueError, match='화자 이름을 확인하지 못해'):
+        with pytest.raises(ValueError, match="speaker name could not be verified"):
             speaker_identity.enrich_speakers([result], {}, cache_path=tmp_path / 'lookup.json',
                                             required=True, runner=fail)
         assert format_speaker_label(result.doc['speaker']) == ''
@@ -211,7 +211,7 @@ def test_context_identity_rejects_fabricated_quote_and_unsupported_group(tmp_pat
             response = json.loads(_group_response(prompt))
             response['speakers'][0]['evidence'] = evidence
             return json.dumps(response)
-        with pytest.raises(ValueError, match='화자 이름을 확인하지 못해'):
+        with pytest.raises(ValueError, match="speaker name could not be verified"):
             speaker_identity.enrich_speakers([result], _group_source(), cache_path=tmp_path / 'lookup.json',
                                             required=True, runner=runner)
         assert format_speaker_label(result.doc['speaker']) == ''

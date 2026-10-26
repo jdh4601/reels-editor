@@ -67,6 +67,33 @@ rather than in Python. `reels_editor/resources/prompts/text-hook-principles.md` 
 candidate-analysis and script-generation prompts, so a change there affects
 every generated title.
 
+Most prompt templates, and some instructions built in Python, are currently
+written in Korean. English translations are welcome; keep the rules and their
+order unchanged so generated output stays comparable, and mention it in the
+pull request.
+
+## Rerendering a saved clip
+
+Rerender a saved EDL through the same verification pipeline as the app:
+
+```bash
+.venv/bin/reels-editor render path/to/workdir --title 1
+```
+
+The directory must contain `edl.json`, `segments.json` and accessible source
+media. The command needs the same signed-in CLIs as the app, writes attempt
+evidence under `.verified-jobs/`, and fails if the final review does not
+approve the clip.
+
+## Building the macOS app
+
+```bash
+.venv/bin/pyinstaller desktop/pyinstaller/reels_editor_desktop.spec --noconfirm
+open "dist/Reels Editor.app"
+```
+
+The build is unsigned, so macOS asks for confirmation on first launch.
+
 ## Conventions
 
 Match the surrounding code rather than importing a new style.

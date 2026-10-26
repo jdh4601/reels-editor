@@ -13,6 +13,15 @@ All notable changes to this project are recorded here. The format follows
 - Verified CLI rerenders and local batch export without a cloud account.
 - Neutral packaged template, OFL CJK font, procedural sound and portable prompt resources.
 - Updated English/Korean READMEs, added Simplified Chinese README and verification contract.
+- Subtitle alignment and repairs continue with the job's generation provider when the Codex usage limit is reached. The final Opus review is unchanged.
+- Rewrote the English README for new users; development details moved to CONTRIBUTING.md.
+
+### Upgrade notes
+
+- Videos and thumbnails no longer carry a bottom logo or episode-number overlay.
+- Jobs created before 0.2.0 have no complete matching approval and must be regenerated before export.
+- Jobs created before 0.2.0 keep Korean as their output language.
+- A failed cover no longer discards a verified MP4.
 
 ## [Unreleased]
 

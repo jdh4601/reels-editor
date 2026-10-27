@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from reels_editor import processes
 from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, speaker_identity, source_cache, thumbnail, title_suggestion, youtube
 from reels_editor import founder_photos, speaker_focus
 from reels_editor import caption_timing, quality_review, hook_effects
@@ -2527,6 +2528,9 @@ class JobService:
         )
         stage = "Speaker verification"
         try:
+            registry = processes.current_registry()
+            if registry:
+                registry.check_ai_available()
             self._raise_if_cancelled(job_id)
             self.deps.enrich_speakers(
                 [result], segments,
@@ -2729,7 +2733,7 @@ class JobService:
                     status=Status.RENDERING_OVERLAY,
                     detail='Opus is reviewing subtitle timing, opening zoom and the wind sound.')
                 review = self.deps.review_render_output(out, result.doc, segments, assets, speed,
-                    title, attempt_dir / 'review', reference_segments=source_segments)
+                    title, attempt_dir / 'review', reference_segments=source_segments, previous_review=feedback)
                 self._raise_if_cancelled(job_id)
                 if review.get('passed') is True:
                     quality_review.require_approved_video(out, review, effect_required=bool(hook_effects.DEFAULT_SOUND))

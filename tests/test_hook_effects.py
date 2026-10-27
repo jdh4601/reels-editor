@@ -125,9 +125,9 @@ def test_opus_receives_effect_frames_and_cannot_override_missing_sound(monkeypat
     monkeypatch.setattr(quality, 'source_hook_sheet', source_sheet)
     def reviewer(prompt, images):
         assert 'hook_zoom,hook_whoosh' in prompt
-        assert '0.1초 만에 100→130%' in prompt
-        assert '동시에 지연 없이' in prompt
-        assert 'sound_correlation' in prompt and '직접 오디오를 들었다' in prompt
+        assert '미세한 시점' in prompt
+        assert '전수 검수하지' in prompt
+        assert 'sound_correlation' in prompt and '오디오 청취' in prompt
         assert images[0] == tmp_path/'effects.jpg'
         return json.dumps({'checks': {key: {'verdict': 'pass', 'evidence': '제공된 근거'}
                           for key in quality.CHECKS+hook.CHECKS}, 'issues': []})

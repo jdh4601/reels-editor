@@ -302,13 +302,13 @@ def test_codex_capacity_retries_same_prompt_and_model(monkeypatch):
     monkeypatch.setattr(llm.time, 'sleep', lambda _seconds: None)
     def fake_run(args, **kwargs):
         calls.append((args, kwargs['input']))
-        if len(calls) < 3:
+        if len(calls) < 2:
             return subprocess.CompletedProcess(args, 1, '', 'ERROR: Selected model is at capacity.')
         Path(args[args.index('--output-last-message') + 1]).write_text('{"ok": true}')
         return subprocess.CompletedProcess(args, 0, '', '')
     monkeypatch.setattr(llm.processes, 'run', fake_run)
     assert build_runner(AppConfig(provider='codex-cli', model='gpt-5.6-sol'))('prompt') == '{"ok": true}'
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert all(prompt == 'prompt' and 'gpt-5.6-sol' in args for args, prompt in calls)
 
 
@@ -322,7 +322,7 @@ def test_codex_capacity_exhaustion_is_concise_and_other_errors_not_retried(monke
     monkeypatch.setattr(llm.processes, 'run', fake_run)
     with pytest.raises(RuntimeError, match="model is at capacity"):
         build_runner(AppConfig(provider='codex-cli'))('prompt')
-    assert len(calls) == 3
+    assert len(calls) == 2
     calls.clear()
     def auth_failure(args, **kwargs):
         calls.append(args)
@@ -339,15 +339,15 @@ def test_codex_429_retries_same_request_without_echoing_transcript(monkeypatch):
     monkeypatch.setattr(llm.time, 'sleep', waits.append)
     def fake_run(args, **kwargs):
         calls.append((args, kwargs['input']))
-        if len(calls) < 3:
+        if len(calls) < 2:
             return subprocess.CompletedProcess(args, 1, '',
                 'user\nPRIVATE TRANSCRIPT\nERROR: exceeded retry limit, last status: 429 Too Many Requests')
         return subprocess.CompletedProcess(args, 0, '{"ok":true}', '')
     monkeypatch.setattr(llm.processes, 'run', fake_run)
     assert build_runner(AppConfig(provider='codex-cli', model='gpt-5.6-sol'))('original prompt') == '{"ok":true}'
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert all(prompt == 'original prompt' and 'gpt-5.6-sol' in args for args, prompt in calls)
-    assert sum(waits) == pytest.approx(90)
+    assert sum(waits) == pytest.approx(30)
     calls.clear()
     monkeypatch.setattr(llm.processes, 'run', lambda args, **kw: subprocess.CompletedProcess(
         args, 1, '', 'PRIVATE TRANSCRIPT\nERROR: 429 Too Many Requests'))

@@ -29,7 +29,7 @@ SUBTITLE_TRANSLATION_PATH = (
     Path(__file__).parent / "resources" / "prompts" / "subtitle-translation-principles.md"
 )
 DEFAULT_SPEED = 1.2
-MAX_RETRIES = 2
+MAX_RETRIES = 1
 LONG_REEL_DURATION_S = 60
 LONG_REEL_GRACE_S = 5
 # 서술형 종결어미. 완결된 문장보다 명사구가 텍스트 훅으로 더 강하게 읽힌다.

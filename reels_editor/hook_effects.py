@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 from reels_editor import edl
+from reels_editor.review_policy import compact_feedback
 from reels_editor.caption_timing import audio_signature, extract_audio, file_hash, signature, write_json
 from reels_editor.storyteller import extract_json
 
@@ -50,7 +51,9 @@ def measure_onset(audio, word):
 def prepare(doc, segments, speed, work, *, runner, feedback=''):
     if DEFAULT_SOUND is None:
         return doc
-    if doc.get('hook_effect') and not feedback:
+    issues = feedback.get('issues', []) + feedback.get('machine_issues', []) if isinstance(feedback, dict) else []
+    reuse = not feedback or (issues and all(i.get('kind') == 'layout' for i in issues))
+    if doc.get('hook_effect') and reuse:
         try:
             validate(doc, segments, speed)
         except (ValueError, KeyError, TypeError, OSError):
@@ -73,9 +76,9 @@ def prepare(doc, segments, speed, work, *, runner, feedback=''):
               '{"anchor_word":1,"reason":"원문 의미에 근거한 선택 이유"}\n'
               + json.dumps({'words': [dict(w, index=i) for i, w in enumerate(words) if w['start'] < 3.5],
                             'eligible_word_indices': eligible, 'captions': doc['caption_timing']['captions'][:4],
-                            'feedback': feedback}, ensure_ascii=False))
+                            'feedback': compact_feedback(feedback)}, ensure_ascii=False))
     problem = ''
-    for attempt in range(3):
+    for attempt in range(2):
         raw = runner(prompt + ('\n선택 오류: ' + problem if problem else ''))
         work.mkdir(parents=True, exist_ok=True)
         (work / f'hook-raw-{attempt}.txt').write_text(raw, encoding='utf-8')

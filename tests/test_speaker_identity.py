@@ -87,7 +87,7 @@ def test_name_in_heading_and_pronoun_role_paragraph_are_grounded(tmp_path):
     assert format_speaker_label(result.doc['speaker']) == '차마스 팔리하피티야 (Social Capital 창업자)'
 
 
-def test_required_role_retries_recent_failure_and_raises_if_still_unverified(tmp_path):
+def test_required_role_reuses_recent_failure_without_another_search(tmp_path):
     import pytest
     calls = []
     def fail(_):
@@ -99,7 +99,7 @@ def test_required_role_retries_recent_failure_and_raises_if_still_unverified(tmp
                 speaker_identity.enrich_speakers([_result()], {}, cache_path=tmp_path / 'lookup.json', runner=fail, required=True)
         else:
             speaker_identity.enrich_speakers([_result()], {}, cache_path=tmp_path / 'lookup.json', runner=fail)
-    assert len(calls) == 4
+    assert len(calls) == 1
 
 
 def test_alternative_source_is_verified_after_first_quote_fails(tmp_path):
@@ -134,22 +134,20 @@ def test_parallel_reels_reuse_one_verified_lookup(tmp_path):
     assert not json.loads((tmp_path / "lookup.json").read_text())["errors"]
 
 
-def test_failed_quote_triggers_search_with_feedback_before_failing_render(tmp_path):
+def test_failed_quote_does_not_launch_another_search_in_same_attempt(tmp_path):
+    import pytest
     prompts = []
     def runner(prompt):
         prompts.append(prompt)
         response = _response()
-        if len(prompts) == 1:
-            response["speakers"][0]["evidence"] = "Invented quote"
+        response['speakers'][0]['evidence'] = 'Invented quote'
         return json.dumps(response)
-    result = _result()
-    speaker_identity.enrich_speakers(
-        [result], {"source_title": "Chamath Palihapitiya interview"},
-        cache_path=tmp_path / "lookup.json", required=True, runner=runner,
-        fetch=lambda _: _response()["speakers"][0]["evidence"])
-    assert len(prompts) == 2
-    assert "이전 원문 검증 실패" in prompts[1]
-    assert "Social Capital" in format_speaker_label(result.doc["speaker"])
+    with pytest.raises(ValueError, match='verify the role'):
+        speaker_identity.enrich_speakers(
+            [_result()], {'source_title': 'Chamath Palihapitiya interview'},
+            cache_path=tmp_path / 'lookup.json', required=True, runner=runner,
+            fetch=lambda _: _response()['speakers'][0]['evidence'])
+    assert len(prompts) == 1
 
 
 def _unknown_clip():

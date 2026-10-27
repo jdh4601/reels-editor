@@ -2151,7 +2151,7 @@ def test_opus_failure_triggers_codex_repair_and_new_render_before_ready(tmp_path
     assert saved['quality_review']['video_sha256']==sha256(Path(story.active_variant_path).read_bytes()).hexdigest()
 
 
-def test_persistent_quality_failure_stops_after_two_repairs_without_publishing(tmp_path):
+def test_persistent_quality_failure_stops_after_one_repair_without_publishing(tmp_path):
     calls = Calls()
     repairs=[]
     def repair(doc,*_a,**_k):
@@ -2163,11 +2163,11 @@ def test_persistent_quality_failure_stops_after_two_repairs_without_publishing(t
     service=JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
     job=_run_ready(service,candidate_count=1)
     assert job.status is Status.FAILED
-    assert len(repairs)==2 and calls.overlay==3
+    assert len(repairs)==1 and calls.overlay==2
     assert job.storylines[0].variants==[]
     assert job.storylines[0].active_variant_path is None
     assert not job.artifacts
-    assert '2 automatic repairs' in job.storylines[0].error
+    assert '1 automatic repairs' in job.storylines[0].error
     assert job.storylines[0].review_message == "Review is still required after automatic repairs."
     assert Path(job.storylines[0].edl_path).is_file()
     assert Path(job.storylines[0].segments_path).is_file()
@@ -2214,7 +2214,7 @@ def test_retry_recovers_valid_checkpoint_when_older_job_omitted_paths(tmp_path):
 
 
 @pytest.mark.parametrize('changed_plan', [None, 'caption', 'hook'])
-def test_retry_uses_saved_review_only_for_exact_recipe_and_keeps_two_repair_limit(tmp_path, changed_plan):
+def test_retry_uses_saved_review_only_for_exact_recipe_and_keeps_one_repair_limit(tmp_path, changed_plan):
     from reels_editor import caption_timing, edl, quality_review
     calls = Calls()
     feedbacks, review_paths, render_order = [], [], []
@@ -2246,7 +2246,7 @@ def test_retry_uses_saved_review_only_for_exact_recipe_and_keeps_two_repair_limi
         prepare_caption_timing=prepare,
         review_render_output=review))
     job = _run_ready(service, candidate_count=1)
-    assert job.status is Status.FAILED and len(feedbacks) == 2
+    assert job.status is Status.FAILED and len(feedbacks) == 1
     if changed_plan:
         checkpoint=Path(job.storylines[0].edl_path)
         doc=json.loads(checkpoint.read_text())
@@ -2258,11 +2258,11 @@ def test_retry_uses_saved_review_only_for_exact_recipe_and_keeps_two_repair_limi
     render_order.clear()
     retried = service.retry_storyline(job.id, job.storylines[0].id)
     assert retried.status is Status.FAILED
-    assert render_order == (['render','repair','render','repair','render'] if changed_plan
-                            else ['repair', 'render', 'repair', 'render'])
-    assert len(feedbacks) == 4
-    assert feedbacks[2]['selected_candidate']['id'] == 'c1'
-    assert len(set(review_paths)) == (6 if changed_plan else 5) and all(path.is_file() for path in review_paths)
+    assert render_order == (['render','repair','render'] if changed_plan
+                            else ['repair', 'render'])
+    assert len(feedbacks) == 2
+    assert feedbacks[1]['selected_candidate']['id'] == 'c1'
+    assert len(set(review_paths)) == (4 if changed_plan else 3) and all(path.is_file() for path in review_paths)
 
 
 def test_opus_unavailable_never_marks_unreviewed_video_ready(tmp_path):
@@ -2319,7 +2319,7 @@ def test_review_for_different_mp4_cannot_publish(tmp_path):
     service=JobService(store=JobStore(tmp_path/'jobs'),deps=deps)
     job=_run_ready(service,candidate_count=1)
     assert job.status is Status.FAILED and not job.artifacts
-    assert calls.overlay==3
+    assert calls.overlay==2
 
 
 def test_google_drive_batch_export_places_all_videos_and_jpgs_in_episode_folder(tmp_path):

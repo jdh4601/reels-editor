@@ -90,34 +90,25 @@ def run_opus_review(prompt: str, images: list[Path]) -> str:
         if registry and registry.cancelled:
             raise RuntimeError('job was cancelled')
     try:
-        for attempt in range(3):
-            with tempfile.TemporaryDirectory(prefix='reels-opus-review-') as tmp:
-                response = processes.run([
-                    *claude_cli_args('opus'), '--input-format', 'stream-json',
-                    '--output-format', 'stream-json', '--verbose', '--tools', '',
-                    '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-                    '--setting-sources', '', '--no-session-persistence',
-                ], input=message, cwd=tmp, capture_output=True, text=True, timeout=TIMEOUT_S)
-            events = []
-            for line in response.stdout.splitlines():
-                try:
-                    event=json.loads(line)
-                    if isinstance(event,dict):events.append(event)
-                except ValueError:
-                    continue
-            result = next((event for event in reversed(events) if event.get('type') == 'result'), None)
-            if not response.returncode and result and not result.get('is_error') and str(result.get('result','')).strip():
-                return result['result']
-            detail=(response.stderr or (result or {}).get('result') or "no valid final response")[-500:]
-            lowered=detail.lower()
-            transient=any(marker in lowered for marker in ('429','rate_limit_error','overloaded','503','529'))
-            quota=any(marker in lowered for marker in ('usage limit','quota','credit balance','billing'))
-            if attempt==2 or not transient or quota:
-                raise RuntimeError("Opus video review request failed: "+detail)
-            for _ in range(50 * (attempt+1)):
-                if registry and registry.cancelled:raise RuntimeError('job was cancelled')
-                time.sleep(.1)
-        raise AssertionError('unreachable')
+        with tempfile.TemporaryDirectory(prefix='reels-opus-review-') as tmp:
+            response = processes.run([
+                *claude_cli_args('opus'), '--input-format', 'stream-json',
+                '--output-format', 'stream-json', '--verbose', '--tools', '',
+                '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+                '--setting-sources', '', '--no-session-persistence',
+            ], input=message, cwd=tmp, capture_output=True, text=True, timeout=TIMEOUT_S)
+        events = []
+        for line in response.stdout.splitlines():
+            try:
+                event=json.loads(line)
+                if isinstance(event,dict):events.append(event)
+            except ValueError:
+                continue
+        result = next((event for event in reversed(events) if event.get('type') == 'result'), None)
+        if not response.returncode and result and not result.get('is_error') and str(result.get('result','')).strip():
+            return result['result']
+        detail=(response.stderr or (result or {}).get('result') or "no valid final response")[-500:]
+        raise RuntimeError("Opus video review request failed: "+detail)
     except FileNotFoundError as exc:
         raise RuntimeError("Claude CLI required for Opus review was not found.") from exc
     finally:
@@ -158,8 +149,11 @@ def gemini_cli_args(model: str) -> list[str]:
 def _claude_cli_runner(model: str) -> Callable[[str], str]:
     def run(prompt: str) -> str:
         try:
-            r = processes.run([*claude_cli_args(model), prompt],
-                              capture_output=True, text=True, timeout=TIMEOUT_S)
+            with tempfile.TemporaryDirectory(prefix='reels-claude-') as tmp:
+                r = processes.run([*claude_cli_args(model), '--tools', '',
+                    '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+                    '--setting-sources', '', '--no-session-persistence', prompt],
+                    cwd=tmp, capture_output=True, text=True, timeout=TIMEOUT_S)
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"claude -p timed out ({TIMEOUT_S} seconds): {e}") from e
         except FileNotFoundError as e:
@@ -223,12 +217,12 @@ def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str]
         while not _CODEX_SLOT.acquire(timeout=0.1):
             check_cancelled()
         try:
-            for retry in range(3):
+            for retry in range(2):
                 check_cancelled()
                 try:
                     return attempt(prompt)
                 except _CodexFailure as exc:
-                    if not exc.retryable or retry == 2:
+                    if not exc.retryable or retry == 1:
                         raise
                     # A CLI retry limit can exhaust before an upstream rate
                     # window resets. Wait longer for 429s, keeping the slot.

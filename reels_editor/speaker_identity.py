@@ -226,7 +226,7 @@ def enrich_speakers(
     except (ValueError, TypeError):
         pass
     pending = [name for name in missing if name not in cache["speakers"]
-               and not (not required and recent_failure and name in cache["errors"])]
+               and not (recent_failure and name in cache["errors"])]
     pages = {}
     if pending:
         prompt = (
@@ -252,7 +252,7 @@ def enrich_speakers(
             + json.dumps({"names": pending, "video": context}, ensure_ascii=False)
         )
         feedback = ""
-        for attempt in range(2):
+        for attempt in range(1):
             unresolved = [name for name in pending if name not in cache["speakers"]]
             if not unresolved:
                 break

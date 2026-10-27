@@ -217,8 +217,11 @@ def plan_groups(plan: dict, doc: dict, segments: dict, speed: float) -> list[lis
 
 def prepare_caption_timing(video: Path, doc: dict, segments: dict, speed: float,
                            work: Path, *, runner, feedback='') -> dict:
+    from reels_editor.review_policy import compact_feedback
     work.mkdir(parents=True, exist_ok=True)
-    if doc.get('caption_timing') and not feedback:
+    issues = feedback.get('issues', []) + feedback.get('machine_issues', []) if isinstance(feedback, dict) else []
+    reuse = not feedback or (issues and all(i.get('kind') in {'layout', 'hook'} for i in issues))
+    if doc.get('caption_timing') and reuse:
         try:
             plan_groups(doc['caption_timing'], doc, segments, speed)
         except (ValueError, KeyError, TypeError):
@@ -265,10 +268,10 @@ def prepare_caption_timing(video: Path, doc: dict, segments: dict, speed: float,
                       'caption_keep_together': doc.get('caption_keep_together', []),
                       'WORDS': [dict(word, index=i) for i,word in enumerate(words)],
                       'word_count':len(words),'last_word_index':len(words)-1,
-                      'feedback': feedback}, ensure_ascii=False)
+                      'feedback': compact_feedback(feedback)}, ensure_ascii=False)
     )
     problem = ''
-    for attempt in range(3):
+    for attempt in range(2):
         raw = runner(prompt + ('\n이전 계획 오류: ' + problem if problem else ''))
         (work / f'timing-raw-{attempt}.txt').write_text(raw, encoding='utf-8')
         try:

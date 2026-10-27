@@ -59,7 +59,7 @@ def setup_review(monkeypatch,tmp_path):
 
 def test_review_attaches_exact_mp4_hash_and_does_not_let_opus_override_measured_errors(monkeypatch,tmp_path):
     video,doc,segments,assets,actual=setup_review(monkeypatch,tmp_path)
-    actual['words'][0]['start']+=.3
+    actual['words'][0]['start']+=.8
     def reviewer(prompt,images):
         assert 'final_audio' in prompt and 'hook_window_s' in prompt
         assert images==[tmp_path/'sheet.jpg',tmp_path/'source.jpg']

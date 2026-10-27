@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 PROMPT_PATH = Path(__file__).parent / "resources" / "prompts" / "candidate-analysis.md"
 CANDIDATE_COUNT = 10
 TARGET_DURATION_S = 35
-MAX_RETRIES = 2
+MAX_RETRIES = 1
 CONTENT_TYPES: dict[str, dict[str, str]] = {
     "story": {
         "label": "Story",

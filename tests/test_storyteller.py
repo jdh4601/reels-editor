@@ -323,7 +323,7 @@ def test_generate_script_retries_then_fails(segments: dict) -> None:
 
     with pytest.raises(RuntimeError):
         storyteller.generate_script(segments, runner=bad_runner)
-    assert len(calls) == 3  # 최초 1회 + 재시도 2회, 그 이상 금지
+    assert len(calls) == 2  # 최초 1회 + 재시도 1회, 그 이상 금지
     assert "없는id" in calls[1]  # 검증 에러가 피드백으로 전달됨
 
 

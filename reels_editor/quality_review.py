@@ -29,7 +29,7 @@ from reels_editor.storyteller import (
 CHECKS = ('topic', 'translation', 'caption_timing', 'hook_audio', 'hook_caption',
           'readability', 'framing')
 MAX_REPAIRS = 1
-REVIEW_VERSION = 7
+REVIEW_VERSION = 8
 
 
 def render_recipe_hash(doc):
@@ -243,6 +243,7 @@ def timing_diagnostics(plan: dict, actual: dict) -> list[dict]:
     right = [normalized_text(w['word']) for w in words]
     matcher = SequenceMatcher(None, left, right, autojunk=False)
     mapping = {block.a + i: block.b + i for block in matcher.get_matching_blocks() for i in range(block.size)}
+    coverage = len(mapping) / max(1, len(expected))
     issues = []
     for span in plan['captions']:
         first, last = span['start_word'], span['end_word']
@@ -251,7 +252,11 @@ def timing_diagnostics(plan: dict, actual: dict) -> list[dict]:
         if first not in mapping or last not in mapping:
             issues.append(_issue('hook' if hook else 'audio', a, b,
                 f'최종 음성에서 자막 경계 단어를 확인하지 못함: {span["text"]}',
-                '원문 발화 누락과 잘린 음절을 확인하고 완결된 구간을 선택하라.'))
+                'ASR 간 단어 불일치만으로 발화 누락을 단정하거나 컷을 수정하지 마라. 원문과 주변 발화를 대조하라.'))
+            # Two ASR passes can disagree about a contraction, filler or repeated
+            # word while the rendered speech is intact. Broad loss still blocks
+            # below; isolated text mismatches are evidence for semantic review.
+            issues[-1]['severity'] = 'minor'
             continue
         start_delta = words[mapping[first]]['start'] - a
         end_delta = words[mapping[last]]['end'] - b
@@ -261,7 +266,6 @@ def timing_diagnostics(plan: dict, actual: dict) -> list[dict]:
                 f'최종 음성과 자막의 경계 차이: 시작 {start_delta:+.3f}초, 끝 {end_delta:+.3f} seconds',
                 '최종 발화 단어 시간에 자막 시작·끝을 다시 정렬하라.'))
             issues[-1]['severity'] = 'major' if max(abs(start_delta), abs(end_delta)) > (0.6 if hook else 1.0) else 'minor'
-    coverage = len(mapping) / max(1, len(expected))
     unmatched = [w for i,w in enumerate(words) if i not in set(mapping.values())]
     if unmatched and any(w['start'] > expected[-1]['end'] + .4 for w in unmatched):
         issues.append(_issue('cut', unmatched[0]['start'], unmatched[-1]['end'],
@@ -382,16 +386,23 @@ def parse_review(raw: str, duration: float, check_names=CHECKS) -> dict:
         if (not isinstance(check, dict) or check.get('verdict') not in {'pass', 'fail', 'uncertain'}
                 or not str(check.get('evidence', '')).strip()):
             raise ValueError(f'Opus {key} review has no supporting evidence.')
-    for issue in issues:
+    for index, issue in enumerate(issues):
         if not isinstance(issue, dict) or issue.get('kind') not in {'timing', 'translation', 'cut', 'layout', 'audio', 'hook'}:
             raise ValueError("Invalid Opus review issue type")
         if issue.get('severity', 'major') not in {'major', 'minor'}:
             raise ValueError('Invalid review issue severity')
         a, b = issue.get('start_s'), issue.get('end_s')
         if (type(a) not in (float, int) or type(b) not in (float, int) or
-                not math.isfinite(a) or not math.isfinite(b) or not 0 <= a < b <= duration + 0.12
+                not math.isfinite(a) or not math.isfinite(b) or not 0 <= a <= b <= duration + 0.12
+                or a > duration
                 or not str(issue.get('evidence', '')).strip() or not str(issue.get('correction', '')).strip()):
-            raise ValueError("Invalid issue times, evidence or correction instructions in Opus review.")
+            raise ValueError(f"Invalid issue times, evidence or correction instructions in Opus review (issue {index}).")
+        if a == b:
+            # A single sampled frame is a valid observation, not a malformed
+            # review. Preserve the reported point and give repair a small range.
+            issue['observed_at_s'] = a
+            issue['start_s'] = max(0, a - .04)
+            issue['end_s'] = min(duration, a + .04)
     if any(check['verdict'] != 'pass' for check in checks.values()) and not issues:
         raise ValueError("Failed or uncertain checks need correction instructions.")
     return result
@@ -407,16 +418,23 @@ def review_render_output(video: Path, doc: dict, segments: dict, assets, speed: 
         raise ValueError("Rendered captions differ from the speech-aligned plan.")
     before = file_hash(video)
     audio = extract_audio(video, work / 'final-audio.wav', duration=assets.total_s)
-    actual = transcribe_audio(audio, str(segments.get('transcript_language') or ''), work)
+    # Layout/title repairs often encode identical audio. Reuse only a transcript
+    # keyed by the hash of the actual final WAV, never by the intended recipe.
+    audio_cache = work.parent.parent / 'final-audio-cache'
+    audio_cache.mkdir(parents=True, exist_ok=True)
+    actual = transcribe_audio(audio, str(segments.get('transcript_language') or ''), audio_cache)
     machine_issues = timing_diagnostics(doc['caption_timing'], actual)
     metrics=audio_metrics(audio)
     boundary = boundary_audio_evidence(video=Path(segments.get('video_path') or video), doc=doc, segments=segments,
         speed=speed, actual=actual, work=work.parent.parent/'boundary-source')
     ending = ending_audio_evidence(Path(segments.get('video_path') or video), doc, segments,
         actual, work.parent.parent/'ending-source')
-    tail = tail_audio_evidence(audio, str(segments.get('transcript_language') or ''), work/'tail')
+    blocking_audio = [i for i in machine_issues if i.get('severity') != 'minor'
+                      and i['kind'] in {'audio', 'hook', 'cut'}]
+    tail = (tail_audio_evidence(audio, str(segments.get('transcript_language') or ''), work/'tail')
+            if any(i['end_s'] >= actual['duration_s'] - 8 for i in blocking_audio) else None)
     rechecks = recheck_audio_evidence(audio, str(segments.get('transcript_language') or ''),
-                                     machine_issues, work/'rechecks')
+                                     blocking_audio, work/'rechecks') if blocking_audio else []
     full_pass=actual
     actual=recover_measured_words(actual,[tail,*rechecks])
     machine_issues=timing_diagnostics(doc['caption_timing'],actual)
@@ -509,7 +527,8 @@ def review_render_output(video: Path, doc: dict, segments: dict, assets, speed: 
     prompt = language_instruction(segments) + REVIEW_INSTRUCTIONS + (
         '\nRequired checks: ' + ','.join(check_names) + '\n'
         + json.dumps(prompt_evidence, ensure_ascii=False, separators=(',', ':')))
-    raw = reviewer(prompt, images)
+    with processes.ai_lane('review'):
+        raw = reviewer(prompt, images)
     (work / 'opus-raw-0.txt').write_text(raw, encoding='utf-8')
     try:
         review = parse_review(raw, assets.total_s, check_names)
@@ -745,7 +764,7 @@ def require_approved_video(video, review, *, effect_required=True):
     expected = set(CHECKS) | (set(hook_effects.CHECKS) if effect_required else set())
     checks = review.get("checks", {}) if isinstance(review, dict) else {}
     if (not isinstance(review, dict) or review.get("passed") is not True
-            or review.get("review_version") not in {6, REVIEW_VERSION}
+            or review.get("review_version") not in {6, 7, REVIEW_VERSION}
             or review.get("issues") != [] or review.get("machine_issues") != []
             or not isinstance(checks, dict) or not expected <= set(checks)
             or any(not isinstance(checks[key], dict) or checks[key].get("verdict") != "pass"

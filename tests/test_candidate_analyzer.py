@@ -39,6 +39,28 @@ def test_selected_candidate_with_missing_evidence_is_rejected():
     with pytest.raises(ValueError, match="source evidence"):
         candidate_analyzer.candidate_segments({'segments': []}, candidate)
 
+
+def test_scripts_are_delivered_in_completion_order_but_results_keep_selection_order(monkeypatch):
+    from threading import Event
+    from reels_editor.jobs import ContentCandidate
+    release = Event()
+    candidates = [ContentCandidate(id=f'c{i}', content_type='story', title=f'title {i}',
+        summary='summary', takeaway='lesson', segment_ids=['s1']) for i in range(2)]
+    source = {'segments': [dict(id='s1', text='source', source_start_us=0, source_end_us=2_000_000)]}
+    def script(*_args, **kwargs):
+        if kwargs['fixed_title'] == 'title 0':
+            assert release.wait(3), 'callback waited for the slowest script'
+        return {'speaker': {'name': 'original'}}
+    monkeypatch.setattr(candidate_analyzer, 'generate_script', script)
+    seen = []
+    def completed(result):
+        seen.append(result.index)
+        release.set()
+    results = candidate_analyzer.generate_selected_candidates(source, candidates,
+        runner=lambda _: '', on_completed=completed)
+    assert seen == [1, 0]
+    assert [result.index for result in results] == [0, 1]
+
 import json
 
 from reels_editor import candidate_analyzer

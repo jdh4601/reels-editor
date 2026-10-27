@@ -27,6 +27,34 @@ def test_captions_use_measured_words_and_do_not_allocate_time_by_character_count
     assert render.caption_groups(doc,segments,1) == [[.2,2.4,'고객은 더 나은'],[2.4,3.4,'제품을 원합니다']]
 
 
+@pytest.mark.parametrize('language,text', [('ko', '고객은 더 나은 제품을 원합니다.'),
+    ('en', 'Customers want better products.'), ('zh', '客户希望得到更好的产品。')])
+def test_index_only_alignment_preserves_frozen_translation(monkeypatch, tmp_path, language, text):
+    doc, segments, plan = fixture()
+    segments['output_language'] = language
+    doc['subtitle_translations']['s1'] = text
+    tokens = timing.frozen_caption_tokens(doc, segments)
+    assert ''.join(tokens) == text
+    monkeypatch.setattr(timing, 'extract_audio', lambda *_a, **_k: tmp_path/'audio.wav')
+    monkeypatch.setattr(timing, 'transcribe_audio', lambda *_a, **_k: {
+        'words': plan['words'], 'audio_sha256': 'actual-audio'})
+    from reels_editor import hook_effects
+    monkeypatch.setattr(hook_effects, 'prepare', lambda doc, *_a, **_k: doc)
+    def runner(prompt):
+        assert 'FROZEN_TOKENS' in prompt
+        return json.dumps({'captions': [{'end_token': len(tokens)-1, 'end_word': 3,
+                                         'text': 'invented translation must be ignored'}]})
+    result = timing.prepare_caption_timing(tmp_path/'source.mp4', doc, segments, 1, tmp_path, runner=runner)
+    assert result['subtitle_translations'] == doc['subtitle_translations']
+    assert result['caption_timing']['captions'][0]['text'] == text
+
+
+@pytest.mark.parametrize('end', [-1, 99, 1.5, True])
+def test_frozen_caption_rejects_invalid_boundary(end):
+    with pytest.raises(ValueError, match='token boundary'):
+        timing.materialize_caption_plan({'captions': [{'end_token': end, 'end_word': 1}]}, ['hello ', 'world'])
+
+
 @pytest.mark.parametrize('mutation', ['word_gap','duplicate','fabricate','omit','stale','too_fast','nan'])
 def test_rejects_unverified_or_stale_timing(mutation):
     doc, segments, plan = fixture()

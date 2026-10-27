@@ -19,6 +19,8 @@ source_context는 원본 좌표다. source_to_reel_timeline으로 변환하고 �
 {"checks":{필수항목:{"verdict":"pass|fail|uncertain","evidence":"관측 근거"}},
 "issues":[{"kind":"timing|translation|cut|layout|audio|hook","severity":"major|minor",
 "start_s":0,"end_s":1,"evidence":"구체적인 시간/원문/화면 근거","correction":"수정 요구"}]}.
+시간은 원본 좌표가 아닌 최종 릴스의 초 단위 숫자로 0 <= start_s < end_s <= final_audio.duration_s를 사용한다.
+한 프레임 관측은 해당 시각 앞뒤 약 0.04초 범위로 기록한다. 선택적 경고에도 evidence와 correction을 적는다.
 repair_focus가 있으면 이전 중대 결함의 해결 여부를 중심으로 재검수하라. 전체 번역과 프로그램 검사 근거에서 새 중대 결함도 확인하라.
 fail은 major 결함에만 사용한다. 관측 한계만 있으면 uncertain과 minor issue로 기록한다.
 '''

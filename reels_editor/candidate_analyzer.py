@@ -6,7 +6,7 @@ from reels_editor.languages import language_instruction, output_language, transl
 import json
 import re
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -163,6 +163,7 @@ def generate_selected_candidates(
     runner: Callable[[str], str],
     raw_dump_dir: Path | None = None,
     speed: float = 1.2,
+    on_completed: Callable[[StorylineResult], None] | None = None,
 ) -> list[StorylineResult]:
     """Create one independently validated EDL for every selected candidate."""
     if not candidates:
@@ -189,9 +190,19 @@ def generate_selected_candidates(
                 index, label, None, f"Script generation failed: {exc}", title=candidate.title
             )
 
+    results = []
     with ThreadPoolExecutor(max_workers=len(candidates)) as executor:
-        results = list(executor.map(one, enumerate(candidates)))
-    harmonize_speaker_metadata(results)
+        futures = [executor.submit(one, item) for item in enumerate(candidates)]
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
+            if on_completed is not None:
+                on_completed(result)
+    results.sort(key=lambda result: result.index)
+    # Streaming consumers own each completed document. Do not mutate a speaker
+    # underneath an already running render; its own identity check still runs.
+    if on_completed is None:
+        harmonize_speaker_metadata(results)
     return results
 
 

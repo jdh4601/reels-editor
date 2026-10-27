@@ -12,6 +12,10 @@ The desktop app and `reels-editor render` use `JobService` without loading anoth
 
 `caption_timing.py` extracts the selected speech with the same audio recipe used by rendering. A local MLX Whisper worker measures words. The alignment model maps semantic caption units to measured word indices. Code rejects missing or duplicate text, stale signatures, unsupported timings, excessive reading speed and overlapping cues. Character-count proportional timing is not accepted.
 
+Alignment receives frozen translation tokens and returns token/word end indices and bounded holds. Display text and consecutive start indices are reconstructed locally, so the timing response cannot rewrite the translation. Legacy text-based plans remain validated for complete, unchanged content. Korean, English and Chinese use the same preservation contract.
+
+Completed scripts stream into up to two rendering workers without waiting for the slowest script. Selected order and completed rows remain stable. Generation and final review have separate single-request AI queues and Codex slots, sharing the same cancellation and usage-limit circuit. A quota failure stops new requests in both queues; requests already in flight may finish. Optional render endings are concatenated in the final filter graph before a single encode, including for legacy cached render assets.
+
 `hook_effects.py` selects an eligible emphasis word in the opening three seconds. It preserves ASR timing and any bounded waveform-onset refinement. The effect zooms to 130% over 0.1 seconds, holds for 0.65 seconds and returns over 0.18 seconds. The packaged 320 ms procedural wind sound is aligned by its peak. Video overlays remain fixed.
 
 ## Independent final review
@@ -24,9 +28,11 @@ Required checks are:
 - `hook_audio`, `hook_caption`, `readability`, `framing`
 - `hook_zoom`, `hook_whoosh`
 
-Every check needs concrete evidence and a `pass` verdict. Missing, malformed, failed or uncertain checks cannot approve output. The model cannot override programmatic defects. Review input includes actual image bytes; mutation tools and user MCP servers are disabled. The reviewer does not directly hear audio, and ASR time estimates are not a guarantee of perceptual accuracy.
+Every required check needs concrete evidence. Substantiated major defects block output; explicit minor findings remain warnings, with original advisory verdicts retained. Missing checks, unexplained failures and malformed evidence cannot approve output. A sampled-frame observation may use a single timestamp: the parser preserves it and expands it by up to 40 ms on either side within the video. Reversed or out-of-range timestamps still fail. The reviewer does not directly hear audio, and ASR time estimates are not a guarantee of perceptual accuracy.
 
-Failed review can trigger at most two Codex repair cycles per run. Changes are source-grounded, retimed, rerendered and reviewed again. Old repair feedback is reusable only when the actual render recipe matches. Retry retains the latest valid script and prior attempt evidence; it does not fabricate an approval.
+Failed review can trigger at most one repair cycle per run. Changes are source-grounded, retimed, rerendered and reviewed again. Old repair feedback is reusable only when both the review policy version and actual render recipe match. Retry retains the latest valid script and prior attempt evidence; it does not fabricate an approval.
+
+Review version 8 treats isolated ASR boundary-word disagreement as uncertainty, preserving it for independent semantic review rather than treating text mismatch as proof of missing speech. Broad word loss (matching coverage below 85%), large measured timing errors, silent/clipped audio and independently identified material defects continue to block. Tail/window ASR runs only for blocking audio diagnostics. Identical final WAV hashes and languages share an ASR cache across repair attempts; changed audio is transcribed again. Final MP4 checks and independent visual review still run for every changed video. Previously approved version 6/7 videos remain exportable only under the same complete checks and exact-byte hash contract.
 
 ## Completion, edits and exports
 

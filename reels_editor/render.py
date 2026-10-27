@@ -976,7 +976,8 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
                            subtitles_enabled: bool,
                            speaker_text: str = "",
                            title_upper: str | None = None,
-                           title_lower: str | None = None) -> Path:
+                           title_lower: str | None = None,
+                           outro: dict | None = None) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     title_png = render_title_png(
         title_text,
@@ -1019,6 +1020,11 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
         if hook_effects.file_hash(Path(effect["sound_path"])) != effect["sound_sha256"]:
             raise ValueError("The opening sound file has changed.")
         args += ["-i", effect["sound_path"]]
+    outro_input = sound_input + bool(effect)
+    if outro:
+        duration = outro['duration_s']
+        args += ['-loop', '1', '-t', str(duration), '-i', str(outro['image']),
+                 '-i', str(outro['audio'])]
     tmp = out_path.with_name(f".{out_path.stem}.part{out_path.suffix}")
     if single_pass:
         base_filter = reposition_video_filter(
@@ -1029,20 +1035,26 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
         audio_filter = (hook_effects.audio_filter(effect, sound_input, _REEL_AUDIO_FILTER)
                         if effect else f"[a]{_REEL_AUDIO_FILTER}[aout]")
         full_filter = f"{base_filter};{filt2};{last}format=yuv420p[vout];{audio_filter}"
-        args += [
-            "-filter_complex", full_filter,
-            "-map", "[vout]",
-            "-map", "[aout]",
-        ]
     else:
-        full_filter = f"{filt2};[0:a]{_REEL_AUDIO_FILTER}[aout]"
-        args += ["-filter_complex", full_filter, "-map", last, "-map", "[aout]"]
+        full_filter = f"{filt2};{last}format=yuv420p[vout];[0:a]{_REEL_AUDIO_FILTER}[aout]"
+    if outro:
+        # Join the branded ending before the one and only final encode. The
+        # body filters and ending audio gain remain independently configured.
+        full_filter = full_filter.replace('[vout]', '[body_v]').replace('[aout]', '[body_a]')
+        full_filter += (
+            ';[body_v]fps=30,setsar=1,setpts=PTS-STARTPTS[body_v0]'
+            ';[body_a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS[body_a0]'
+            f';[{outro_input}:v]fps=30,setsar=1,format=yuv420p,trim=duration={duration},setpts=PTS-STARTPTS[end_v]'
+            f';[{outro_input+1}:a]{outro["audio_filter"]},apad,atrim=duration={duration},'
+            'aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS[end_a]'
+            ';[body_v0][body_a0][end_v][end_a]concat=n=2:v=1:a=1[vout][aout]')
+    args += ['-filter_complex', full_filter, '-map', '[vout]', '-map', '[aout]']
     audio_args = ["-c:a", "aac", "-b:a", "192k", str(tmp)]
     try:
         _encode_video(
             args,
             audio_args,
-            total_s=assets.total_s,
+            total_s=assets.total_s + (outro['duration_s'] if outro else 0),
         )
         os.replace(tmp, out_path)
         hook_effects.write_receipt(out_path, assets)

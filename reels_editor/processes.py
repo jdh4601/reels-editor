@@ -14,6 +14,22 @@ from typing import Any
 
 
 _CURRENT: ContextVar[ProcessRegistry | None] = ContextVar("reels_process_registry", default=None)
+_AI_LANE: ContextVar[str] = ContextVar("reels_ai_lane", default="generation")
+
+
+def current_ai_lane() -> str:
+    return _AI_LANE.get()
+
+
+@contextlib.contextmanager
+def ai_lane(lane: str):
+    if lane not in {'generation', 'review'}:
+        raise ValueError('Unknown AI queue')
+    token = _AI_LANE.set(lane)
+    try:
+        yield
+    finally:
+        _AI_LANE.reset(token)
 
 
 class AIUsageLimitError(RuntimeError):
@@ -50,7 +66,7 @@ class ProcessRegistry:
         self._lock = threading.RLock()
         self._processes: set[subprocess.Popen] = set()
         self._cancelled = threading.Event()
-        self._ai_lock = threading.Lock()
+        self._ai_locks = {lane: threading.Lock() for lane in ('generation', 'review')}
         self._ai_limit = None
 
     def check_ai_available(self):
@@ -59,8 +75,9 @@ class ProcessRegistry:
 
     @contextlib.contextmanager
     def ai_request(self):
-        # Serialize AI calls inside one job, including visual review and lookup.
-        while not self._ai_lock.acquire(timeout=0.1):
+        # One request per lane; both share cancellation and the quota circuit.
+        lock = self._ai_locks[current_ai_lane()]
+        while not lock.acquire(timeout=0.1):
             if self.cancelled:
                 raise RuntimeError('job was cancelled')
             self.check_ai_available()
@@ -68,7 +85,7 @@ class ProcessRegistry:
             self.check_ai_available()
             yield
         finally:
-            self._ai_lock.release()
+            lock.release()
 
     @property
     def cancelled(self) -> bool:

@@ -2194,6 +2194,33 @@ def test_layout_repair_overrides_legacy_absolute_subtitle_position(tmp_path):
     assert styles[1].sub_y is None and styles[1].sub_y_frac==.9
 
 
+def test_completed_script_renders_before_slow_script_and_preserves_ready_row(tmp_path):
+    from threading import Event
+    calls = Calls()
+    deps = _deps(tmp_path, calls)
+    rendered = Event()
+    service = JobService(store=JobStore(tmp_path/'jobs'), deps=deps)
+    original_render = service._render_storyline_with_registry
+    def render(*args):
+        original_render(*args)
+        rendered.set()
+    service._render_storyline_with_registry = render
+    def generate(segments, candidates, **kwargs):
+        results = deps.generate_selected_candidates(segments, candidates, **kwargs)
+        kwargs['on_completed'](results[1])
+        assert rendered.wait(3), 'completed script was held behind the unfinished script'
+        interim = service.store.current_job()
+        assert interim.storylines[0].status is Status.GENERATING
+        assert interim.storylines[1].status is Status.READY
+        kwargs['on_completed'](results[0])
+        return results
+    service.deps = replace(deps, generate_selected_candidates=generate)
+    job = _run_ready(service, candidate_count=2)
+    assert job.status is Status.READY
+    assert [story.id for story in job.storylines] == ['s1', 's2']
+    assert all(story.status is Status.READY for story in job.storylines)
+
+
 def test_retry_recovers_valid_checkpoint_when_older_job_omitted_paths(tmp_path):
     calls = Calls()
     deps = replace(_deps(tmp_path, calls), repair_document=lambda doc, *_a, **_k: doc,
@@ -2213,7 +2240,7 @@ def test_retry_recovers_valid_checkpoint_when_older_job_omitted_paths(tmp_path):
     assert Path(retried.storylines[0].edl_path) == checkpoint
 
 
-@pytest.mark.parametrize('changed_plan', [None, 'caption', 'hook'])
+@pytest.mark.parametrize('changed_plan', [None, 'caption', 'hook', 'policy'])
 def test_retry_uses_saved_review_only_for_exact_recipe_and_keeps_one_repair_limit(tmp_path, changed_plan):
     from reels_editor import caption_timing, edl, quality_review
     calls = Calls()
@@ -2247,7 +2274,12 @@ def test_retry_uses_saved_review_only_for_exact_recipe_and_keeps_one_repair_limi
         review_render_output=review))
     job = _run_ready(service, candidate_count=1)
     assert job.status is Status.FAILED and len(feedbacks) == 1
-    if changed_plan:
+    if changed_plan == 'policy':
+        for path in review_paths:
+            report = json.loads(path.read_text())
+            report['review_version'] = 7
+            path.write_text(json.dumps(report))
+    elif changed_plan:
         checkpoint=Path(job.storylines[0].edl_path)
         doc=json.loads(checkpoint.read_text())
         if changed_plan=='caption':

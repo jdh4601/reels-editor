@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import base64
 import binascii
 import io
@@ -2224,51 +2225,53 @@ class JobService:
             with use_process_registry(registry):
                 return runner(prompt)
 
-        results = self.deps.generate_selected_candidates(
-            segments,
-            selected_candidates,
-            runner=managed_runner,
-            raw_dump_dir=work,
-            speed=speed,
-        )
-        # 의존성을 대체한 호출 경로까지 포함해 렌더 직전 한 번 더 정규화한다.
-        # 함수는 멱등이므로 기본 candidate_analyzer 경로와 중복 호출해도 안전하다.
-        self.deps.enrich_speakers(results, segments, cache_path=work / "speaker_lookup.json")
-        self._raise_if_cancelled(job_id)
-        harmonize_speaker_metadata(results)
+        # Register stable selected-order rows before streaming completions. A
+        # later script must never replace a row already being rendered.
         with self._lock:
-            job = self.store.load(job_id)
-            if self._is_cancelled(job_id) or job.status is Status.CANCELLED:
-                return
-            job.storylines = [self._storyline_from_result(result) for result in results]
-            if all(result.doc is None for result in results):
-                job.status = Status.FAILED
-                job.phase = "failed"
-                job.progress = 1.0
-                job.error = _failure_summary("Script generation failed for every selected candidate.", job.storylines)
-                job.message = job.error
-                self._save(job)
-                return
-            job.status = Status.RENDERING_BASE
-            job.phase = "rendering"
-            job.progress = 0.28
-            job.message = f"Rendering {job.n_storylines} selected reels."
-            self._save(job)
-
-        alive = [result for result in results if result.doc is not None]
+            current = self.store.load(job_id)
+            current.storylines = [self._storyline_from_result(StorylineResult(
+                i, candidate.content_type, {}, title=candidate.title))
+                for i, candidate in enumerate(selected_candidates)]
+            self._save(current)
+        submitted = set()
+        render_futures = []
         with ThreadPoolExecutor(max_workers=MAX_BASE_RENDERS) as executor:
-            list(executor.map(
-                lambda result: self._render_storyline_with_registry(
-                    registry,
-                    job_id,
-                    result,
-                    segments,
-                    video,
-                    style,
-                    speed,
-                ),
-                alive,
-            ))
+            def completed(result):
+                self._raise_if_cancelled(job_id)
+                with self._lock:
+                    if result.index in submitted:
+                        return
+                    submitted.add(result.index)
+                    current = self.store.load(job_id)
+                    if self._is_cancelled(job_id) or current.status is Status.CANCELLED:
+                        return
+                    current.storylines[result.index] = self._storyline_from_result(result)
+                    if result.doc is not None:
+                        current.status = Status.RENDERING_BASE
+                        current.phase = "rendering"
+                        current.progress = max(current.progress, 0.28)
+                        current.message = "Rendering completed scripts while remaining scripts are generated."
+                    self._save(current)
+                if result.doc is not None:
+                    render_futures.append(executor.submit(self._render_storyline_with_registry,
+                        registry, job_id, result, segments, video, style, speed))
+
+            generate = self.deps.generate_selected_candidates
+            parameters = inspect.signature(generate).parameters
+            streaming = ('on_completed' in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()))
+            options = dict(runner=managed_runner, raw_dump_dir=work, speed=speed)
+            if streaming:
+                options['on_completed'] = completed
+            results = generate(segments, selected_candidates, **options)
+            # Older dependency adapters can still return a complete batch.
+            if not submitted:
+                self.deps.enrich_speakers(results, segments, cache_path=work / "speaker_lookup.json")
+                harmonize_speaker_metadata(results)
+            for result in results:
+                completed(result)
+            for future in render_futures:
+                future.result()
 
         with self._lock:
             job = self.store.load(job_id)

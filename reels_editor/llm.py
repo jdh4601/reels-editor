@@ -21,6 +21,7 @@ TIMEOUT_S = 600
 # Candidate scripts, topic reviews and speaker lookups share the same Codex
 # account. Hold the slot through backoff so queued work cannot amplify a 429.
 _CODEX_SLOT = threading.BoundedSemaphore(1)
+_CODEX_REVIEW_SLOT = threading.BoundedSemaphore(1)
 _REVIEW_SLOT = threading.BoundedSemaphore(1)
 PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "openai": ("https://api.openai.com/v1", "gpt-4o"),
@@ -75,6 +76,7 @@ def claude_cli_args(model: str) -> list[str]:
     return args
 
 
+@processes.ai_lane('review')
 def run_opus_review(prompt: str, images: list[Path]) -> str:
     """Send actual images to Opus; no file/code tools or inherited project setup."""
     content = [{"type": "text", "text": prompt}]
@@ -214,7 +216,8 @@ def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str]
             if registry is not None and registry.cancelled:
                 raise RuntimeError("job was cancelled")
 
-        while not _CODEX_SLOT.acquire(timeout=0.1):
+        slot = _CODEX_REVIEW_SLOT if processes.current_ai_lane() == 'review' else _CODEX_SLOT
+        while not slot.acquire(timeout=0.1):
             check_cancelled()
         try:
             for retry in range(2):
@@ -232,7 +235,7 @@ def _codex_cli_runner(model: str, *, web_search: bool = False) -> Callable[[str]
                         time.sleep(0.1)
             raise AssertionError("unreachable")
         finally:
-            _CODEX_SLOT.release()
+            slot.release()
     return run
 
 

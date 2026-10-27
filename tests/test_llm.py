@@ -414,6 +414,26 @@ def test_codex_slots_are_shared_by_separate_runners_and_released_on_failure(monk
         assert other.result(timeout=3) == 'OK'
 
 
+def test_codex_review_slot_does_not_wait_for_generation_slot(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from reels_editor import llm, processes
+    generation, review = threading.Event(), threading.Event()
+    def fake_run(args, **kwargs):
+        lane = processes.current_ai_lane()
+        (generation if lane == 'generation' else review).set()
+        assert generation.wait(2) and review.wait(2)
+        return subprocess.CompletedProcess(args, 0, 'OK', '')
+    monkeypatch.setattr(llm.processes, 'run', fake_run)
+    runner = build_runner(AppConfig(provider='codex-cli'))
+    def request(lane):
+        with processes.ai_lane(lane):
+            return runner(lane)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(request, 'generation')
+        second = pool.submit(request, 'review')
+        assert first.result(timeout=3) == second.result(timeout=3) == 'OK'
+
+
 def test_codex_backoff_can_be_cancelled(monkeypatch):
     from reels_editor import llm, processes
     registry = processes.ProcessRegistry()

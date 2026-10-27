@@ -68,6 +68,90 @@ def test_malformed_expensive_review_is_not_sent_twice(monkeypatch, tmp_path):
     assert len(calls) == 1
 
 
+def test_isolated_asr_disagreement_warns_without_audio_rechecks_or_repair(monkeypatch, tmp_path):
+    video, doc, segments, assets, actual = setup_review(monkeypatch, tmp_path)
+    # Twenty matching words and one contraction disagreement: high coverage
+    # does not prove that the changed word was physically cut out of the audio.
+    words = [dict(word=f'word{i}', start=.1+i*.15, end=.2+i*.15, probability=.99)
+             for i in range(21)]
+    doc['caption_timing']['words'] = deepcopy(words)
+    doc['caption_timing']['captions'] = [dict(text=doc['subtitle_translations']['s1'],
+                                             start_word=0, end_word=20)]
+    actual['words'] = deepcopy(words)
+    actual['words'][0]['word'] = "It's"
+    assets.groups = caption_timing.plan_groups(doc['caption_timing'], doc, segments, 1)
+    monkeypatch.setattr(quality_review, 'tail_audio_evidence', lambda *_: pytest.fail('unnecessary tail ASR'))
+    monkeypatch.setattr(quality_review, 'recheck_audio_evidence', lambda *_: pytest.fail('unnecessary window ASR'))
+    calls = []
+    def reviewer(*_):
+        calls.append(1)
+        return json.dumps(passed())
+    result = quality_review.review_render_output(video, doc, segments, assets, 1, 'title', tmp_path/'review',
+                                                reviewer=reviewer)
+    assert result['passed'] is True and result['machine_issues'] == []
+    assert any('경계 단어' in i['evidence'] for i in result['warnings'])
+    assert len(calls) == 1
+
+
+def test_broad_asr_word_loss_still_blocks():
+    words = [dict(word=f'word{i}', start=i*.2, end=(i+1)*.2, probability=.99) for i in range(20)]
+    plan = {'words': words, 'captions': [dict(text='complete caption', start_word=0, end_word=19)]}
+    issues = quality_review.timing_diagnostics(plan, {'words': words[:10], 'duration_s': 4})
+    assert any(i['kind'] == 'audio' and i.get('severity') != 'minor' for i in issues)
+
+
+@pytest.mark.parametrize('severity', ['minor', 'major'])
+@pytest.mark.parametrize('at', [0, 2.4, 4])
+def test_point_observation_keeps_evidence_severity_and_original_time(severity, at):
+    review = passed()
+    review['issues'] = [dict(kind='layout', severity=severity, start_s=at, end_s=at,
+                            evidence='eye covered in sampled frame', correction='move caption')]
+    result = quality_review.parse_review(json.dumps(review), 4)
+    issue = result['issues'][0]
+    assert issue['observed_at_s'] == at
+    assert 0 <= issue['start_s'] < issue['end_s'] <= 4
+    assert issue['severity'] == severity and issue['evidence'] == review['issues'][0]['evidence']
+    from reels_editor.review_policy import prioritize_review
+    assert bool(prioritize_review(result)['issues']) == (severity == 'major')
+
+
+@pytest.mark.parametrize('start,end', [(3, 2), (-1, 1), (5, 5), (0, 8)])
+def test_invalid_ranges_still_reject_review(start, end):
+    review = passed()
+    review['issues'] = [dict(kind='layout', severity='minor', start_s=start, end_s=end,
+                            evidence='frame evidence', correction='adjust framing')]
+    with pytest.raises(ValueError, match='issue 0'):
+        quality_review.parse_review(json.dumps(review), 4)
+
+
+def test_layout_rerender_reuses_only_identical_final_audio_transcript(monkeypatch, tmp_path):
+    import wave
+    from pathlib import Path
+    from types import SimpleNamespace
+    video, doc, segments, assets, actual = setup_review(monkeypatch, tmp_path)
+    pcm = [b'\x01\x00' * 64_000]
+    def extract(_video, path, **_):
+        with wave.open(str(path), 'wb') as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16_000)
+            wav.writeframes(pcm[0])
+        return path
+    calls = []
+    def asr(args, **_):
+        calls.append(1)
+        Path(args[4]).write_text(json.dumps({'words': actual['words']}))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(quality_review, 'extract_audio', extract)
+    monkeypatch.setattr(quality_review, 'transcribe_audio', caption_timing.transcribe_audio)
+    monkeypatch.setattr(caption_timing.processes, 'run', asr)
+    for attempt in range(3):
+        if attempt == 2:
+            pcm[0] = b'\x02\x00' * 64_000
+        result = quality_review.review_render_output(video, doc, segments, assets, 1, 'title',
+            tmp_path/'quality'/f'attempt-{attempt}'/'review', reviewer=lambda *_: json.dumps(passed()))
+        assert result['passed'] is True
+    assert len(calls) == 2
+
+
 def test_compaction_removes_duplicate_words_but_preserves_original_evidence():
     words = [{'word': str(i), 'start': i/10, 'end': (i+1)/10, 'probability': .9} for i in range(200)]
     evidence = {'doc': {'cuts': [{'seg_ids': ['s1']}], 'caption_timing': {'words': words}},
@@ -135,6 +219,34 @@ def test_successful_source_mentioning_quota_does_not_trip_circuit(monkeypatch):
         processes.run(['codex', 'exec'])
 
 
+def test_generation_and_review_can_run_together_but_share_limit_circuit(monkeypatch):
+    registry = processes.ProcessRegistry()
+    generation, review = Event(), Event()
+    calls = []
+    def run(args, **_):
+        lane = processes.current_ai_lane()
+        calls.append(lane)
+        (generation if lane == 'generation' else review).set()
+        assert generation.wait(2) and review.wait(2), 'one AI lane blocked the other'
+        return subprocess.CompletedProcess(args, 0, 'ok', '')
+    monkeypatch.setattr(processes, '_run', run)
+    def request(lane):
+        with processes.use_process_registry(registry), processes.ai_lane(lane):
+            return processes.run(['codex', 'exec'])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(request, 'generation')
+        second = pool.submit(request, 'review')
+        first.result(timeout=3); second.result(timeout=3)
+    assert sorted(calls) == ['generation', 'review']
+    monkeypatch.setattr(processes, '_run', lambda *_, **__: subprocess.CompletedProcess(
+        ['claude'], 1, '', 'ERROR: 429 Too Many Requests'))
+    with pytest.raises(processes.AIUsageLimitError):
+        request('review')
+    monkeypatch.setattr(processes, '_run', lambda *_, **__: pytest.fail('quota circuit must cover both lanes'))
+    with pytest.raises(processes.AIUsageLimitError):
+        request('generation')
+
+
 def test_layout_repair_reuses_valid_timing_and_hook(monkeypatch, tmp_path):
     from test_hook_effects import prepared
     doc, segments = prepared(monkeypatch, tmp_path/'plan')
@@ -192,11 +304,12 @@ def test_echoed_source_cannot_trip_limit_when_actual_error_is_authentication():
     assert processes._limit_diagnostic(response) == ''
 
 
-def test_existing_strict_approval_remains_exportable_without_new_ai_call(monkeypatch, tmp_path):
+@pytest.mark.parametrize('version', [6, 7])
+def test_existing_strict_approval_remains_exportable_without_new_ai_call(monkeypatch, tmp_path, version):
     video, doc, segments, assets, _ = setup_review(monkeypatch, tmp_path)
     result = quality_review.review_render_output(video, doc, segments, assets, 1, 'title', tmp_path/'review',
                                                 reviewer=lambda *_: json.dumps(passed()))
-    result['review_version'] = 6
+    result['review_version'] = version
     quality_review.require_approved_video(video, result, effect_required=False)
 
 

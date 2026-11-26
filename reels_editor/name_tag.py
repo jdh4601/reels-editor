@@ -1,5 +1,6 @@
-"""Speaker name tag: a white box with the Korean name and role that slides in
-from the left two seconds into the reel and leaves two seconds later.
+"""Speaker name tag: a box with the Korean name and role (white text on black by
+default) that slides in from the left as the reel starts and leaves two seconds
+later.
 
 The tag only shows identity that is already grounded (``speaker`` in the EDL)
 or that a person typed in the app (``speaker_override``). It never invents a
@@ -11,13 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 from reels_editor.storyteller import format_speaker_label, normalize_speaker_data
 from reels_editor.style import StylePreset
-
-_WHITE = (255, 255, 255, 255)
-_BLACK = (0, 0, 0, 255)
 
 
 @dataclass(frozen=True)
@@ -71,11 +69,13 @@ def render_name_tag_png(tag: NameTag, style: StylePreset, out_path: Path) -> Pat
     pad_x, pad_y, gap = style.name_tag_pad_x, style.name_tag_pad_y, style.name_tag_line_gap
     width = max(right - left for left, _t, right, _b in boxes) + 2 * pad_x
     height = sum(bottom - top for _l, top, _r, bottom in boxes) + gap * (len(lines) - 1) + 2 * pad_y
-    img = Image.new("RGBA", (width, height), _WHITE)
+    box_color = ImageColor.getcolor(style.name_tag_box_color, "RGBA")
+    text_color = ImageColor.getcolor(style.name_tag_text_color, "RGBA")
+    img = Image.new("RGBA", (width, height), box_color)
     draw = ImageDraw.Draw(img)
     y = pad_y
     for (text, font), (left, top, _right, bottom) in zip(lines, boxes):
-        draw.text((pad_x - left, y - top), text, font=font, fill=_BLACK)
+        draw.text((pad_x - left, y - top), text, font=font, fill=text_color)
         y += bottom - top + gap
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path)

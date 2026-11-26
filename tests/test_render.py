@@ -894,7 +894,7 @@ def test_overlay_drops_speaker_under_title_and_adds_sliding_name_tag(
     graph = args[args.index("-filter_complex") + 1]
     assert title_speakers == [""]
     assert any(arg.endswith(".png") and "name-tag" in arg for arg in args)
-    assert "enable='between(t,2.000,4.300)'" in graph
+    assert "enable='between(t,0.000,2.300)'" in graph
 
 
 def test_variant_cache_key_changes_by_name_tag() -> None:

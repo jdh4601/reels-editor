@@ -48,8 +48,8 @@ watermark:
   episode_opacity: 255
   episode_gap: 18
   episode_y: -1000      # 에피소드 문구를 조금 아래로 이동, 캔버스 y=1460px
-name_tag:                # 화자 이름표: 2초에 왼쪽에서 들어와 2초 뒤 왼쪽으로 퇴장
-  font: Pretendard-SemiBold.otf   # 한글 이름(검은 글씨, 흰 박스)
+name_tag:                # 화자 이름표: 시작과 함께 왼쪽에서 들어와 2초에 왼쪽으로 퇴장
+  font: Pretendard-SemiBold.otf   # 한글 이름
   role_font: Pretendard-Medium.otf  # 직책 줄
   size: 46
   role_size: 34
@@ -58,7 +58,9 @@ name_tag:                # 화자 이름표: 2초에 왼쪽에서 들어와 2초
   line_gap: 10
   x: 48                 # 박스 왼쪽 끝, 캔버스 px
   y: 980                # 박스 위쪽 끝, 자막(중심 y=1170) 위
-  start_s: 2.0          # 슬라이드인 시작
+  box_color: "#000000"  # 검은 박스
+  text_color: "#FFFFFF" # 이름·직책 흰 글씨
+  start_s: 0.0          # 첫 프레임부터 슬라이드인
   hold_s: 2.0           # 이 시간 뒤 슬라이드아웃 시작
   slide_s: 0.3
 speed: 1.2

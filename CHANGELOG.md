@@ -6,7 +6,7 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
-- Speaker name tag: a white Pretendard box with the Korean name and role slides in from the left at 2 s and leaves at 4 s. App name/role edits are used as typed. The speaker line under the title is removed.
+- Speaker name tag: a black box with the Korean name and role in white Pretendard slides in from the left as the reel starts and leaves at 2 s. Styles can set `name_tag.box_color` and `name_tag.text_color` (`#RRGGBB`). App name/role edits are used as typed. The speaker line under the title is removed.
 - Scripts carry `speaker.name_ko`, a Hangul transliteration of the grounded name. Without one the tag keeps the source name; nothing is invented.
 - Candidate reels target 40 seconds. A body of 50 seconds or more (brand ending excluded) drops trailing complete segments, and a reel that still cannot fit is excluded with a stated reason.
 - Default subtitles are yellow (#FFD400) on the existing translucent black box.

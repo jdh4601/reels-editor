@@ -1,6 +1,7 @@
 """스타일 프리셋 로딩. 렌더가 참조하는 모든 시각 파라미터의 단일 출처."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -77,9 +78,11 @@ class StylePreset:
     name_tag_line_gap: int = 10
     name_tag_x: int = 48
     name_tag_y: int = 980
-    name_tag_start_s: float = 2.0
+    name_tag_start_s: float = 0.0
     name_tag_hold_s: float = 2.0
     name_tag_slide_s: float = 0.3
+    name_tag_box_color: str = "#000000"
+    name_tag_text_color: str = "#FFFFFF"
 
     def video_area(self) -> tuple[int, int]:
         return self.canvas[0], self.canvas[1] - self.top_bar - self.bottom_bar
@@ -112,6 +115,13 @@ def _asset(style_dir: Path, name: str | None) -> Path | None:
     if not p.is_file():
         raise FileNotFoundError(f"Missing style image: {p}")
     return p
+
+
+def _hex_color(value: object, key: str) -> str:
+    text = str(value)
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", text):
+        raise ValueError(f"{key} must be a hex color like #000000, got {value!r}")
+    return text.upper()
 
 
 def load_style(path: Path) -> StylePreset:
@@ -178,7 +188,9 @@ def load_style(path: Path) -> StylePreset:
         name_tag_line_gap=int(tag.get("line_gap", 10)),
         name_tag_x=int(tag.get("x", 48)),
         name_tag_y=int(tag.get("y", 980)),
-        name_tag_start_s=float(tag.get("start_s", 2.0)),
+        name_tag_start_s=float(tag.get("start_s", 0.0)),
         name_tag_hold_s=float(tag.get("hold_s", 2.0)),
         name_tag_slide_s=float(tag.get("slide_s", 0.3)),
+        name_tag_box_color=_hex_color(tag.get("box_color", "#000000"), "name_tag.box_color"),
+        name_tag_text_color=_hex_color(tag.get("text_color", "#FFFFFF"), "name_tag.text_color"),
     )

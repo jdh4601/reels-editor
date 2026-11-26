@@ -11,6 +11,7 @@ import typer
 from rich.console import Console
 from rich.progress import Progress
 
+from reels_editor.name_tag import resolve_name_tag
 from reels_editor import edl, export, render, thumbnail
 from reels_editor.config import AppConfig, load_config, merged_style
 from reels_editor.storyteller import StorylineResult
@@ -132,6 +133,7 @@ def render_combos(video: Path, segments: dict,
                     style,
                     output,
                     speaker_text=render.speaker_label(doc),
+                    name_tag=resolve_name_tag(None, doc.get("speaker")),
                 )
                 thumbnail.render_thumbnail(
                     assets, title_text=title["text"], style=style,

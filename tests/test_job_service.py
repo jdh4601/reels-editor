@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 import reels_editor.jobs.service as job_service_module
+from reels_editor.name_tag import NameTag
 from reels_editor.jobs import ContentCandidate, Job, JobService, JobServiceDeps, JobServiceError, JobStore, Status, Storyline, Variant
 from reels_editor import processes
 from reels_editor.render import RenderAssets
@@ -44,6 +45,7 @@ class Calls:
     base_episode_numbers: list[int | None] = field(default_factory=list)
     overlay_title_lines: list[tuple[str, str]] = field(default_factory=list)
     speaker_texts: list[str] = field(default_factory=list)
+    name_tags: list[Any] = field(default_factory=list)
     thumbnail_labels: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -163,6 +165,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
             str(_kwargs.get("title_lower", "")),
         ))
         calls.speaker_texts.append(str(_kwargs.get("speaker_text", "")))
+        calls.name_tags.append(_kwargs.get("name_tag"))
         calls.episode_texts.append(str(_kwargs["style"].episode_text))
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(f"{Path(_assets.base).read_text(encoding='utf-8')}:{title_text}:{subtitles_enabled}".encode())
@@ -211,7 +214,7 @@ def _deps(tmp_path: Path, calls: Calls, results: list[StorylineResult] | None = 
         generate_selected_candidates=lambda _segments, candidates, **_kwargs: _count_generate(
             calls,
             generated[:len(candidates)],
-            35,
+            40,
             len(candidates),
             _kwargs["speed"],
         ),
@@ -351,6 +354,7 @@ def test_job_service_harmonizes_grounded_speaker_role_before_render(tmp_path: Pa
         "히텐 샤 (Crazy Egg 창업자)",
         "히텐 샤 (Crazy Egg 창업자)",
     ]
+    assert calls.name_tags == [NameTag("히텐 샤", "Crazy Egg 창업자")] * 2
 
 
 def test_job_service_analyzes_ten_candidates_then_generates_only_selected(tmp_path: Path) -> None:
@@ -379,14 +383,14 @@ def test_job_service_analyzes_ten_candidates_then_generates_only_selected(tmp_pa
     assert calls.base == 2
 
 
-def test_job_service_uses_fixed_35_second_target(tmp_path: Path) -> None:
+def test_job_service_uses_fixed_40_second_target(tmp_path: Path) -> None:
     calls = Calls()
     service = JobService(store=JobStore(tmp_path / "jobs"), deps=_deps(tmp_path, calls))
 
     job = _run_ready(service)
 
-    assert job.duration_s == 35
-    assert calls.durations == [35]
+    assert job.duration_s == 40
+    assert calls.durations == [40]
 
 
 def test_job_service_notifies_after_candidates_and_final_renders(tmp_path: Path) -> None:
@@ -988,7 +992,7 @@ def test_youtube_job_downloads_source_and_reuses_existing_storyline_pipeline(tmp
     assert audio["downloaded_bytes"] == 81 * 1024 * 1024
     assert download_args["slow_snapshot"]["download_progress"]["component_fraction"] == 0.811
     assert "3KB/s · Transfer is slow" in download_args["slow_snapshot"]["message"]
-    assert calls.durations == [35]
+    assert calls.durations == [40]
     assert calls.base == 3
 
 
@@ -1959,6 +1963,7 @@ def test_metadata_edit_persists_and_survives_title_and_subtitle_changes(tmp_path
     assert (calls.generate, calls.base) == before[:2]
     assert calls.overlay == before[2] + 1
     assert calls.speaker_texts[-1] == "새 이름 (회사 CEO)"
+    assert calls.name_tags[-1] == NameTag("새 이름", "회사 CEO")
     assert calls.episode_texts[-1] == "Episode 15"
     assert calls.thumbnail_labels[-1] == ""
     assert Path(story.archive_path).read_bytes() == Path(story.active_variant_path).read_bytes()
@@ -1966,6 +1971,7 @@ def test_metadata_edit_persists_and_survives_title_and_subtitle_changes(tmp_path
     service.update_storyline_title(ready.id, "s1", "새로운 제목입니다")
     service.select_variant(ready.id, "s1", subtitles_on=False)
     assert calls.speaker_texts[-1] == "새 이름 (회사 CEO)"
+    assert calls.name_tags[-1] == NameTag("새 이름", "회사 CEO")
     assert calls.episode_texts[-1] == "Episode 15"
     assert calls.thumbnail_labels[-1] == ""
     service.generate_instagram_caption(ready.id, "s1")

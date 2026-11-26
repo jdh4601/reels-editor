@@ -851,3 +851,57 @@ def test_overlay_applies_current_layout_to_cached_assets(tmp_path, style_preset,
         assert abs((bbox[1] + bbox[3]) / 2 - 1170) <= 2
     assert old_subs[0].read_bytes() == old_bytes
     assert ':0:560:black' in fpath.read_text()
+
+
+def test_overlay_drops_speaker_under_title_and_adds_sliding_name_tag(
+        tmp_path: Path, style_preset, monkeypatch: pytest.MonkeyPatch) -> None:
+    from reels_editor.name_tag import NameTag
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    base_filter = tmp_path / "base-filter.txt"
+    base_filter.write_text("[0:v]null[v];[0:a]anull[a]", encoding="utf-8")
+    title = tmp_path / "title.png"
+    title.write_bytes(b"title")
+    assets = render.RenderAssets(
+        base=source, wm_png=tmp_path / "wm.png", sub_pngs=[], groups=[], work=tmp_path,
+        keywords=[], source=source, base_filter=base_filter, total_s=10.0,
+    )
+    title_speakers: list[str] = []
+
+    def fake_title(*_args, speaker_text: str = "", **_kwargs):
+        title_speakers.append(speaker_text)
+        return title
+
+    calls: dict[str, list[str]] = {}
+
+    def fake_ffmpeg(args: list[str]) -> None:
+        calls["args"] = args
+        Path(args[-1]).write_bytes(b"variant")
+
+    monkeypatch.setattr(render, "render_title_png", fake_title)
+    monkeypatch.setattr(render, "select_video_encoder", render._software_encoder)
+    monkeypatch.setattr(render, "_ffmpeg", fake_ffmpeg)
+
+    render.render_overlay_variant(
+        assets, title_text="새 제목", keyword="", style=style_preset,
+        out_path=tmp_path / "tagged.mp4", subtitles_enabled=False,
+        speaker_text="Eric Migicovsky (Pebble 창업자)",
+        name_tag=NameTag("에릭 미기코브스키", "YC 파트너"),
+    )
+
+    args = calls["args"]
+    graph = args[args.index("-filter_complex") + 1]
+    assert title_speakers == [""]
+    assert any(arg.endswith(".png") and "name-tag" in arg for arg in args)
+    assert "enable='between(t,2.000,4.300)'" in graph
+
+
+def test_variant_cache_key_changes_by_name_tag() -> None:
+    from reels_editor.name_tag import NameTag
+
+    base = dict(storyline_id="s1", title_text="A", subtitles_enabled=True, style_hash_value="style")
+    assert render.variant_cache_key(**base) != render.variant_cache_key(
+        **base, name_tag=NameTag("에릭 미기코브스키", ""))
+    assert render.variant_cache_key(**base, name_tag=NameTag("에릭", "")) != render.variant_cache_key(
+        **base, name_tag=NameTag("에릭", "YC 파트너"))

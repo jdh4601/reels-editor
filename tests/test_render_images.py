@@ -179,7 +179,7 @@ def test_subtitle_pngs_one_per_group_without_red_highlight(tmp_path: Path) -> No
     img = Image.open(paths[0]).convert("RGBA")
     colors = {c for _n, c in img.getcolors(maxcolors=1_000_000)}
     assert (255, 59, 48, 255) not in colors
-    assert (255, 255, 255, 255) in colors
+    assert (255, 212, 0, 255) in colors
 
 
 def test_long_subtitle_is_forced_to_one_safe_line(tmp_path: Path) -> None:

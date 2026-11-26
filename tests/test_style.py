@@ -12,7 +12,8 @@ def test_load_default_preset() -> None:
     assert s.canvas == (1080, 1920)
     assert s.title_highlight == "#F06400"
     assert s.title_color == "#F06400"
-    assert s.sub_highlight == "#FFFFFF"
+    assert s.sub_highlight == "#FFD400"
+    assert s.sub_color == "#FFD400"
     assert s.watermark_text == ""
     assert s.title_font.name == "NotoSansCJKsc-Regular.otf"
     assert s.title_upper_font.name == "NotoSansCJKsc-Regular.otf"

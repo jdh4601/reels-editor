@@ -32,6 +32,11 @@ DEFAULT_SPEED = 1.2
 MAX_RETRIES = 1
 LONG_REEL_DURATION_S = 60
 LONG_REEL_GRACE_S = 5
+# Candidate reels aim for 40 seconds; a finished body (brand ending excluded)
+# of 50 seconds or more is excluded instead of published long.
+CANDIDATE_TARGET_DURATION_S = 40
+CANDIDATE_EXCLUDE_DURATION_S = 50
+_HANGUL_NAME_RE = re.compile(r"[가-힣]+(?:[ ·][가-힣]+)*")
 # 서술형 종결어미. 완결된 문장보다 명사구가 텍스트 훅으로 더 강하게 읽힌다.
 _DECLARATIVE_ENDING_RE = re.compile(r"[다요죠][.!]?$")
 _CONTEXT_DEPENDENT_OPENER_RE = re.compile(
@@ -82,6 +87,7 @@ _SCHEMA = json.dumps({
                              "change": "…", "result": "…"}, "lens": "…"},
     "speaker": {
         "name": "화자 이름",
+        "name_ko": "name의 한글 표기(실제 이름을 음차, 근거 없는 이름은 빈 문자열)",
         "company": "근거에 직접 나온 기업명 또는 빈 문자열",
         "role": "창업자 또는 CEO 또는 빈 문자열",
         "alternate_role": "투자자/연쇄 창업가 등 근거에 직접 나온 대체 역할 또는 빈 문자열",
@@ -131,6 +137,7 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
             "- 선택한 클립에서 실제로 말하는 사람을 speaker에 적는다. 진행자보다 인터뷰 답변자를 우선한다.\n"
             "- 이름·기업·역할은 제공된 영상 맥락이나 SEGMENTS에서 직접 확인되는 정보만 쓴다.\n"
             "- 기업과 역할을 확인할 수 있으면 둘 다 반드시 채우고, evidence에는 그 기업명과 역할이 함께 드러난 원문을 인용한다.\n"
+            "- name_ko에는 name의 한글 표기를 쓴다. 외국 이름은 널리 쓰이는 한글 음차를 따르고, name이 비어 있으면 name_ko도 비운다.\n"
             "- 직책의 직접 근거가 없으면 name만 쓰고 company, role, alternate_role은 빈 문자열로 둔다.\n"
             "- 여러 게스트 중 실제 발언자를 구별할 수 없으면 개인 이름을 추측하지 말고 name을 빈 문자열로 둔다.\n"
         )
@@ -147,7 +154,13 @@ def build_prompt(segments: dict, duration_s: int, feedback: str | None,
         )
     )
     if not enforce_duration:
-        duration_rule = "길이 제한은 없다. 목표 시간을 맞추려고 발언을 늘리거나 자르지 말고, 한 주제를 완결한다."
+        duration_rule = (
+            f"완성 영상은 되도록 {CANDIDATE_TARGET_DURATION_S}초 이내로 끊는다"
+            f"(원본 기준 약 {round(CANDIDATE_TARGET_DURATION_S * speed)}초). "
+            f"문장을 끝맺기 위해 {CANDIDATE_TARGET_DURATION_S}초를 조금 넘는 것은 괜찮지만, "
+            f"최종 길이가 {CANDIDATE_EXCLUDE_DURATION_S}초 이상이면 이 릴스는 제외된다. "
+            "길이를 맞추려고 문장 중간을 자르거나 원문 순서를 바꾸지 않는다."
+        )
     return (template
             .replace("{speed}", str(speed))
             .replace("{duration_s}", str(duration_s))
@@ -233,6 +246,12 @@ def validate_and_normalize_title_candidates(doc: dict[str, Any]) -> list[str]:
     return errors
 
 
+def hangul_name(value: Any) -> str:
+    """Return a space-normalized all-Hangul name, or "" for anything else."""
+    text = " ".join(str(value or "").split())
+    return text if _HANGUL_NAME_RE.fullmatch(text) else ""
+
+
 def normalize_speaker_data(speaker: Any) -> dict[str, str]:
     """Normalize only identity data already present in a script/legacy EDL."""
     if isinstance(speaker, str):
@@ -263,6 +282,7 @@ def normalize_speaker_data(speaker: Any) -> dict[str, str]:
     if not alternate and not company and not canonical_role:
         alternate = _ALTERNATE_ROLES.get(role_key, "")
 
+    name_ko = hangul_name(speaker.get("name_ko")) or hangul_name(name)
     normalized = {
         "name": name,
         "company": company if canonical_role else "",
@@ -271,6 +291,8 @@ def normalize_speaker_data(speaker: Any) -> dict[str, str]:
     }
     if evidence:
         normalized["evidence"] = evidence
+    if name and name_ko:
+        normalized["name_ko"] = name_ko
     for key in ("source_url", "source_name", "checked_at", "identity_scope", "evidence_source"):
         if speaker.get(key):
             normalized[key] = str(speaker[key])
@@ -488,6 +510,8 @@ def generate_script(segments: dict, duration_s: int = 30,
                 errs.append(
                     f"Finished duration {actual_duration:.1f} seconds exceeds the maximum {maximum_s} seconds; use fewer source segments"
                 )
+        if not errs and not enforce_duration:
+            errs += _exclusion_errors(doc, segments, speed=speed)
         if not errs:
             doc.setdefault("selected_title", 0)
             return doc
@@ -606,13 +630,29 @@ def validate_caption_continuity(doc: dict[str, Any], segments: dict[str, Any]) -
     return errors
 
 
+def _exclusion_errors(doc: dict[str, Any], segments: dict[str, Any], *, speed: float) -> list[str]:
+    """Trim trailing complete segments under the exclusion line, or explain why not."""
+    limit = CANDIDATE_EXCLUDE_DURATION_S
+    if edl_mod.estimate_duration_s(doc, segments, speed) < limit:
+        return []
+    trim_overlong_edl(doc, segments, speed=speed, min_duration_s=0, maximum_s=limit - 0.05)
+    actual = edl_mod.estimate_duration_s(doc, segments, speed)
+    if actual < limit:
+        return []
+    return [
+        f"Finished duration {actual:.1f} seconds is {limit} seconds or longer "
+        "(brand ending excluded), so this reel is excluded; "
+        f"choose fewer complete source segments to stay near {CANDIDATE_TARGET_DURATION_S} seconds"
+    ]
+
+
 def trim_overlong_edl(
     doc: dict[str, Any],
     segments: dict[str, Any],
     *,
     speed: float,
     min_duration_s: int,
-    maximum_s: int,
+    maximum_s: float,
 ) -> bool:
     """Remove trailing cuts/segments until the generated duration fits."""
     while edl_mod.estimate_duration_s(doc, segments, speed) > maximum_s:

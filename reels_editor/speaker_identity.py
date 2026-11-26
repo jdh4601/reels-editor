@@ -18,7 +18,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from reels_editor.llm import build_speaker_search_runner
 from reels_editor.storyteller import (
-    StorylineResult, extract_json, format_speaker_label, normalize_speaker_data,
+    StorylineResult, extract_json, format_speaker_label, hangul_name, normalize_speaker_data,
     _speaker_evidence_supports_identity,
 )
 
@@ -282,6 +282,9 @@ def enrich_speakers(
                                 or format_speaker_label(speaker) == name):
                             raise ValueError("The source text does not support this person, organization and role.")
                         speaker["name"] = str(entry.get("display_name") or name).strip()
+                        display_ko = hangul_name(speaker["name"])
+                        if display_ko:
+                            speaker["name_ko"] = display_ko
                         speaker["source_name"] = source_name
                         speaker["source_url"] = url
                         speaker["checked_at"] = datetime.now(UTC).isoformat()

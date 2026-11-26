@@ -267,13 +267,14 @@ def test_selected_candidates_accept_18_second_clip_without_retry(segments, edl_d
     assert results[0].doc is not None, results[0].error
     assert edl.estimate_duration_s(results[0].doc, segments, 1.0) == 18
     assert len(calls) == 1
-    assert "길이 제한은 없다" in calls[0]
+    assert "되도록 40초 이내" in calls[0]
+    assert "50초 이상이면 이 릴스는 제외" in calls[0]
 
 
 import pytest
 
 
-@pytest.mark.parametrize("duration", [15, 18, 49, 50])
+@pytest.mark.parametrize("duration", [15, 18, 45, 49])
 def test_selected_candidate_duration_boundaries(segments, edl_doc, duration):
     from copy import deepcopy
     from reels_editor.jobs.models import ContentCandidate
@@ -290,8 +291,8 @@ def test_selected_candidate_duration_boundaries(segments, edl_doc, duration):
     assert edl.estimate_duration_s(result.doc, source, 1.0) == duration
 
 
-@pytest.mark.parametrize("duration", [14, 14.5, 51, 75])
-def test_selected_candidate_has_no_duration_rejection_or_trimming(segments, edl_doc, duration):
+@pytest.mark.parametrize("duration", [14, 14.5, 44, 49.9])
+def test_selected_candidate_under_fifty_seconds_is_not_rejected_or_trimmed(segments, edl_doc, duration):
     from copy import deepcopy
     from reels_editor.jobs.models import ContentCandidate
     from reels_editor import edl
@@ -307,3 +308,37 @@ def test_selected_candidate_has_no_duration_rejection_or_trimming(segments, edl_
     assert result.doc is not None, result.error
     assert edl.estimate_duration_s(result.doc, source, 1.0) == duration
     assert result.doc['cuts'] == doc['cuts']
+
+
+def test_selected_candidate_at_fifty_seconds_drops_trailing_complete_segment(segments, edl_doc):
+    from copy import deepcopy
+    from reels_editor.jobs.models import ContentCandidate
+    from reels_editor import edl
+    source = deepcopy(segments)
+    source["segments"][1]["source_end_us"] = 30 * 1_000_000
+    source["segments"][2]["source_start_us"] = 30 * 1_000_000
+    source["segments"][2]["source_end_us"] = 55 * 1_000_000
+    candidate = ContentCandidate(id="c1", content_type="strategy", title=TOPICS[0],
+                                 summary="요약", takeaway="교훈", segment_ids=["t1", "t2"])
+    result = candidate_analyzer.generate_selected_candidates(source, [candidate],
+        runner=lambda _p: json.dumps(edl_doc, ensure_ascii=False), speed=1.0)[0]
+    assert result.doc is not None, result.error
+    assert edl.estimate_duration_s(result.doc, source, 1.0) == 25
+
+
+@pytest.mark.parametrize("duration", [50, 51, 75])
+def test_selected_candidate_fifty_seconds_or_longer_is_excluded_with_reason(segments, edl_doc, duration):
+    from copy import deepcopy
+    from reels_editor.jobs.models import ContentCandidate
+    source = deepcopy(segments)
+    source["segments"][1]["source_start_us"] = 0
+    source["segments"][1]["source_end_us"] = duration * 1_000_000
+    doc = deepcopy(edl_doc)
+    doc["cuts"] = [{"beat": "완결된 답", "seg_ids": ["t1"]}]
+    candidate = ContentCandidate(id="c1", content_type="strategy", title=TOPICS[0],
+                                 summary="요약", takeaway="교훈", segment_ids=["t1"])
+    result = candidate_analyzer.generate_selected_candidates(source, [candidate],
+        runner=lambda _p: json.dumps(doc, ensure_ascii=False), speed=1.0)[0]
+    assert result.doc is None
+    assert "50 seconds or longer" in result.error
+    assert "excluded" in result.error

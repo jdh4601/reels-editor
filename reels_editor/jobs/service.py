@@ -23,6 +23,7 @@ from typing import Any, Callable
 from reels_editor import processes
 from reels_editor import candidate_analyzer, edl, export, instagram_caption, render, speaker_identity, source_cache, thumbnail, title_suggestion, youtube
 from reels_editor import founder_photos, speaker_focus
+from reels_editor.name_tag import NameTag, resolve_name_tag
 from reels_editor import caption_timing, quality_review, hook_effects
 from PIL import Image, ImageOps, UnidentifiedImageError
 from reels_editor.topic_edges import trim_topic_edges
@@ -809,6 +810,10 @@ class JobService:
             return f"{name} ({role})" if role else name
         return render.speaker_label(doc)
 
+    @staticmethod
+    def _name_tag(story: Storyline, doc: dict[str, Any]) -> NameTag | None:
+        return resolve_name_tag(story.speaker_override, doc.get("speaker"))
+
     def update_storyline_title(
         self,
         job_id: str,
@@ -888,6 +893,7 @@ class JobService:
                     speaker_text=speaker_text,
                     title_upper=normalized_upper,
                     title_lower=normalized_lower,
+                    name_tag=self._name_tag(story, doc),
                 )
                 out = Path(story.assets_path or "").parent.parent / f"{key}.mp4"
                 if not out.is_file():
@@ -905,6 +911,7 @@ class JobService:
                             speaker_text=speaker_text,
                             title_upper=normalized_upper,
                             title_lower=normalized_lower,
+                            name_tag=self._name_tag(story, doc),
                         )
                         if not render_tmp.is_file():
                             raise JobServiceError("overlay renderer produced no MP4")
@@ -2724,12 +2731,14 @@ class JobService:
                 speaker = self._speaker_text(story, result.doc)
                 key = render.variant_cache_key(storyline_id=story_id, title_text=title, subtitles_enabled=True,
                     style_hash_value=f'{render.style_hash(style)}-{_assets_fingerprint(assets_path, assets)}',
-                    speaker_text=speaker, title_upper=upper, title_lower=lower)
+                    speaker_text=speaker, title_upper=upper, title_lower=lower,
+                    name_tag=self._name_tag(story, result.doc))
                 out = sdir / f'{key}.mp4'
                 self._set_storyline_render_progress(job_id, story_id, progress=0.78,
                     status=Status.RENDERING_OVERLAY, detail='Encoding the final video with title and subtitles.')
                 self.deps.render_overlay_variant(assets, title_text=title, keyword='', style=style,
-                    out_path=out, subtitles_enabled=True, speaker_text=speaker, title_upper=upper, title_lower=lower)
+                    out_path=out, subtitles_enabled=True, speaker_text=speaker, title_upper=upper, title_lower=lower,
+                    name_tag=self._name_tag(story, result.doc))
                 self.deps.verify_render_output(out, style.canvas, assets.total_s)
                 stage = 'Final Opus video and hook review'
                 self._set_storyline_render_progress(job_id, story_id, progress=0.94,
@@ -2871,6 +2880,7 @@ class JobService:
             speaker_text=speaker_text,
             title_upper=title_upper,
             title_lower=title_lower,
+            name_tag=self._name_tag(story, doc),
         )
         out = Path(story.assets_path).parent.parent / f"{key}.mp4"
         if not out.is_file():
@@ -2884,6 +2894,7 @@ class JobService:
                 speaker_text=speaker_text,
                 title_upper=title_upper,
                 title_lower=title_lower,
+                name_tag=self._name_tag(story, doc),
             )
         if not thumbnail.thumbnail_path(out).is_file():
             self._try_render_thumbnail(job_id, storyline_id,

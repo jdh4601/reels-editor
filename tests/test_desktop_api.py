@@ -259,7 +259,7 @@ def test_snapshot_returns_no_reels_when_no_job(tmp_path: Path) -> None:
     assert payload["job_id"] == ""
     assert payload["storylines"] == []
     assert payload["n_storylines"] == 0
-    assert payload["duration_s"] == 35
+    assert payload["duration_s"] == 40
     assert payload["episode_number"] == 1
     assert payload["source_thumbnail_url"] is None
 

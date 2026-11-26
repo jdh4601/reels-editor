@@ -27,8 +27,8 @@ subtitle:
   font: NotoSansCJKsc-Regular.otf
   size: 34              # 작은 Light 자막
   opacity: 255          # 100%
-  color: "#FFFFFF"
-  highlight: "#FFFFFF"   # 자막은 강조색 없이 모두 흰색
+  color: "#FFD400"
+  highlight: "#FFD400"   # 자막은 강조색 없이 모두 노란색
   box_alpha: 200         # 가독성을 위한 반투명 검정 배경
   shadow_alpha: 0
   y: -420                # 영상과 함께 10px 아래로 이동, 캔버스 중심 y=1170px
@@ -48,4 +48,17 @@ watermark:
   episode_opacity: 255
   episode_gap: 18
   episode_y: -1000      # 에피소드 문구를 조금 아래로 이동, 캔버스 y=1460px
+name_tag:                # 화자 이름표: 2초에 왼쪽에서 들어와 2초 뒤 왼쪽으로 퇴장
+  font: Pretendard-SemiBold.otf   # 한글 이름(검은 글씨, 흰 박스)
+  role_font: Pretendard-Medium.otf  # 직책 줄
+  size: 46
+  role_size: 34
+  pad_x: 28
+  pad_y: 18
+  line_gap: 10
+  x: 48                 # 박스 왼쪽 끝, 캔버스 px
+  y: 980                # 박스 위쪽 끝, 자막(중심 y=1170) 위
+  start_s: 2.0          # 슬라이드인 시작
+  hold_s: 2.0           # 이 시간 뒤 슬라이드아웃 시작
+  slide_s: 0.3
 speed: 1.2

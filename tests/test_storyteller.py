@@ -431,6 +431,7 @@ def test_generate_script_normalizes_title_to_one_line_and_speaker_label(
         "role": "CEO",
         "alternate_role": "",
         "evidence": "OpenAI CEO 샘 알트만",
+        "name_ko": "샘 알트만",
     }
 
 
@@ -928,3 +929,80 @@ def test_generate_script_keeps_valid_response_for_download_retry(segments, edl_d
     dump = tmp_path / 'raw.txt'
     storyteller.generate_script(segments, runner=lambda _prompt: raw, raw_dump=dump)
     assert dump.read_text() == raw
+
+
+def _long_clip(segments: dict, ends_s: list[int]) -> dict:
+    rows = []
+    start = 0
+    for row, end in zip(segments["segments"], ends_s):
+        rows.append({**row, "source_start_us": start * 1_000_000, "source_end_us": end * 1_000_000})
+        start = end
+    return {**segments, "segments": rows}
+
+
+def test_candidate_prompt_targets_forty_seconds_and_names_fifty_second_exclusion(segments: dict) -> None:
+    prompt = storyteller.build_prompt(segments, 40, None, enforce_duration=False)
+
+    assert "40초" in prompt
+    assert "50초" in prompt
+    assert "길이 제한은 없다" not in prompt
+
+
+def test_candidate_script_slightly_over_forty_seconds_is_kept(segments: dict, edl_doc: dict) -> None:
+    clip = _long_clip(segments, [10, 30, 54])  # 54s source / 1.2 = 45s finished
+    doc = {**edl_doc, "cuts": [{"beat": "훅", "seg_ids": ["t0", "t1", "t2"]}]}
+
+    result = storyteller.generate_script(
+        clip, 40, runner=lambda _p: json.dumps(doc, ensure_ascii=False),
+        enforce_duration=False, speed=1.2)
+
+    assert result["cuts"][0]["seg_ids"] == ["t0", "t1", "t2"]
+
+
+def test_candidate_script_at_fifty_seconds_trims_trailing_complete_segments(
+        segments: dict, edl_doc: dict) -> None:
+    clip = _long_clip(segments, [10, 40, 66])  # 66s / 1.2 = 55s finished
+    doc = {
+        **edl_doc,
+        "cuts": [
+            {"beat": "훅", "seg_ids": ["t0"]},
+            {"beat": "전개", "seg_ids": ["t1"]},
+            {"beat": "라스트 답", "seg_ids": ["t2"]},
+        ],
+    }
+
+    result = storyteller.generate_script(
+        clip, 40, runner=lambda _p: json.dumps(doc, ensure_ascii=False),
+        enforce_duration=False, speed=1.2)
+
+    assert [cut["seg_ids"] for cut in result["cuts"]] == [["t0"], ["t1"]]
+
+
+def test_candidate_script_that_cannot_fit_under_fifty_seconds_is_excluded(
+        segments: dict, edl_doc: dict) -> None:
+    clip = _long_clip(segments, [60, 70, 80])  # first segment alone is 50s finished
+    doc = {**edl_doc, "cuts": [{"beat": "훅", "seg_ids": ["t0"]}]}
+
+    with pytest.raises(RuntimeError, match="50 seconds or longer"):
+        storyteller.generate_script(
+            clip, 40, runner=lambda _p: json.dumps(doc, ensure_ascii=False),
+            enforce_duration=False, speed=1.2)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("에릭 미기코브스키", "에릭 미기코브스키"), ("  에릭   미기코브스키 ", "에릭 미기코브스키"),
+     ("Eric Migicovsky", ""), ("에릭 Migicovsky", ""), ("", "")],
+)
+def test_normalize_speaker_keeps_only_hangul_transliteration(raw: str, expected: str) -> None:
+    normalized = storyteller.normalize_speaker_data({"name": "Eric Migicovsky", "name_ko": raw})
+    assert normalized.get("name_ko", "") == expected
+
+
+def test_korean_speaker_name_is_its_own_transliteration() -> None:
+    normalized = storyteller.normalize_speaker_data({"name": "샘 알트만"})
+    assert normalized["name_ko"] == "샘 알트만"
+
+
+def test_schema_asks_for_hangul_transliteration_of_grounded_name(segments: dict) -> None:
+    assert '"name_ko"' in storyteller.build_prompt(segments, 40, None)

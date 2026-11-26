@@ -23,6 +23,12 @@ from typing import Any, Callable
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from reels_editor import captions, processes, speaker_focus, hook_effects
+from reels_editor.name_tag import (
+    NameTag,
+    overlay_filter as name_tag_overlay_filter,
+    render_name_tag_png,
+    resolve_name_tag,
+)
 from reels_editor.storyteller import format_speaker_label
 from reels_editor.style import StylePreset
 from reels_editor.timebase import US
@@ -37,7 +43,7 @@ _SUBTITLE_PUNCTUATION_TO_HIDE = str.maketrans("", "", ",.")
 _VIDEOTOOLBOX_ENCODER = "h264_videotoolbox"
 _SOFTWARE_ENCODER = "libx264"
 _VIDEOTOOLBOX_SLOTS = threading.BoundedSemaphore(1)
-_OVERLAY_RENDER_VERSION = 6
+_OVERLAY_RENDER_VERSION = 7
 # Normalize the assembled reel once, with headroom for AAC encoding.
 _REEL_AUDIO_FILTER = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
 
@@ -775,6 +781,7 @@ def variant_cache_key(
     speaker_text: str = "",
     title_upper: str | None = None,
     title_lower: str | None = None,
+    name_tag: NameTag | None = None,
 ) -> str:
     title_text = normalize_title(title_text)
     payload = json.dumps(
@@ -785,6 +792,7 @@ def variant_cache_key(
             "title_upper": normalize_title(title_upper) if title_upper is not None else None,
             "title_lower": normalize_title(title_lower) if title_lower is not None else None,
             "speaker_text": speaker_text,
+            "name_tag": name_tag.cache_text() if name_tag else None,
             "subtitles_enabled": subtitles_enabled,
             "style_hash": style_hash_value,
         },
@@ -959,7 +967,8 @@ def render_base_and_assets(video_path: Path, segments: dict, edl_doc: dict,
 
 def render_with_title(assets: RenderAssets, title_text: str, keyword: str,
                       style: StylePreset, out_path: Path,
-                      *, speaker_text: str = "") -> Path:
+                      *, speaker_text: str = "",
+                      name_tag: NameTag | None = None) -> Path:
     return render_overlay_variant(
         assets,
         title_text=title_text,
@@ -968,6 +977,7 @@ def render_with_title(assets: RenderAssets, title_text: str, keyword: str,
         out_path=out_path,
         subtitles_enabled=True,
         speaker_text=speaker_text,
+        name_tag=name_tag,
     )
 
 
@@ -977,14 +987,21 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
                            speaker_text: str = "",
                            title_upper: str | None = None,
                            title_lower: str | None = None,
-                           outro: dict | None = None) -> Path:
+                           outro: dict | None = None,
+                           name_tag: NameTag | None = None) -> Path:
+    """Render one finished reel.
+
+    ``speaker_text`` is kept for callers and cache keys, but the speaker is no
+    longer drawn under the title: the timed ``name_tag`` replaces it.
+    """
+    del speaker_text
     out_path.parent.mkdir(parents=True, exist_ok=True)
     title_png = render_title_png(
         title_text,
         keyword,
         style,
         assets.work / f"title-{out_path.stem}.png",
-        speaker_text=speaker_text,
+        speaker_text="",
         title_upper=title_upper,
         title_lower=title_lower,
     )
@@ -1015,7 +1032,14 @@ def render_overlay_variant(assets: RenderAssets, *, title_text: str, keyword: st
     args = ["-i", str(video_input), "-i", str(title_png), "-i", str(wm_png)]
     for p in sub_pngs:
         args += ["-i", str(p)]
-    sound_input = 3 + len(sub_pngs)
+    tag_png = None
+    if name_tag is not None and style.name_tag_font and style.name_tag_role_font:
+        tag_png = render_name_tag_png(name_tag, style, assets.work / f"name-tag-{out_path.stem}.png")
+        args += ["-i", str(tag_png)]
+    if tag_png is not None:
+        filt2 += ";" + name_tag_overlay_filter(last, 3 + len(sub_pngs), "[vtag]", style)
+        last = "[vtag]"
+    sound_input = 3 + len(sub_pngs) + (tag_png is not None)
     if effect:
         if hook_effects.file_hash(Path(effect["sound_path"])) != effect["sound_sha256"]:
             raise ValueError("The opening sound file has changed.")
@@ -1082,4 +1106,5 @@ def render_reel(video_path: Path, segments: dict, edl_doc: dict, style: StylePre
     title = edl_doc["title_candidates"][edl_doc.get("selected_title", 0)]
     return render_with_title(assets, title["text"], title.get("keyword", ""),
                              style, out_path,
-                             speaker_text=speaker_label(edl_doc))
+                             speaker_text=speaker_label(edl_doc),
+                             name_tag=resolve_name_tag(None, edl_doc.get("speaker")))

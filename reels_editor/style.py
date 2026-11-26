@@ -68,6 +68,18 @@ class StylePreset:
     episode_font: Path | None = None
     output_language: str = "ko"
     show_episode: bool = False
+    name_tag_font: Path | None = None
+    name_tag_role_font: Path | None = None
+    name_tag_size: int = 46
+    name_tag_role_size: int = 34
+    name_tag_pad_x: int = 28
+    name_tag_pad_y: int = 18
+    name_tag_line_gap: int = 10
+    name_tag_x: int = 48
+    name_tag_y: int = 980
+    name_tag_start_s: float = 2.0
+    name_tag_hold_s: float = 2.0
+    name_tag_slide_s: float = 0.3
 
     def video_area(self) -> tuple[int, int]:
         return self.canvas[0], self.canvas[1] - self.top_bar - self.bottom_bar
@@ -113,6 +125,7 @@ def load_style(path: Path) -> StylePreset:
     if not title_font_dir.is_absolute():
         title_font_dir = path.parent / title_font_dir
     video = raw.get("video", {})
+    tag = raw.get("name_tag", {})
     return StylePreset(
         canvas=tuple(raw["canvas"]),
         top_bar=raw["top_bar"], bottom_bar=raw["bottom_bar"],
@@ -156,4 +169,16 @@ def load_style(path: Path) -> StylePreset:
         episode_y=int(w["episode_y"]) if "episode_y" in w else None,
         episode_font=_font(font_dir, w["episode_font"]) if "episode_font" in w else None,
         show_episode=bool(w.get("show_episode", False)),
+        name_tag_font=_font(font_dir, tag["font"]) if "font" in tag else None,
+        name_tag_role_font=_font(font_dir, tag["role_font"]) if "role_font" in tag else None,
+        name_tag_size=int(tag.get("size", 46)),
+        name_tag_role_size=int(tag.get("role_size", 34)),
+        name_tag_pad_x=int(tag.get("pad_x", 28)),
+        name_tag_pad_y=int(tag.get("pad_y", 18)),
+        name_tag_line_gap=int(tag.get("line_gap", 10)),
+        name_tag_x=int(tag.get("x", 48)),
+        name_tag_y=int(tag.get("y", 980)),
+        name_tag_start_s=float(tag.get("start_s", 2.0)),
+        name_tag_hold_s=float(tag.get("hold_s", 2.0)),
+        name_tag_slide_s=float(tag.get("slide_s", 0.3)),
     )
